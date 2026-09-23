@@ -1,0 +1,101 @@
+package controller
+
+import (
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/dzaczek/phoneborg/proto"
+)
+
+func newTestRegistry() (*Registry, *time.Time) {
+	r := NewRegistry(15*time.Second, 30*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	now := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return now }
+	return r, &now
+}
+
+func state(t *testing.T, r *Registry, id string) proto.NodeState {
+	t.Helper()
+	for _, n := range r.Snapshot() {
+		if n.ID == id {
+			return n.State
+		}
+	}
+	t.Fatalf("node %s not found", id)
+	return ""
+}
+
+func TestLifecycle(t *testing.T) {
+	r, now := newTestRegistry()
+	var transitions []string
+	r.onTransition = func(_ string, from, to proto.NodeState) {
+		transitions = append(transitions, string(from)+">"+string(to))
+	}
+
+	r.Register(proto.RegisterRequest{NodeID: "a", Inventory: proto.Inventory{RAMTotalBytes: 2 << 30}}, "x")
+	if got := state(t, r, "a"); got != proto.StateBenchmarking {
+		t.Fatalf("after register: %s", got)
+	}
+	if err := r.ReportBenchmark(proto.BenchmarkReport{NodeID: "a", Benchmark: proto.Benchmark{CPUGFLOPS: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(t, r, "a"); got != proto.StateActive {
+		t.Fatalf("after benchmark: %s", got)
+	}
+
+	*now = now.Add(16 * time.Second)
+	r.Sweep()
+	if got := state(t, r, "a"); got != proto.StateSuspect {
+		t.Fatalf("after 16s silence: %s", got)
+	}
+	*now = now.Add(15 * time.Second)
+	r.Sweep()
+	if got := state(t, r, "a"); got != proto.StateOffline {
+		t.Fatalf("after 31s silence: %s", got)
+	}
+	// Further sweeps must not bounce OFFLINE back to SUSPECT.
+	r.Sweep()
+	if got := state(t, r, "a"); got != proto.StateOffline {
+		t.Fatalf("offline not sticky: %s", got)
+	}
+
+	if err := r.Heartbeat(proto.Heartbeat{NodeID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(t, r, "a"); got != proto.StateActive {
+		t.Fatalf("after heartbeat resumed: %s", got)
+	}
+
+	want := []string{">BENCHMARKING", "BENCHMARKING>ACTIVE", "ACTIVE>SUSPECT", "SUSPECT>OFFLINE", "OFFLINE>ACTIVE"}
+	if len(transitions) != len(want) {
+		t.Fatalf("transitions = %v, want %v", transitions, want)
+	}
+	for i := range want {
+		if transitions[i] != want[i] {
+			t.Fatalf("transitions = %v, want %v", transitions, want)
+		}
+	}
+}
+
+func TestUnknownNode(t *testing.T) {
+	r, _ := newTestRegistry()
+	if err := r.Heartbeat(proto.Heartbeat{NodeID: "ghost"}); err != ErrUnknownNode {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if err := r.ReportBenchmark(proto.BenchmarkReport{NodeID: "ghost"}); err != ErrUnknownNode {
+		t.Fatalf("benchmark: %v", err)
+	}
+}
+
+func TestReRegisterResetsBenchmark(t *testing.T) {
+	r, _ := newTestRegistry()
+	r.Register(proto.RegisterRequest{NodeID: "a"}, "x")
+	_ = r.ReportBenchmark(proto.BenchmarkReport{NodeID: "a"})
+	r.Register(proto.RegisterRequest{NodeID: "a"}, "x")
+	n := r.Snapshot()[0]
+	if n.State != proto.StateBenchmarking || n.Benchmark != nil {
+		t.Fatalf("re-register: state=%s bench=%v", n.State, n.Benchmark)
+	}
+}

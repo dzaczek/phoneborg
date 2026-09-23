@@ -1,0 +1,102 @@
+// Package proto defines the controller <-> node wire types.
+//
+// v0 is JSON over HTTP (see docs/DECISIONS.md ADR-002). The field set is kept
+// protobuf-friendly (flat, explicit units) so it can move to Protobuf/gRPC
+// with mTLS without changing semantics.
+package proto
+
+import "time"
+
+const (
+	PathRegister  = "/v1/register"
+	PathBenchmark = "/v1/benchmark"
+	PathHeartbeat = "/v1/heartbeat"
+	PathNodes     = "/v1/nodes"
+)
+
+// Inventory is discovered on the device at runtime. Nothing here is hard-coded
+// per phone model.
+type Inventory struct {
+	Manufacturer     string `json:"manufacturer"`
+	Model            string `json:"model"`
+	SoC              string `json:"soc"`
+	ABI              string `json:"abi"`
+	AndroidRelease   string `json:"android_release"`
+	SDK              int    `json:"sdk"`
+	CPUCores         int    `json:"cpu_cores"`       // effective cores, respects cgroup cpu.max
+	RAMTotalBytes    uint64 `json:"ram_total_bytes"` // min(MemTotal, cgroup memory.max)
+	StorageFreeBytes uint64 `json:"storage_free_bytes"`
+	AgentVersion     string `json:"agent_version"`
+}
+
+// Benchmark is a self-reported capability score. Kind identifies the method so
+// scores from different methods are never compared directly.
+type Benchmark struct {
+	Kind             string  `json:"kind"`
+	CPUGFLOPS        float64 `json:"cpu_gflops"`
+	MemBandwidthGBps float64 `json:"mem_bandwidth_gbps"`
+	DurationMs       int64   `json:"duration_ms"`
+}
+
+type RegisterRequest struct {
+	NodeID    string    `json:"node_id"`
+	Inventory Inventory `json:"inventory"`
+}
+
+type RegisterResponse struct {
+	NodeID               string `json:"node_id"`
+	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
+}
+
+type BenchmarkReport struct {
+	NodeID    string    `json:"node_id"`
+	Benchmark Benchmark `json:"benchmark"`
+}
+
+// Heartbeat carries fast-changing runtime state. Pointer fields are nil when
+// the device does not expose the value (e.g. no readable thermal zones).
+type Heartbeat struct {
+	NodeID        string   `json:"node_id"`
+	RAMAvailBytes uint64   `json:"ram_avail_bytes"`
+	Load1         float64  `json:"load1"`
+	TemperatureC  *float64 `json:"temperature_c,omitempty"`
+	BatteryLevel  *int     `json:"battery_level,omitempty"`
+	UptimeSec     int64    `json:"uptime_sec"`
+	// Runtime is nil when the node serves no model.
+	Runtime *RuntimeStatus `json:"runtime,omitempty"`
+}
+
+// RuntimeStatus describes the node's inference server. The controller reaches
+// it at AdvertiseHost:AdvertisePort; an empty host means "the controller's
+// configured backend host" (the machine running adb, see ADR-003/ADR-006).
+type RuntimeStatus struct {
+	Engine        string `json:"engine"`
+	Model         string `json:"model"`
+	Ready         bool   `json:"ready"`
+	AdvertiseHost string `json:"advertise_host,omitempty"`
+	AdvertisePort int    `json:"advertise_port"`
+	Restarts      int64  `json:"restarts"`
+}
+
+type NodeState string
+
+const (
+	StateBenchmarking NodeState = "BENCHMARKING"
+	StateActive       NodeState = "ACTIVE"
+	StateSuspect      NodeState = "SUSPECT" // missed heartbeats
+	StateOffline      NodeState = "OFFLINE"
+)
+
+var AllStates = []NodeState{StateBenchmarking, StateActive, StateSuspect, StateOffline}
+
+// Node is the controller's view of a node.
+type Node struct {
+	ID            string     `json:"id"`
+	State         NodeState  `json:"state"`
+	RemoteAddr    string     `json:"remote_addr"`
+	Inventory     Inventory  `json:"inventory"`
+	Benchmark     *Benchmark `json:"benchmark,omitempty"`
+	LastHeartbeat *Heartbeat `json:"last_heartbeat,omitempty"`
+	RegisteredAt  time.Time  `json:"registered_at"`
+	LastSeen      time.Time  `json:"last_seen"`
+}
