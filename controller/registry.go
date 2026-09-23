@@ -18,6 +18,7 @@ var ErrUnknownNode = errors.New("unknown node")
 type Registry struct {
 	mu           sync.Mutex
 	nodes        map[string]*proto.Node
+	drained      map[string]bool // by node id; survives re-registration and Forget
 	now          func() time.Time
 	suspectAfter time.Duration
 	offlineAfter time.Duration
@@ -28,6 +29,7 @@ type Registry struct {
 func NewRegistry(suspectAfter, offlineAfter time.Duration, log *slog.Logger) *Registry {
 	return &Registry{
 		nodes:        map[string]*proto.Node{},
+		drained:      map[string]bool{},
 		now:          time.Now,
 		suspectAfter: suspectAfter,
 		offlineAfter: offlineAfter,
@@ -121,10 +123,57 @@ func (r *Registry) Sweep() {
 func (r *Registry) Snapshot() []proto.Node {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.snapshot()
+}
+
+// snapshot must be called with mu held.
+func (r *Registry) snapshot() []proto.Node {
 	out := make([]proto.Node, 0, len(r.nodes))
 	for _, n := range r.nodes {
 		out = append(out, *n)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// View returns Snapshot and the drained node ids, read under one lock.
+func (r *Registry) View() ([]proto.Node, map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	nodes := r.snapshot()
+	drained := make(map[string]bool, len(r.drained))
+	for id := range r.drained {
+		drained[id] = true
+	}
+	return nodes, drained
+}
+
+// SetDrained drains or undrains a node. A drained node gets no new inference
+// requests. The flag is kept by node id, so it survives the node
+// re-registering or being forgotten. Draining needs a known node (to catch
+// typos); undraining also accepts an id that is only remembered as drained.
+func (r *Registry) SetDrained(id string, drained bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, known := r.nodes[id]; !known && (drained || !r.drained[id]) {
+		return ErrUnknownNode
+	}
+	if drained {
+		r.drained[id] = true
+	} else {
+		delete(r.drained, id)
+	}
+	return nil
+}
+
+// Forget removes a node. If it is still alive, its next heartbeat gets
+// ErrUnknownNode and it registers again.
+func (r *Registry) Forget(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.nodes[id]; !ok {
+		return ErrUnknownNode
+	}
+	delete(r.nodes, id)
+	return nil
 }

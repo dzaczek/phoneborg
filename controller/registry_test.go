@@ -99,3 +99,38 @@ func TestReRegisterResetsBenchmark(t *testing.T) {
 		t.Fatalf("re-register: state=%s bench=%v", n.State, n.Benchmark)
 	}
 }
+
+func TestDrainSurvivesReRegistrationAndForget(t *testing.T) {
+	r, _ := newTestRegistry()
+	if err := r.SetDrained("a", true); err != ErrUnknownNode {
+		t.Fatalf("drain unknown node: %v", err)
+	}
+	r.Register(proto.RegisterRequest{NodeID: "a"}, "x")
+	if err := r.SetDrained("a", true); err != nil {
+		t.Fatal(err)
+	}
+	r.Register(proto.RegisterRequest{NodeID: "a"}, "x")
+	if _, d := r.View(); !d["a"] {
+		t.Fatal("drain lost on re-registration")
+	}
+	if err := r.Forget("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Heartbeat(proto.Heartbeat{NodeID: "a"}); err != ErrUnknownNode {
+		t.Fatalf("heartbeat after forget: %v", err)
+	}
+	if err := r.Forget("a"); err != ErrUnknownNode {
+		t.Fatalf("forget twice: %v", err)
+	}
+	nodes, d := r.View()
+	if len(nodes) != 0 || !d["a"] {
+		t.Fatalf("after forget: nodes=%v drained=%v", nodes, d)
+	}
+	// A forgotten node can still be undrained, once.
+	if err := r.SetDrained("a", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetDrained("a", false); err != ErrUnknownNode {
+		t.Fatalf("undrain unknown: %v", err)
+	}
+}
