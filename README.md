@@ -83,8 +83,11 @@ make cluster-up
 make e2e                              # provisioning, serving, failover, recovery
 ```
 
-See [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) for emulator setup
-(macOS/colima), load testing, API keys and opencode.
+Guides:
+- [docs/REAL_PHONES.md](docs/REAL_PHONES.md): preparing phones, adb checks,
+  provisioning, verification and troubleshooting.
+- [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md): emulator setup
+  (macOS/colima), load testing, API keys and opencode.
 
 ## Measured on emulated phones
 
@@ -122,7 +125,7 @@ proto/             controller <-> node wire types (JSON v0, protobuf-ready)
 runtime/llama/     static arm64 llama.cpp build
 deploy/            docker compose: controller, Prometheus, Grafana, emulated phones
 tests/             end-to-end tests, LLM smoke test, load generator
-docs/              design decisions (ADRs) and emulation guide
+docs/              design decisions (ADRs), real-phone and emulation guides
 ```
 
 ## Roadmap
