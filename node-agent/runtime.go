@@ -1,8 +1,12 @@
 package nodeagent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -39,6 +44,11 @@ type Runtime struct {
 	log      *slog.Logger
 	restarts atomic.Int64
 	http     *http.Client
+
+	mu         sync.Mutex // guards the self-test result below
+	genTPS     float64
+	promptTPS  float64
+	selfTestAt time.Time
 }
 
 func NewRuntime(cfg RuntimeConfig, log *slog.Logger) *Runtime {
@@ -92,6 +102,9 @@ func (r *Runtime) runOnce(ctx context.Context) error {
 	_ = os.WriteFile(runtimePidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
 	defer os.Remove(runtimePidFile)
 	r.log.Info("llama-server started", "pid", cmd.Process.Pid, "model", ModelName(r.cfg.ModelPath), "port", r.cfg.Port)
+	selfTestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go r.waitReadyThenSelfTest(selfTestCtx)
 	return cmd.Wait()
 }
 
@@ -126,11 +139,138 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 		AdvertisePort: r.cfg.AdvertisePort,
 		Restarts:      r.restarts.Load(),
 		Threads:       r.cfg.Threads,
+		Ready:         r.healthy(ctx),
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", r.cfg.Port), nil)
-	if resp, err := r.http.Do(req); err == nil {
-		resp.Body.Close()
-		st.Ready = resp.StatusCode == http.StatusOK
-	}
+	r.mu.Lock()
+	st.GenTPS, st.PromptTPS, st.SelfTestAt = r.genTPS, r.promptTPS, r.selfTestAt
+	r.mu.Unlock()
 	return st
+}
+
+// healthy probes llama-server's /health (200 only once the model is loaded).
+func (r *Runtime) healthy(ctx context.Context) bool {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", r.cfg.Port), nil)
+	resp, err := r.http.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// waitReadyThenSelfTest polls llama-server until it is ready (or ctx ends,
+// e.g. the process restarted) and then runs one self-test.
+func (r *Runtime) waitReadyThenSelfTest(ctx context.Context) {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if r.healthy(ctx) {
+				r.runSelfTest(ctx)
+				return
+			}
+		}
+	}
+}
+
+// selfTestPrompt is a fixed ~100-token prompt used to measure real generation
+// speed against the node's own llama-server (see ADR-010).
+const selfTestPrompt = `Describe, in a few plain sentences, how a small cluster of old Android ` +
+	`phones could be used to serve a large language model to multiple users at once. Mention how ` +
+	`requests might be distributed across phones, what happens if one phone becomes slow or ` +
+	`unavailable, and why keeping related requests on the same phone could help performance. Keep ` +
+	`the explanation concise and easy to follow for someone new to the idea of distributed inference ` +
+	`on constrained hardware.`
+
+type selfTestResult struct {
+	PromptTPS float64
+	GenTPS    float64
+}
+
+// runSelfTest posts a fixed prompt to llama-server's own OpenAI-compatible
+// endpoint and reads the measured speed from its `timings`. cache_prompt is
+// disabled and the prompt is fixed, so repeated self-tests measure cold
+// performance every time, not a warm cache.
+func selfTestRequest(ctx context.Context, client *http.Client, baseURL, model string) (selfTestResult, error) {
+	body, err := json.Marshal(struct {
+		Model       string              `json:"model"`
+		Messages    []map[string]string `json:"messages"`
+		MaxTokens   int                 `json:"max_tokens"`
+		IgnoreEOS   bool                `json:"ignore_eos"`
+		CachePrompt bool                `json:"cache_prompt"`
+		Temperature float64             `json:"temperature"`
+	}{
+		Model:       model,
+		Messages:    []map[string]string{{"role": "user", "content": selfTestPrompt}},
+		MaxTokens:   32,
+		IgnoreEOS:   true,
+		CachePrompt: false,
+		Temperature: 0,
+	})
+	if err != nil {
+		return selfTestResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return selfTestResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return selfTestResult{}, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return selfTestResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return selfTestResult{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(respBody))
+	}
+	return parseSelfTest(respBody)
+}
+
+// parseSelfTest extracts prompt/generation speed from a llama-server
+// /v1/chat/completions response body. Pure function, no I/O.
+func parseSelfTest(body []byte) (selfTestResult, error) {
+	var v struct {
+		Timings *struct {
+			PromptPerSecond    float64 `json:"prompt_per_second"`
+			PredictedPerSecond float64 `json:"predicted_per_second"`
+		} `json:"timings"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return selfTestResult{}, err
+	}
+	if v.Timings == nil {
+		return selfTestResult{}, errors.New("response has no timings")
+	}
+	return selfTestResult{PromptTPS: v.Timings.PromptPerSecond, GenTPS: v.Timings.PredictedPerSecond}, nil
+}
+
+// runSelfTestClient bounds one self-test call: prompt processing plus 32
+// generated tokens should finish well within this even on a slow phone.
+const runSelfTestTimeout = 60 * time.Second
+
+// runSelfTest runs the self-test against this runtime's own llama-server and
+// stores the result. Logs the outcome either way; a failure leaves the fields
+// at their previous value (zero if none has succeeded yet) and does not
+// affect serving.
+func (r *Runtime) runSelfTest(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, runSelfTestTimeout)
+	defer cancel()
+	client := &http.Client{Timeout: runSelfTestTimeout}
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", r.cfg.Port)
+	res, err := selfTestRequest(ctx, client, baseURL, ModelName(r.cfg.ModelPath))
+	if err != nil {
+		r.log.Warn("runtime self-test failed", "err", err)
+		return
+	}
+	r.mu.Lock()
+	r.genTPS, r.promptTPS, r.selfTestAt = res.GenTPS, res.PromptTPS, time.Now()
+	r.mu.Unlock()
+	r.log.Info("runtime self-test", "gen_tps", res.GenTPS, "prompt_tps", res.PromptTPS)
 }
