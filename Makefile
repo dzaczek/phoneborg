@@ -1,8 +1,8 @@
-.PHONY: all test agent pcprov controller cluster-up cluster-down e2e llama llm-smoke
+.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llm-smoke
 
 VERSION ?= $(shell date +%Y%m%d%H%M)
 
-all: test agent pcprov controller
+all: test agent pcprov controller pbctl
 
 test:
 	go vet ./...
@@ -19,6 +19,10 @@ pcprov:
 
 controller:
 	go build -o bin/controller ./controller/cmd/controller
+
+# Admin CLI for the controller's /admin/ API.
+pbctl:
+	go build -o bin/pbctl ./controller/cmd/pbctl
 
 cluster-up:
 	sh deploy/colima-binder.sh
