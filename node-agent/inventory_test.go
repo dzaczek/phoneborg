@@ -60,6 +60,20 @@ func TestParseThermal(t *testing.T) {
 	}
 }
 
+func TestThermalZoneRelevant(t *testing.T) {
+	// Zone types seen on a Xiaomi Mi 8 (Snapdragon 845).
+	for _, z := range []string{"cpu0-silver-usr", "cpu3-gold-step", "gpu0-usr", "kryo-l3-0-usr"} {
+		if !ThermalZoneRelevant(z) {
+			t.Errorf("%s should count", z)
+		}
+	}
+	for _, z := range []string{"lmh-dcvs-00", "vbat", "ibat-high", "soc", "pm8998_tz", "battery", "wlan-usr"} {
+		if ThermalZoneRelevant(z) {
+			t.Errorf("%s should be ignored", z)
+		}
+	}
+}
+
 func TestSanitize(t *testing.T) {
 	if got := sanitize("ab:cd/ef 1-2_3.4"); got != "abcdef1-2_3.4" {
 		t.Fatal(got)

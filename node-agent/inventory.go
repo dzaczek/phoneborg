@@ -172,13 +172,25 @@ func Load1() float64 {
 	return v
 }
 
-// MaxTemperature returns the hottest readable thermal zone, falling back to
-// battery temperature. nil when nothing is readable (e.g. redroid).
+var thermalZoneType = regexp.MustCompile(`(?i)cpu|gpu|kryo|skin|tsens`)
+
+// ThermalZoneRelevant reports whether a thermal zone type measures silicon or
+// skin temperature. Phones also expose voltages (vbat), currents (ibat),
+// charge level (soc) and fixed throttling thresholds (lmh-dcvs) as zones.
+func ThermalZoneRelevant(zoneType string) bool {
+	return thermalZoneType.MatchString(zoneType)
+}
+
+// MaxTemperature returns the hottest CPU/GPU/skin thermal zone, falling back
+// to battery temperature. nil when nothing is readable (e.g. redroid).
 func MaxTemperature(batteryTemp *float64) *float64 {
 	var best *float64
-	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
+	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*")
 	for _, z := range zones {
-		if v, ok := ParseThermalMilli(readFile(z)); ok && (best == nil || v > *best) {
+		if !ThermalZoneRelevant(strings.TrimSpace(readFile(z + "/type"))) {
+			continue
+		}
+		if v, ok := ParseThermalMilli(readFile(z + "/temp")); ok && (best == nil || v > *best) {
 			best = &v
 		}
 	}
