@@ -76,6 +76,7 @@ type RuntimeStatus struct {
 	AdvertiseHost string `json:"advertise_host,omitempty"`
 	AdvertisePort int    `json:"advertise_port"`
 	Restarts      int64  `json:"restarts"`
+	Threads       int    `json:"threads"`
 }
 
 type NodeState string

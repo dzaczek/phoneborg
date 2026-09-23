@@ -26,6 +26,8 @@ func main() {
 	servePort := flag.Int("serve-port", 18090, "on-device port for llama-server (127.0.0.1)")
 	advertisePort := flag.Int("advertise-port", 0, "host-side port that reaches -serve-port (set by pcprov via adb forward)")
 	ctxSize := flag.Int("ctx-size", 2048, "llama-server context size")
+	threadsOverride := flag.Int("threads", 0, "llama-server thread count override (0 = choose automatically from CPU topology, see -threads-policy)")
+	threadsPolicy := flag.String("threads-policy", "all", `automatic thread selection when -threads=0: "all" (every allowed CPU, today's behavior) or "big" (only the highest-frequency CPU cluster)`)
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -40,9 +42,22 @@ func main() {
 			log.Error("-llama-server requires -model and -advertise-port")
 			os.Exit(2)
 		}
+		cpuCores := nodeagent.Discover(props, version).CPUCores
+		threads, allowedCPUs, bigCores := nodeagent.DiscoverThreads(*threadsPolicy)
+		if threads <= 0 {
+			threads = cpuCores
+		}
+		if *threadsOverride > 0 {
+			threads = *threadsOverride
+		}
+		if threads > cpuCores {
+			threads = cpuCores // respect the cgroup CPU cap
+		}
+		log.Info("runtime threads selected", "threads", threads, "policy", *threadsPolicy,
+			"allowed_cpus", allowedCPUs, "big_cores", bigCores)
 		runtime = nodeagent.NewRuntime(nodeagent.RuntimeConfig{
 			ServerBin: *llamaServer, ModelPath: *model, Port: *servePort, AdvertisePort: *advertisePort,
-			Threads: nodeagent.Discover(props, version).CPUCores, CtxSize: *ctxSize,
+			Threads: threads, CtxSize: *ctxSize,
 		}, log)
 	}
 	log.Info("node-agent starting", "version", version, "node_id", nodeID, "controller", *ctrl, "pid", os.Getpid())

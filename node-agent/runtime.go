@@ -120,6 +120,7 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 		Model:         ModelName(r.cfg.ModelPath),
 		AdvertisePort: r.cfg.AdvertisePort,
 		Restarts:      r.restarts.Load(),
+		Threads:       r.cfg.Threads,
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", r.cfg.Port), nil)
 	if resp, err := r.http.Do(req); err == nil {
