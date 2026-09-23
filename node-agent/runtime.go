@@ -25,6 +25,7 @@ type RuntimeConfig struct {
 	AdvertisePort int    // host-side port that reaches Port (adb forward)
 	Threads       int
 	CtxSize       int
+	Variant       string // llama.cpp build variant selected by pcprov (ADR-007); empty if unknown
 }
 
 // ModelName is the model identifier clients use: the file name without .gguf.
@@ -115,8 +116,12 @@ func killStale(log *slog.Logger) {
 
 // Status probes llama-server's /health (200 only once the model is loaded).
 func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
+	engine := "llama.cpp"
+	if r.cfg.Variant != "" {
+		engine = "llama.cpp/" + r.cfg.Variant
+	}
 	st := &proto.RuntimeStatus{
-		Engine:        "llama.cpp",
+		Engine:        engine,
 		Model:         ModelName(r.cfg.ModelPath),
 		AdvertisePort: r.cfg.AdvertisePort,
 		Restarts:      r.restarts.Load(),

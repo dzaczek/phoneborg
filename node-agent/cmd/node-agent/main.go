@@ -26,6 +26,7 @@ func main() {
 	servePort := flag.Int("serve-port", 18090, "on-device port for llama-server (127.0.0.1)")
 	advertisePort := flag.Int("advertise-port", 0, "host-side port that reaches -serve-port (set by pcprov via adb forward)")
 	ctxSize := flag.Int("ctx-size", 2048, "llama-server context size")
+	runtimeVariant := flag.String("runtime-variant", "", "llama.cpp build variant (set by pcprov); reported as the engine name")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -42,7 +43,7 @@ func main() {
 		}
 		runtime = nodeagent.NewRuntime(nodeagent.RuntimeConfig{
 			ServerBin: *llamaServer, ModelPath: *model, Port: *servePort, AdvertisePort: *advertisePort,
-			Threads: nodeagent.Discover(props, version).CPUCores, CtxSize: *ctxSize,
+			Threads: nodeagent.Discover(props, version).CPUCores, CtxSize: *ctxSize, Variant: *runtimeVariant,
 		}, log)
 	}
 	log.Info("node-agent starting", "version", version, "node_id", nodeID, "controller", *ctrl, "pid", os.Getpid())
