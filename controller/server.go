@@ -227,12 +227,13 @@ var (
 	descBattery         = prometheus.NewDesc("phoneborg_node_battery_level_percent", "Battery level.", []string{"node_id"}, nil)
 	descRuntimeReady    = prometheus.NewDesc("phoneborg_node_runtime_ready", "1 if the node's inference server is ready.", []string{"node_id", "model"}, nil)
 	descRuntimeRestarts = prometheus.NewDesc("phoneborg_node_runtime_restarts", "Inference server restarts since agent start.", []string{"node_id"}, nil)
+	descRuntimeThreads  = prometheus.NewDesc("phoneborg_node_runtime_threads", "Inference threads, labelled with the engine build.", []string{"node_id", "engine"}, nil)
 	descHeartbeatAge    = prometheus.NewDesc("phoneborg_node_last_seen_age_seconds", "Seconds since last message from node.", []string{"node_id"}, nil)
 	descDrained         = prometheus.NewDesc("phoneborg_node_drained", "1 if the node is drained (no new inference requests).", []string{"node_id"}, nil)
 )
 
 func (c *nodeCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{descNodes, descUp, descRAMTotal, descRAMAvail, descCores, descGFLOPS, descMemBW, descLoad, descTemp, descBattery, descHeartbeatAge, descRuntimeReady, descRuntimeRestarts, descDrained} {
+	for _, d := range []*prometheus.Desc{descNodes, descUp, descRAMTotal, descRAMAvail, descCores, descGFLOPS, descMemBW, descLoad, descTemp, descBattery, descHeartbeatAge, descRuntimeReady, descRuntimeRestarts, descRuntimeThreads, descDrained} {
 		ch <- d
 	}
 }
@@ -276,6 +277,7 @@ func (c *nodeCollector) Collect(ch chan<- prometheus.Metric) {
 				}
 				ch <- prometheus.MustNewConstMetric(descRuntimeReady, g, ready, n.ID, rt.Model)
 				ch <- prometheus.MustNewConstMetric(descRuntimeRestarts, g, float64(rt.Restarts), n.ID)
+				ch <- prometheus.MustNewConstMetric(descRuntimeThreads, g, float64(rt.Threads), n.ID, rt.Engine)
 			}
 		}
 	}

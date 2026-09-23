@@ -297,18 +297,23 @@ func nodes(c *client, o *out) error {
 	}
 	var rows [][]string
 	for _, n := range ns {
-		model, runtime := "-", "-"
+		model, runtime, build := "-", "-", "-"
 		if hb := n.LastHeartbeat; hb != nil && hb.Runtime != nil {
-			model, runtime = hb.Runtime.Model, map[bool]string{true: "ready", false: "loading"}[hb.Runtime.Ready]
+			rt := hb.Runtime
+			model, runtime = rt.Model, map[bool]string{true: "ready", false: "loading"}[rt.Ready]
+			build = strings.TrimPrefix(rt.Engine, "llama.cpp/")
+			if rt.Threads > 0 {
+				build += fmt.Sprintf(" %dt", rt.Threads)
+			}
 		}
 		drained := "-"
 		if n.Drained {
 			drained = "DRAINED"
 		}
 		rows = append(rows, []string{n.ID, string(n.State), drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
-			model, runtime, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
+			model, runtime, build, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
 	}
-	o.table("NODE\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tINFLIGHT\tPINNED\tLAST SEEN", rows)
+	o.table("NODE\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tINFLIGHT\tPINNED\tLAST SEEN", rows)
 	return nil
 }
 
