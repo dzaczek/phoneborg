@@ -1647,22 +1647,137 @@
    }
   },
   {
+   "type": "timeseries",
+   "title": "Self-test tok/s per node",
+   "id": 35,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Measured against the node's own llama-server once it becomes ready and after each restart (ADR-010); this is the speed used for routing once any node reports it, unlike the synthetic benchmark above",
+   "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 0,
+    "y": 75
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "phoneborg_node_runtime_gen_tokens_per_second",
+     "legendFormat": "{{node_id}} gen",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "phoneborg_node_runtime_prompt_tokens_per_second",
+     "legendFormat": "{{node_id}} prompt",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Hot nodes",
+   "id": 36,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "1 = temperature at or above -thermal-limit-c: gets no new sessions unless every candidate node is hot (ADR-010; pbctl gateway set thermal_limit=<c>)",
+   "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 12,
+    "y": 75
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "phoneborg_node_hot",
+     "legendFormat": "{{node_id}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
    "type": "row",
    "title": "Administration",
-   "id": 35,
+   "id": 37,
    "collapsed": false,
    "gridPos": {
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 75
+    "y": 81
    },
    "panels": []
   },
   {
    "type": "timeseries",
    "title": "Drained nodes",
-   "id": 36,
+   "id": 38,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1672,7 +1787,7 @@
     "h": 6,
     "w": 12,
     "x": 0,
-    "y": 76
+    "y": 82
    },
    "targets": [
     {
@@ -1715,7 +1830,7 @@
   {
    "type": "timeseries",
    "title": "Admin actions",
-   "id": 37,
+   "id": 39,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1725,7 +1840,7 @@
     "h": 6,
     "w": 12,
     "x": 12,
-    "y": 76
+    "y": 82
    },
    "targets": [
     {
