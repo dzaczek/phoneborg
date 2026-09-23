@@ -226,3 +226,29 @@ separate and the default is safe: no token means no admin API.
 no TLS: run the admin API only on localhost or a trusted network until the
 mTLS work (ADR-002). Keys have no scopes, expiry or quotas yet. Drain flags
 and gateway settings are lost when the controller restarts.
+
+## ADR-009: llama-server threads on big.LITTLE phones
+
+**Problem.** Phones mix fast and slow cores. llama.cpp can be held back by slow
+"little" cores, so the agent gained `-threads N` and `-threads-policy all|big`
+(big = only cores within 90% of the highest max frequency).
+
+**Measurement** (Xiaomi Mi 8, Snapdragon 845, Qwen2.5-0.5B Q4, real agent +
+llama-server, 297-token prompt, 64 generated tokens, two interleaved series).
+Android places the agent in the `foreground` cpuset (cores 0-3 little, 6-7 big),
+so 6 cores are usable:
+
+| threads | prompt tok/s | generation tok/s |
+|---|---|---|
+| 2 (= policy `big` here) | 13.4 | 8.8 |
+| 4 | 19.0 | 9.3 |
+| 6 (= policy `all`) | 23.8 | ~12 |
+
+Two traps showed up. Qualcomm `core_ctl` keeps only 2 of the 4 big cores online
+when idle, so benchmarks that pin threads with `taskset` stall on offline cores
+(0.1–0.5 tok/s) and do not reflect the unpinned server. Thread counts above the
+usable cores are also catastrophic.
+
+**Decision.** Default policy stays `all`, capped by the usable cores. `big` and
+`-threads` remain as per-phone overrides, to be re-measured on other SoCs.
+Benchmark through llama-server, not pinned `llama-bench` runs.

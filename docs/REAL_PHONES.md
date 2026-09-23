@@ -177,6 +177,7 @@ adb -s $S shell settings put global stay_on_while_plugged_in 0
 | `agent.log` shows `signal: illegal instruction` | llama.cpp build too new for the CPU (only possible with an explicit `-llama-server` override) | drop the override and let pcprov choose the build |
 | node goes `SUSPECT` when the screen turns off | CPU sleeps | step 4 |
 | `phoneborg_node_runtime_restarts` keeps growing | llama-server is being killed (out of memory or vendor task killer) | smaller model or context; close apps; check `runtime.log` |
+| tokens/s far below expectations | too many threads, or threads pinned to offline cores | keep the default (`-threads-policy all`); try `-agent-args "-threads 4"` and compare; see ADR-009 |
 | tokens/s drops after a few minutes | thermal throttling | cooling, no case, lower brightness; watch temperature in Grafana |
 | node `OFFLINE` after unplugging | expected: phones talk to the controller over USB | replug; `pcprov watch` re-provisions |
 | agent missing after a phone reboot | processes started over adb do not survive a reboot | `pcprov watch` re-provisions when the phone is plugged in |
