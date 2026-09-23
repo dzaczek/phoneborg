@@ -110,3 +110,91 @@ on another node, and the failed node is avoided for 30 s. Requests in flight on
 a node that leaves the ready set (e.g. SUSPECT) are cancelled and retried
 elsewhere. Once response bytes have reached the client, a request cannot be
 retried.
+
+## ADR-008: Admin API and usage statistics
+
+(Numbered 008 because ADR-007 is reserved for llama.cpp variant selection,
+which is being written on a parallel branch.)
+
+**Problem.** Operators need to take a phone out of rotation, remove dead
+nodes, issue and revoke API keys, change routing, and see usage per key and
+per node. Until now this needed a restart, hand-edited files, or a
+Prometheus query. A management surface must not become the weakest point of
+a cluster that already serves unauthenticated agent traffic in development.
+
+**Alternatives.**
+1. Only Prometheus and config files: restart to change anything.
+2. Admin routes on the gateway's own auth, so an API key with an "admin" flag
+   could manage the cluster.
+3. A separate `/admin/` JSON API with its own bearer token, disabled when no
+   token is configured, and a CLI (`pbctl`) on top of it.
+
+**Trade-offs.** (1) keeps the attack surface smallest, but every drain means a
+restart that interrupts every session. (2) mixes tenants and operators: one
+leaked client key could manage the cluster, and "open" dev mode would make
+the admin API open too. (3) adds one secret to handle, but the two roles stay
+separate and the default is safe: no token means no admin API.
+
+**Decision.** (3).
+
+- **Auth.** `-admin-token-file` holds one token of at least 16 characters.
+  The controller keeps only its SHA-256 and compares the hash of the
+  presented token with `subtle.ConstantTimeCompare`, so the comparison does
+  not leak the token's length or content through timing. Without the flag,
+  every `/admin/` route returns 503 with a message naming the flag. Unknown
+  admin paths also require the token. Every state change is logged as
+  `admin action` with `principal=admin`, the action and its target (node id
+  or key name). Every call is counted in
+  `phoneborg_admin_actions_total{action,result}`. Tokens and keys never
+  appear in logs, metrics or list responses. The controller warns when a
+  secrets file can be read by group or others.
+- **Nodes.** Drain is a flag in the registry, keyed by node id. It is not a
+  node state, so the heartbeat state machine stays unchanged, and it
+  survives re-registration and forget. Drained nodes stay in the
+  `BackendSource` with `Backend.Drained` set. The gateway does not route new
+  requests to them, but `Reap` leaves their in-flight requests alone, so
+  those finish normally. Their affinity pins are dropped, so sessions re-pin
+  on their next request. The drain flag is not persisted.
+- **API keys.** Key files take `<name> sha256:<hex> [created]` next to the
+  legacy `<name> <key>` lines. Created keys are `pb-` plus 32 random bytes
+  (base64url). The plaintext is returned once and never stored. Changes are
+  written to a temp file with mode 0600, synced, and renamed over the old
+  file. Legacy lines are rewritten as hashes on the first write. SIGHUP
+  reloads the file, and a broken file leaves the current keys in place. An
+  empty key file is valid and rejects every request (fails closed).
+- **Open gateway and the first key.** Without `-api-keys-file` the gateway
+  is open. Creating a key there does not lock anyone out: known keys are
+  attributed to their owner, and other requests are still served as
+  `anonymous`. Enforcement is a separate, explicit step
+  (`PUT /admin/gateway {"auth_mode":"keys"}`, `pbctl gateway set auth=keys`).
+  It is refused while no key exists. The switch goes one way only, from open
+  to keys. Turning authentication off needs a restart without
+  `-api-keys-file`, so a stolen admin token cannot quietly open the gateway.
+  Keys created without a file are kept in memory only, and the API response
+  says so.
+- **Usage.** The gateway reports one `UsageEvent` per outcome, through a
+  `UsageRecorder` interface, at the point where it already counts tokens.
+  The controller aggregates events per key and per node: since start, and,
+  with `-state-dir`, since first use. The totals are persisted to
+  `usage.json` (atomic write, mode 0600) every 30 s and on SIGINT/SIGTERM,
+  after the HTTP server has drained for up to 10 s. A corrupt file stops
+  startup instead of being overwritten. Prometheus stays the source for
+  rates and time ranges, and `usage.json` is for all-time totals.
+- **Runtime gateway settings.** The routing policy (`affinity` or
+  `least_inflight`), the affinity spill threshold and the upstream timeout
+  can be changed through `PUT /admin/gateway`. An update is validated as a
+  whole and then applied, so a bad field changes nothing. The picker and the
+  timeout are swapped atomically, and requests that are already routed keep
+  their policy and deadline. The `Picker`, `Authenticator` and
+  `BackendSource` boundaries from ADR-006 are unchanged. The settings are not
+  persisted: after a restart the controller uses its flags again.
+- **pbctl** lives in `controller/cmd/pbctl`, not in a separate `ctl/`
+  module. It imports the admin API's request and response types from
+  `controller`, so the CLI and the server cannot drift apart, and it is
+  versioned and tested with the API it calls (its tests run it against a
+  real in-process controller).
+
+**Not solved.** There is one admin role with no per-operator identity, and
+no TLS: run the admin API only on localhost or a trusted network until the
+mTLS work (ADR-002). Keys have no scopes, expiry or quotas yet. Drain flags
+and gateway settings are lost when the controller restarts.

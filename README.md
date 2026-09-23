@@ -52,7 +52,13 @@ Prometheus and Grafana.
     3 s instead of ~2 min.
   - **Failover.** Failed attempts are retried on another phone. Requests stuck
     on a frozen phone are cancelled and re-routed.
-  - **API keys** (optional), with per-key usage metrics.
+  - **API keys** (optional), with per-key usage metrics. Keys are stored as
+    SHA-256 hashes and can be created and revoked at runtime.
+- **Cluster management.** A token-protected admin API (`/admin/`) and the
+  `pbctl` CLI. Drain a phone for maintenance (running requests finish), remove
+  nodes, manage API keys, and change the routing policy and timeouts without a
+  restart. Usage per API key and per node (requests, errors, tokens, tok/s)
+  can be persisted across restarts.
 - **Observability.** Structured JSON logs, `phoneborg_*` Prometheus metrics and
   a provisioned Grafana dashboard: cluster health, latency, tokens/s, cache hit
   ratio, and token usage per API key (input/output).
@@ -64,7 +70,7 @@ Prometheus and Grafana.
 Requirements: Go 1.25+, `adb`, and Docker for monitoring and emulation.
 
 ```sh
-make test agent pcprov controller     # unit tests + binaries
+make test agent pcprov controller pbctl   # unit tests + binaries
 make llama                            # static arm64 llama.cpp (built in Docker)
 make models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
@@ -84,6 +90,8 @@ make e2e                              # provisioning, serving, failover, recover
 ```
 
 Guides:
+- [docs/USAGE.md](docs/USAGE.md): using the cluster: curl, OpenAI SDK and
+  opencode, API keys with `pbctl`, draining phones, usage statistics, Grafana.
 - [docs/REAL_PHONES.md](docs/REAL_PHONES.md): preparing phones, adb checks,
   provisioning, verification and troubleshooting.
 - [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md): emulator setup
@@ -121,8 +129,9 @@ free after Android itself.
 ## Repository layout
 
 ```text
-controller/        control plane: registry, HTTP API, metrics, dashboard
+controller/        control plane: registry, HTTP API, admin API, usage stats, metrics, dashboard
 controller/gateway OpenAI-compatible proxy: auth, routing policies, failover
+controller/cmd/pbctl  admin CLI: nodes, drain, API keys, stats, gateway settings
 node-agent/        on-phone agent: inventory, benchmark, heartbeats, runtime supervisor
 provisioner/       pcprov: adb provisioning and USB hot-plug watch
 proto/             controller <-> node wire types (JSON v0, protobuf-ready)
