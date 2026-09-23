@@ -1,4 +1,4 @@
-.PHONY: all test agent pcprov controller cluster-up cluster-down e2e llama llm-smoke
+.PHONY: all test agent pcprov controller cluster-up cluster-down e2e llama llama-all llm-smoke
 
 VERSION ?= $(shell date +%Y%m%d%H%M)
 
@@ -30,13 +30,21 @@ cluster-down:
 e2e:
 	bash tests/e2e/redroid_e2e.sh
 
-# Static arm64 llama.cpp for phones (ADR-005).
+# Static arm64 llama.cpp for phones (ADR-005 / ADR-007).
+# Each variant is built into bin/llama/<ARM_ARCH>/, so pcprov can pick the
+# right one per phone at provision time.
 # Override: make llama LLAMA_TAG=bXXXX, or ARM_ARCH=armv8-a for SoCs without dotprod.
 LLAMA_TAG ?= b11136
 ARM_ARCH ?= armv8.2-a+dotprod+fp16
 llama:
 	docker build --build-arg LLAMA_TAG=$(LLAMA_TAG) --build-arg ARM_ARCH=$(ARM_ARCH) \
-		-f runtime/llama/Dockerfile -o type=local,dest=bin/llama runtime/llama
+		-f runtime/llama/Dockerfile -o type=local,dest=bin/llama/$(ARM_ARCH) runtime/llama
+
+# Builds every variant pcprov knows how to select between.
+llama-all:
+	$(MAKE) llama ARM_ARCH=armv8.2-a+dotprod+fp16
+	$(MAKE) llama ARM_ARCH=armv8.2-a+fp16
+	$(MAKE) llama ARM_ARCH=armv8-a
 
 models/qwen2.5-0.5b-instruct-q4_k_m.gguf:
 	mkdir -p models
