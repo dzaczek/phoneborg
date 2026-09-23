@@ -159,7 +159,8 @@ Done in this proof of concept:
 
 Next:
 
-- [ ] Validate on real phones: long runs with the screen off, thermals, vendor ROMs
+- [x] First real phone: Xiaomi Mi 8 (LineageOS), 40 min with the screen off, no drops
+- [ ] Validate more phones and vendor ROMs; long thermal runs
 - [ ] Android foreground service (Kotlin), survives reboots
 - [ ] gRPC + mTLS transport; Wi-Fi nodes alongside USB
 - [ ] Distributed inference: split one model across phones

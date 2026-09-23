@@ -77,6 +77,13 @@ Rules of thumb:
 
 A phone whose CPU sleeps stops sending heartbeats and drops to `SUSPECT`.
 
+Measured on a Xiaomi Mi 8 with LineageOS 22.2: with the screen off and
+stay-awake disabled, the node stayed `ACTIVE` for 40 minutes on USB power, with
+40/40 requests served at ~17 tok/s and heartbeats never older than 5 s. So on
+LineageOS this step is optional. Vendor ROMs (MIUI, One UI) can behave
+differently, so run the same check before relying on it: turn the screen off
+and watch `pbctl nodes` for a while.
+
 ```sh
 adb -s $S shell svc power stayon usb                       # stay awake while on USB
 adb -s $S shell settings get global stay_on_while_plugged_in   # 2 = USB, 0 = off
@@ -84,6 +91,11 @@ adb -s $S shell settings put system screen_brightness 0    # reduce heat and bur
 ```
 
 To undo: `adb -s $S shell settings put global stay_on_while_plugged_in 0`.
+
+**Battery.** A phone on USB 24/7 sits at 100%, which wears the battery and can
+make it swell. If the ROM offers a charge limit, enable it: LineageOS
+Settings → Battery → Charging control (not every device supports it), or
+Samsung "Protect battery". Check phones for a bulging back cover regularly.
 
 ## 5. Provision
 
