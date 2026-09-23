@@ -252,3 +252,53 @@ usable cores are also catastrophic.
 **Decision.** Default policy stays `all`, capped by the usable cores. `big` and
 `-threads` remain as per-phone overrides, to be re-measured on other SoCs.
 Benchmark through llama-server, not pinned `llama-bench` runs.
+
+## ADR-010: Measured inference speed and thermal-aware routing
+
+**Problem.** The gateway's `Affinity` picker breaks ties with `Backend.Speed`,
+which was the agent's synthetic benchmark (`Benchmark.CPUGFLOPS`, kind
+`synthetic-go-v0`, ADR-006/ADR-009). That benchmark is a Go microbenchmark's
+FLOPS, with no fixed relationship to llama.cpp tokens/s: a real Xiaomi Mi 8
+scores 7.4 GFLOPS and an emulated 2-core phone 8.6, yet real generation is
+~12 tok/s on the Mi 8 against 74 tok/s on the emulated phone. Long sessions
+(opencode, 11k-token prompts) could land on the wrong node. Routing also
+ignored temperature: a hot phone throttles and generates slower, but kept
+receiving new sessions like any other.
+
+**Decision.**
+- The agent runs one self-test against its own llama-server right after it
+  becomes ready, and again after each runtime restart: `POST
+  /v1/chat/completions` with a fixed ~100-token prompt, `max_tokens=32`,
+  `ignore_eos=true`, `cache_prompt=false`, `temperature=0`, reading
+  `timings.prompt_per_second` / `timings.predicted_per_second` from the
+  response. Results are reported in `RuntimeStatus` (`GenTPS`, `PromptTPS`,
+  `SelfTestAt`), logged as `runtime self-test`, and left at zero if the
+  self-test fails (the node still serves). The existing startup benchmark is
+  unchanged.
+- `controller.Backends()` uses `GenTPS` as `Backend.Speed` when a node has
+  reported one, else falls back to the synthetic benchmark. The two are
+  different units, so once *any* candidate has a measured speed, nodes
+  without one get `Speed 0` rather than being compared on the wrong scale.
+- The controller gains `-thermal-limit-c` (default 75, 0 disables). A node
+  whose last heartbeat temperature is at or above the limit is `Hot`.
+  `Affinity` and `LeastInflight` do not send *new* sessions (misses, or a
+  session with no existing pin) to a hot node unless every candidate is hot;
+  an existing pinned session spills off a node that turned hot the same way
+  it spills off a busy one (ADR-006), provided a cooler candidate exists.
+- The limit is a runtime setting like the existing policy/spill/timeout ones
+  (`PUT /admin/gateway {"thermal_limit_c":...}`, `pbctl gateway set
+  thermal_limit=<c>`, ADR-008) and is not persisted across restarts.
+- New metrics: `phoneborg_node_runtime_gen_tokens_per_second` and
+  `phoneborg_node_runtime_prompt_tokens_per_second` (the self-test; not to be
+  confused with the gateway's existing `phoneborg_node_generation_tokens_per_second`,
+  which reflects only the last proxied request), and `phoneborg_node_hot`.
+  `pbctl nodes` shows a `TOK/S` column and flags hot nodes in `STATE`.
+
+**Trade-offs.** A self-test after every restart adds one short generation
+(well under a second of extra work, off the request path) before a node's
+speed is "measured"; until then it still routes correctly by falling back to
+the synthetic benchmark. Thermal-aware routing only looks at the last
+heartbeat, so a node can still take one new session in the few seconds before
+its next heartbeat reports it as hot: a soft protection, not a hard cutoff.
+Nodes with no readable thermal zone (e.g. redroid) are never marked hot,
+matching the existing gap in `phoneborg_node_temperature_celsius`.

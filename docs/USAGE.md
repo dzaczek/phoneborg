@@ -101,7 +101,14 @@ pbctl undrain <id>                  pbctl keys revoke <name>
 pbctl forget <id>                   pbctl stats
 pbctl gateway                       pbctl models
 pbctl gateway set policy=affinity|least_inflight spill=<n> timeout=<duration> auth=keys
+                                     thermal_limit=<celsius, 0 disables>
 ```
+
+`pbctl nodes` shows a `TOK/S` column: the phone's measured generation speed
+from its own self-test against llama-server (see
+[Gateway settings](#gateway-settings) below for how this drives routing). A
+node whose last heartbeat temperature is at or above the thermal limit shows
+`HOT` next to its state and gets no new sessions.
 
 ## API keys
 
@@ -165,11 +172,18 @@ pbctl gateway                                    # current settings
 pbctl gateway set policy=least_inflight          # plain load balancing
 pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 extra requests
 pbctl gateway set timeout=900s                   # applies to requests that start afterwards
+pbctl gateway set thermal_limit=70               # phones at/above 70°C get no new sessions
 ```
 
 Changes apply at once and are not saved. After a restart, the controller
 uses its flags again (`-upstream-timeout`; the policy is `affinity` with
-`spill=2`).
+`spill=2`; the thermal limit is `-thermal-limit-c`, default 75°C).
+
+A node at or above the thermal limit is routed around: it gets no new
+sessions unless every ready phone is that hot, and a phone that heats up
+mid-session loses its pinned sessions to a cooler one, the same way a busy
+phone does. Set `thermal_limit=0` to disable this. See ADR-010 in
+[DECISIONS.md](DECISIONS.md).
 
 ## Usage statistics
 
@@ -198,8 +212,10 @@ disconnected clients (499).
 
 `make cluster-up` provisions Grafana on http://localhost:3000 with the
 PhoneBorg dashboard. It shows cluster health, latency, tokens/s, cache hit
-ratio and token usage per API key over any time range. The Administration row
-shows drained nodes and admin API calls (`phoneborg_admin_actions_total`). If
-`result="unauthorized"` goes up, someone is trying wrong admin tokens.
+ratio and token usage per API key over any time range. The Nodes row includes
+each phone's self-test tok/s and which phones are currently hot (routed
+around, ADR-010). The Administration row shows drained nodes and admin API
+calls (`phoneborg_admin_actions_total`). If `result="unauthorized"` goes up,
+someone is trying wrong admin tokens.
 Prometheus keeps its data only for its retention period. For totals over a
 longer time, use `pbctl stats` with `-state-dir`.

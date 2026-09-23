@@ -52,6 +52,11 @@ Prometheus and Grafana.
     3 s instead of ~2 min.
   - **Failover.** Failed attempts are retried on another phone. Requests stuck
     on a frozen phone are cancelled and re-routed.
+  - **Speed- and thermal-aware routing.** New sessions go to the phone with
+    the fastest *measured* llama.cpp generation speed (a self-test against its
+    own llama-server), not just a synthetic CPU benchmark. Phones at or above
+    a configurable temperature stop receiving new sessions until they cool
+    down.
   - **API keys** (optional), with per-key usage metrics. Keys are stored as
     SHA-256 hashes and can be created and revoked at runtime.
 - **Cluster management.** A token-protected admin API (`/admin/`) and the
@@ -149,13 +154,14 @@ Done in this proof of concept:
 - [x] Registration, inventory, benchmarks, heartbeats, metrics, dashboard
 - [x] Single-phone LLM serving behind a cluster-wide gateway
 - [x] Failover, session affinity, per-key usage metrics
+- [x] Thermal-aware scheduling; routing by measured llama.cpp speed, not just
+      the synthetic benchmark
 
 Next:
 
 - [ ] Validate on real phones: long runs with the screen off, thermals, vendor ROMs
 - [ ] Android foreground service (Kotlin), survives reboots
 - [ ] gRPC + mTLS transport; Wi-Fi nodes alongside USB
-- [ ] Thermal-aware scheduling and llama-bench-based capability scores
 - [ ] Distributed inference: split one model across phones
 
 Design decisions and trade-offs: [docs/DECISIONS.md](docs/DECISIONS.md).
