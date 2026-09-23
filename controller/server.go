@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"math"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,6 +38,10 @@ type Server struct {
 	settingsMu sync.Mutex // serialises gateway settings changes
 	policy     string
 
+	// thermalLimitC holds a float64 (math.Float64bits), read on every routing
+	// decision; 0 disables thermal-aware routing (ADR-010).
+	thermalLimitC atomic.Uint64
+
 	adminEnabled   bool
 	adminTokenHash [sha256.Size]byte
 	mAdmin         *prometheus.CounterVec
@@ -48,6 +54,9 @@ type GatewayOptions struct {
 	Keys        *gateway.StaticKeys
 	Usage       *Usage // nil = in-memory usage since start
 	BackendHost string // host that reaches nodes' advertised ports (adb forward runs there)
+	// ThermalLimitC marks a node hot when its last heartbeat temperature is
+	// at or above this; 0 disables thermal-aware routing (ADR-010).
+	ThermalLimitC float64
 	gateway.Config
 }
 
@@ -82,24 +91,46 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 			Name: "phoneborg_node_state_transitions_total", Help: "Node state transitions."}, []string{"from", "to"}),
 		promReg: prometheus.NewRegistry(),
 	}
+	s.thermalLimitC.Store(math.Float64bits(gwOpts.ThermalLimitC))
 	reg.onTransition = func(_ string, from, to proto.NodeState) {
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
 	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin,
-		&nodeCollector{reg: reg}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	s.affinity = gateway.NewAffinity(s.promReg)
 	s.gw = gateway.New(gwOpts.Keys, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()
-		return Backends(nodes, drained, gwOpts.BackendHost)
+		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC())
 	}, gwOpts.Config, s.promReg, log)
 	return s
 }
 
+// ThermalLimitC returns the current thermal-routing limit in Celsius; 0
+// disables it (ADR-010).
+func (s *Server) ThermalLimitC() float64 { return math.Float64frombits(s.thermalLimitC.Load()) }
+
+// SetThermalLimitC changes the thermal-routing limit at runtime (PUT
+// /admin/gateway, ADR-010).
+func (s *Server) SetThermalLimitC(c float64) { s.thermalLimitC.Store(math.Float64bits(c)) }
+
 // Backends lists nodes that can take inference traffic: ACTIVE with a ready
 // runtime that advertises a port. Drained nodes are included but marked, so
 // their in-flight requests are not reaped.
-func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string) []gateway.Backend {
+//
+// Speed favors measured generation speed (RuntimeStatus.GenTPS, real
+// llama.cpp tokens/s from the node's self-test) over the synthetic startup
+// benchmark (Benchmark.CPUGFLOPS, an arbitrary score from a Go microbenchmark
+// with no fixed relationship to tokens/s): the two units are not comparable,
+// so once any candidate reports a measured speed, nodes that have not yet
+// measured theirs get Speed 0 rather than being compared on the wrong scale
+// (ADR-010).
+//
+// thermalLimitC marks a node Hot when its last heartbeat temperature is at or
+// above it; 0 disables thermal marking.
+func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, thermalLimitC float64) []gateway.Backend {
 	var out []gateway.Backend
+	var measured []bool
+	anyMeasured := false
 	for _, n := range nodes {
 		hb := n.LastHeartbeat
 		if n.State != proto.StateActive || hb == nil || hb.Runtime == nil || !hb.Runtime.Ready || hb.Runtime.AdvertisePort == 0 {
@@ -109,12 +140,29 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string) [
 		if host == "" {
 			host = defaultHost
 		}
-		b := gateway.Backend{NodeID: n.ID, Model: hb.Runtime.Model, Drained: drained[n.ID],
-			URL: fmt.Sprintf("http://%s:%d", host, hb.Runtime.AdvertisePort)}
-		if n.Benchmark != nil {
+		b := gateway.Backend{
+			NodeID:  n.ID,
+			Model:   hb.Runtime.Model,
+			Drained: drained[n.ID],
+			URL:     fmt.Sprintf("http://%s:%d", host, hb.Runtime.AdvertisePort),
+			Hot:     thermalLimitC > 0 && hb.TemperatureC != nil && *hb.TemperatureC >= thermalLimitC,
+		}
+		gotMeasured := hb.Runtime.GenTPS > 0
+		if gotMeasured {
+			b.Speed = hb.Runtime.GenTPS
+			anyMeasured = true
+		} else if n.Benchmark != nil {
 			b.Speed = n.Benchmark.CPUGFLOPS
 		}
 		out = append(out, b)
+		measured = append(measured, gotMeasured)
+	}
+	if anyMeasured {
+		for i := range out {
+			if !measured[i] {
+				out[i].Speed = 0
+			}
+		}
 	}
 	return out
 }
@@ -212,28 +260,35 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 // nodeCollector exports per-node gauges from a registry snapshot at scrape
 // time, so removed/renamed nodes never leave stale series behind.
-type nodeCollector struct{ reg *Registry }
+type nodeCollector struct {
+	reg *Registry
+	// thermalLimitC returns the current thermal-routing limit (ADR-010).
+	thermalLimitC func() float64
+}
 
 var (
-	descNodes           = prometheus.NewDesc("phoneborg_nodes", "Nodes by state.", []string{"state"}, nil)
-	descUp              = prometheus.NewDesc("phoneborg_node_up", "1 if node is ACTIVE.", []string{"node_id", "model"}, nil)
-	descRAMTotal        = prometheus.NewDesc("phoneborg_node_ram_total_bytes", "Usable RAM.", []string{"node_id"}, nil)
-	descRAMAvail        = prometheus.NewDesc("phoneborg_node_ram_available_bytes", "Available RAM at last heartbeat.", []string{"node_id"}, nil)
-	descCores           = prometheus.NewDesc("phoneborg_node_cpu_cores", "Effective CPU cores.", []string{"node_id"}, nil)
-	descGFLOPS          = prometheus.NewDesc("phoneborg_node_benchmark_cpu_gflops", "Benchmark CPU score.", []string{"node_id", "kind"}, nil)
-	descMemBW           = prometheus.NewDesc("phoneborg_node_benchmark_mem_bandwidth_gbps", "Benchmark memory bandwidth.", []string{"node_id", "kind"}, nil)
-	descLoad            = prometheus.NewDesc("phoneborg_node_load1", "1-minute load average.", []string{"node_id"}, nil)
-	descTemp            = prometheus.NewDesc("phoneborg_node_temperature_celsius", "Hottest readable sensor.", []string{"node_id"}, nil)
-	descBattery         = prometheus.NewDesc("phoneborg_node_battery_level_percent", "Battery level.", []string{"node_id"}, nil)
-	descRuntimeReady    = prometheus.NewDesc("phoneborg_node_runtime_ready", "1 if the node's inference server is ready.", []string{"node_id", "model"}, nil)
-	descRuntimeRestarts = prometheus.NewDesc("phoneborg_node_runtime_restarts", "Inference server restarts since agent start.", []string{"node_id"}, nil)
-	descRuntimeThreads  = prometheus.NewDesc("phoneborg_node_runtime_threads", "Inference threads, labelled with the engine build.", []string{"node_id", "engine"}, nil)
-	descHeartbeatAge    = prometheus.NewDesc("phoneborg_node_last_seen_age_seconds", "Seconds since last message from node.", []string{"node_id"}, nil)
-	descDrained         = prometheus.NewDesc("phoneborg_node_drained", "1 if the node is drained (no new inference requests).", []string{"node_id"}, nil)
+	descNodes            = prometheus.NewDesc("phoneborg_nodes", "Nodes by state.", []string{"state"}, nil)
+	descUp               = prometheus.NewDesc("phoneborg_node_up", "1 if node is ACTIVE.", []string{"node_id", "model"}, nil)
+	descRAMTotal         = prometheus.NewDesc("phoneborg_node_ram_total_bytes", "Usable RAM.", []string{"node_id"}, nil)
+	descRAMAvail         = prometheus.NewDesc("phoneborg_node_ram_available_bytes", "Available RAM at last heartbeat.", []string{"node_id"}, nil)
+	descCores            = prometheus.NewDesc("phoneborg_node_cpu_cores", "Effective CPU cores.", []string{"node_id"}, nil)
+	descGFLOPS           = prometheus.NewDesc("phoneborg_node_benchmark_cpu_gflops", "Benchmark CPU score.", []string{"node_id", "kind"}, nil)
+	descMemBW            = prometheus.NewDesc("phoneborg_node_benchmark_mem_bandwidth_gbps", "Benchmark memory bandwidth.", []string{"node_id", "kind"}, nil)
+	descLoad             = prometheus.NewDesc("phoneborg_node_load1", "1-minute load average.", []string{"node_id"}, nil)
+	descTemp             = prometheus.NewDesc("phoneborg_node_temperature_celsius", "Hottest readable sensor.", []string{"node_id"}, nil)
+	descBattery          = prometheus.NewDesc("phoneborg_node_battery_level_percent", "Battery level.", []string{"node_id"}, nil)
+	descRuntimeReady     = prometheus.NewDesc("phoneborg_node_runtime_ready", "1 if the node's inference server is ready.", []string{"node_id", "model"}, nil)
+	descRuntimeRestarts  = prometheus.NewDesc("phoneborg_node_runtime_restarts", "Inference server restarts since agent start.", []string{"node_id"}, nil)
+	descRuntimeThreads   = prometheus.NewDesc("phoneborg_node_runtime_threads", "Inference threads, labelled with the engine build.", []string{"node_id", "engine"}, nil)
+	descRuntimeGenTPS    = prometheus.NewDesc("phoneborg_node_runtime_gen_tokens_per_second", "Generation speed from the node's self-test against its own llama-server (ADR-010). Not to be confused with phoneborg_node_generation_tokens_per_second, the gateway's last proxied request.", []string{"node_id"}, nil)
+	descRuntimePromptTPS = prometheus.NewDesc("phoneborg_node_runtime_prompt_tokens_per_second", "Prompt processing speed from the node's self-test against its own llama-server (ADR-010).", []string{"node_id"}, nil)
+	descHeartbeatAge     = prometheus.NewDesc("phoneborg_node_last_seen_age_seconds", "Seconds since last message from node.", []string{"node_id"}, nil)
+	descDrained          = prometheus.NewDesc("phoneborg_node_drained", "1 if the node is drained (no new inference requests).", []string{"node_id"}, nil)
+	descHot              = prometheus.NewDesc("phoneborg_node_hot", "1 if the node's last heartbeat temperature is at or above -thermal-limit-c.", []string{"node_id"}, nil)
 )
 
 func (c *nodeCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{descNodes, descUp, descRAMTotal, descRAMAvail, descCores, descGFLOPS, descMemBW, descLoad, descTemp, descBattery, descHeartbeatAge, descRuntimeReady, descRuntimeRestarts, descRuntimeThreads, descDrained} {
+	for _, d := range []*prometheus.Desc{descNodes, descUp, descRAMTotal, descRAMAvail, descCores, descGFLOPS, descMemBW, descLoad, descTemp, descBattery, descHeartbeatAge, descRuntimeReady, descRuntimeRestarts, descRuntimeThreads, descRuntimeGenTPS, descRuntimePromptTPS, descDrained, descHot} {
 		ch <- d
 	}
 }
@@ -264,6 +319,11 @@ func (c *nodeCollector) Collect(ch chan<- prometheus.Metric) {
 		if hb := n.LastHeartbeat; hb != nil {
 			ch <- prometheus.MustNewConstMetric(descRAMAvail, g, float64(hb.RAMAvailBytes), n.ID)
 			ch <- prometheus.MustNewConstMetric(descLoad, g, hb.Load1, n.ID)
+			hot := 0.0
+			if limit := c.thermalLimitC(); limit > 0 && hb.TemperatureC != nil && *hb.TemperatureC >= limit {
+				hot = 1
+			}
+			ch <- prometheus.MustNewConstMetric(descHot, g, hot, n.ID)
 			if hb.TemperatureC != nil {
 				ch <- prometheus.MustNewConstMetric(descTemp, g, *hb.TemperatureC, n.ID)
 			}
@@ -278,6 +338,12 @@ func (c *nodeCollector) Collect(ch chan<- prometheus.Metric) {
 				ch <- prometheus.MustNewConstMetric(descRuntimeReady, g, ready, n.ID, rt.Model)
 				ch <- prometheus.MustNewConstMetric(descRuntimeRestarts, g, float64(rt.Restarts), n.ID)
 				ch <- prometheus.MustNewConstMetric(descRuntimeThreads, g, float64(rt.Threads), n.ID, rt.Engine)
+				if rt.GenTPS > 0 {
+					ch <- prometheus.MustNewConstMetric(descRuntimeGenTPS, g, rt.GenTPS, n.ID)
+				}
+				if rt.PromptTPS > 0 {
+					ch <- prometheus.MustNewConstMetric(descRuntimePromptTPS, g, rt.PromptTPS, n.ID)
+				}
 			}
 		}
 	}

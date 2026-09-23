@@ -33,6 +33,7 @@ func main() {
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token; empty = admin API disabled")
 	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json); empty = keep usage in memory only")
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
+	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -78,10 +79,11 @@ func main() {
 
 	reg := controller.NewRegistry(time.Duration(*suspect)**hb, time.Duration(*offline)**hb, log)
 	srv := controller.NewServer(reg, *hb, controller.GatewayOptions{
-		Keys:        keys,
-		Usage:       usage,
-		BackendHost: *backendHost,
-		Config:      gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
+		Keys:          keys,
+		Usage:         usage,
+		BackendHost:   *backendHost,
+		ThermalLimitC: *thermalLimit,
+		Config:        gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
 	}, admin, log)
 
 	go func() {

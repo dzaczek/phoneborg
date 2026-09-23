@@ -116,6 +116,78 @@ func TestAffinityExpiresKeys(t *testing.T) {
 	}
 }
 
+func TestAffinityNewSessionAvoidsHotNode(t *testing.T) {
+	c := []Backend{{NodeID: "hot", Hot: true}, {NodeID: "cool"}}
+	for i := 0; i < 5; i++ { // regardless of rotation
+		p := NewAffinity(prometheus.NewRegistry())
+		p.rr.Store(uint64(i))
+		if got := p.Pick(Request{AffinityKey: "s"}, c, idle); got.NodeID != "cool" {
+			t.Fatalf("new session went to %s", got.NodeID)
+		}
+	}
+}
+
+func TestAffinityUsesHotNodeWhenAllHot(t *testing.T) {
+	c := []Backend{{NodeID: "a", Hot: true}, {NodeID: "b", Hot: true}}
+	p := NewAffinity(prometheus.NewRegistry())
+	got := p.Pick(Request{AffinityKey: "s"}, c, idle)
+	if got.NodeID != "a" && got.NodeID != "b" {
+		t.Fatalf("pick = %+v", got)
+	}
+}
+
+func TestAffinitySpillsWhenPinnedNodeTurnsHot(t *testing.T) {
+	p := NewAffinity(prometheus.NewRegistry())
+	c := []Backend{{NodeID: "a"}, {NodeID: "b"}}
+	pinned := p.Pick(Request{AffinityKey: "s"}, c, idle).NodeID
+	other := map[string]string{"a": "b", "b": "a"}[pinned]
+
+	hot := make([]Backend, len(c))
+	for i, b := range c {
+		hot[i] = b
+		if b.NodeID == pinned {
+			hot[i].Hot = true
+		}
+	}
+	if got := p.Pick(Request{AffinityKey: "s"}, hot, idle); got.NodeID != other {
+		t.Fatalf("pinned node turned hot: picked %s, want %s", got.NodeID, other)
+	}
+	// Re-pinned to the cooler node; a session does not spill off it just for
+	// being the only candidate when every node is hot again.
+	if got := p.Pick(Request{AffinityKey: "s"}, []Backend{{NodeID: pinned, Hot: true}, {NodeID: other, Hot: true}}, idle); got.NodeID != other {
+		t.Fatalf("all hot: picked %s, want re-pinned %s", got.NodeID, other)
+	}
+}
+
+func TestAffinityKeepsPinOnHotNodeWhenNoCoolerCandidate(t *testing.T) {
+	p := NewAffinity(prometheus.NewRegistry())
+	single := []Backend{{NodeID: "only"}}
+	pinned := p.Pick(Request{AffinityKey: "s"}, single, idle).NodeID
+	hot := []Backend{{NodeID: "only", Hot: true}}
+	if got := p.Pick(Request{AffinityKey: "s"}, hot, idle); got.NodeID != pinned {
+		t.Fatalf("spilled with no cooler candidate available: %s", got.NodeID)
+	}
+}
+
+func TestLeastInflightAvoidsHotNode(t *testing.T) {
+	p := &LeastInflight{}
+	c := []Backend{{NodeID: "hot", Hot: true}, {NodeID: "cool"}}
+	for i := 0; i < 5; i++ {
+		if got := p.Pick(Request{}, c, idle); got.NodeID != "cool" {
+			t.Fatalf("pick %d went to %s", i, got.NodeID)
+		}
+	}
+}
+
+func TestLeastInflightUsesHotNodeWhenAllHot(t *testing.T) {
+	p := &LeastInflight{}
+	c := []Backend{{NodeID: "a", Hot: true}, {NodeID: "b", Hot: true}}
+	got := p.Pick(Request{}, c, idle)
+	if got.NodeID != "a" && got.NodeID != "b" {
+		t.Fatalf("pick = %+v", got)
+	}
+}
+
 func TestAffinityKey(t *testing.T) {
 	key := func(body string) string {
 		var m requestMeta

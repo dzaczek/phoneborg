@@ -260,11 +260,13 @@ func TestAdminGatewaySettings(t *testing.T) {
 		`{"policy":"least_inflight","upstream_timeout":"x"}`, // all-or-nothing
 		`{"polcy":"affinity"}`,
 		`{"auth_mode":"maybe"}`,
+		`{"thermal_limit_c":-1}`,
+		`{"thermal_limit_c":151}`,
 	} {
 		e.admin(http.MethodPut, "/admin/gateway", bad, http.StatusBadRequest, nil)
 	}
 	e.admin(http.MethodGet, "/admin/gateway", "", 200, &gs)
-	if gs.Policy != "affinity" || gs.UpstreamTimeout != "5s" {
+	if gs.Policy != "affinity" || gs.UpstreamTimeout != "5s" || gs.ThermalLimitC != 0 {
 		t.Fatalf("rejected update changed settings: %+v", gs)
 	}
 	e.admin(http.MethodPut, "/admin/gateway", `{"policy":"least_inflight","affinity_spill":3,"upstream_timeout":"10m"}`, 200, &gs)
@@ -273,6 +275,37 @@ func TestAdminGatewaySettings(t *testing.T) {
 	}
 	if _, ok := e.srv.gw.Picker().(*gateway.LeastInflight); !ok || e.srv.gw.UpstreamTimeout() != 10*time.Minute {
 		t.Fatal("settings not applied to the gateway")
+	}
+
+	e.admin(http.MethodPut, "/admin/gateway", `{"thermal_limit_c":60}`, 200, &gs)
+	if gs.ThermalLimitC != 60 || e.srv.ThermalLimitC() != 60 {
+		t.Fatalf("thermal limit not applied: %+v", gs)
+	}
+	e.admin(http.MethodPut, "/admin/gateway", `{"thermal_limit_c":0}`, 200, &gs)
+	if gs.ThermalLimitC != 0 {
+		t.Fatalf("thermal limit not disabled: %+v", gs)
+	}
+}
+
+func TestAdminNodesReportsHot(t *testing.T) {
+	e := newEnv(t, testToken, nil, "a")
+	e.admin(http.MethodPut, "/admin/gateway", `{"thermal_limit_c":75}`, 200, nil)
+	var nodes []AdminNode
+	e.admin(http.MethodGet, "/admin/nodes", "", 200, &nodes)
+	if len(nodes) != 1 || nodes[0].Hot {
+		t.Fatalf("no heartbeat temperature: nodes = %+v", nodes)
+	}
+	hot := 80.0
+	if err := e.reg.Heartbeat(proto.Heartbeat{NodeID: "a", TemperatureC: &hot,
+		Runtime: &proto.RuntimeStatus{Model: "m", Ready: true, AdvertisePort: 4000}}); err != nil {
+		t.Fatal(err)
+	}
+	e.admin(http.MethodGet, "/admin/nodes", "", 200, &nodes)
+	if !nodes[0].Hot {
+		t.Fatalf("expected node above thermal limit to be hot: %+v", nodes[0])
+	}
+	if m := e.do(http.MethodGet, "/metrics", "", "").Body.String(); !strings.Contains(m, `phoneborg_node_hot{node_id="a"} 1`) {
+		t.Fatal("hot metric missing or wrong")
 	}
 }
 

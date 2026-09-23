@@ -13,10 +13,13 @@ type Backend struct {
 	NodeID string
 	Model  string
 	URL    string  // e.g. http://host.docker.internal:40123
-	Speed  float64 // relative node speed (benchmark score); higher is faster, 0 = unknown
+	Speed  float64 // relative node speed; higher is faster, 0 = unknown (see controller.Backends, ADR-010)
 	// Drained nodes get no new requests; requests already running on them
 	// finish (they are not reaped).
 	Drained bool
+	// Hot nodes (last heartbeat temperature at/above -thermal-limit-c) get no
+	// new sessions unless every candidate is hot (ADR-010).
+	Hot bool
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies
@@ -34,11 +37,38 @@ type Picker interface {
 }
 
 // LeastInflight picks the backend with the fewest in-flight requests,
-// rotating among ties so idle nodes share load evenly.
+// rotating among ties so idle nodes share load evenly. Hot candidates are
+// avoided unless every one is hot (ADR-010).
 type LeastInflight struct{ rr atomic.Uint64 }
 
 func (p *LeastInflight) Pick(_ Request, c []Backend, inflight func(string) int) Backend {
+	c = nonHot(c)
 	return leastBy(c, int(p.rr.Add(1)%uint64(len(c))), func(b Backend) (int, int) { return inflight(b.NodeID), 0 })
+}
+
+// nonHot returns the candidates that are not overheating, or all of them if
+// every one is: a hot phone is still better than no phone.
+func nonHot(c []Backend) []Backend {
+	out := make([]Backend, 0, len(c))
+	for _, b := range c {
+		if !b.Hot {
+			out = append(out, b)
+		}
+	}
+	if len(out) == 0 {
+		return c
+	}
+	return out
+}
+
+// anyNonHot reports whether at least one candidate is not overheating.
+func anyNonHot(c []Backend) bool {
+	for _, b := range c {
+		if !b.Hot {
+			return true
+		}
+	}
+	return false
 }
 
 // leastBy returns the candidate with the smallest (primary, secondary) score,
@@ -65,7 +95,10 @@ func leastBy(c []Backend, start int, score func(Backend) (int, int)) Backend {
 // minutes, so it should land on the quickest idle phone, and one large session
 // should not evict another's cache on a single-slot node. Small prompts (e.g.
 // opencode's title request) are cheap to recompute and are not protected. A pinned node that is Spill requests
-// busier than the least busy candidate is skipped and the key re-pinned.
+// busier than the least busy candidate is skipped and the key re-pinned. A
+// pinned node that has become hot is skipped the same way, provided a cooler
+// candidate exists (ADR-010); new sessions never land on a hot node unless
+// every candidate is hot.
 type Affinity struct {
 	TTL         time.Duration // forget keys unused for this long
 	MaxKeys     int
@@ -115,7 +148,8 @@ func (a *Affinity) Pick(req Request, c []Backend, inflight func(string) int) Bac
 		}
 	}
 	fresh := func() Backend {
-		return leastBy(c, int(a.rr.Add(1)%uint64(len(c))), func(b Backend) (int, int) {
+		cands := nonHot(c)
+		return leastBy(cands, int(a.rr.Add(1)%uint64(len(cands))), func(b Backend) (int, int) {
 			return inflight(b.NodeID), sessions[b.NodeID]
 		})
 	}
@@ -131,8 +165,9 @@ func (a *Affinity) Pick(req Request, c []Backend, inflight func(string) int) Bac
 		for _, b := range c[1:] {
 			minInflight = min(minInflight, inflight(b.NodeID))
 		}
+		coolerExists := anyNonHot(c)
 		for _, b := range c {
-			if b.NodeID == p.node && inflight(b.NodeID)-minInflight < a.Spill {
+			if b.NodeID == p.node && !(b.Hot && coolerExists) && inflight(b.NodeID)-minInflight < a.Spill {
 				p.last = now
 				a.decisions.WithLabelValues("hit").Inc()
 				return b

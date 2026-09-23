@@ -66,6 +66,9 @@ type AdminNode struct {
 	Drained        bool `json:"drained"`
 	Inflight       int  `json:"inflight"`
 	PinnedSessions int  `json:"pinned_sessions"`
+	// Hot is true when the node's last heartbeat temperature is at or above
+	// the current thermal limit (ADR-010); it then gets no new sessions.
+	Hot bool `json:"hot"`
 }
 
 // AdminKey is one API key owner as returned by GET /admin/keys.
@@ -95,18 +98,20 @@ type CreatedKey struct {
 
 // GatewaySettings are the gateway's runtime settings (GET/PUT /admin/gateway).
 type GatewaySettings struct {
-	Policy          string `json:"policy"`
-	AffinitySpill   int    `json:"affinity_spill"`
-	UpstreamTimeout string `json:"upstream_timeout"`
-	AuthMode        string `json:"auth_mode"`
+	Policy          string  `json:"policy"`
+	AffinitySpill   int     `json:"affinity_spill"`
+	UpstreamTimeout string  `json:"upstream_timeout"`
+	AuthMode        string  `json:"auth_mode"`
+	ThermalLimitC   float64 `json:"thermal_limit_c"`
 }
 
 // GatewayUpdate is the body of PUT /admin/gateway; nil fields are unchanged.
 type GatewayUpdate struct {
-	Policy          *string `json:"policy,omitempty"`
-	AffinitySpill   *int    `json:"affinity_spill,omitempty"`
-	UpstreamTimeout *string `json:"upstream_timeout,omitempty"`
-	AuthMode        *string `json:"auth_mode,omitempty"`
+	Policy          *string  `json:"policy,omitempty"`
+	AffinitySpill   *int     `json:"affinity_spill,omitempty"`
+	UpstreamTimeout *string  `json:"upstream_timeout,omitempty"`
+	AuthMode        *string  `json:"auth_mode,omitempty"`
+	ThermalLimitC   *float64 `json:"thermal_limit_c,omitempty"`
 }
 
 // ClusterSummary is part of GET /admin/stats.
@@ -204,9 +209,11 @@ func (s *Server) audit(r *http.Request, action string, err error, attrs ...any) 
 func (s *Server) adminNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, drained := s.reg.View()
 	inflight, pins := s.gw.Inflight(), s.affinity.Pins()
+	limit := s.ThermalLimitC()
 	out := make([]AdminNode, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, AdminNode{Node: n, Drained: drained[n.ID], Inflight: inflight[n.ID], PinnedSessions: pins[n.ID]})
+		hot := limit > 0 && n.LastHeartbeat != nil && n.LastHeartbeat.TemperatureC != nil && *n.LastHeartbeat.TemperatureC >= limit
+		out = append(out, AdminNode{Node: n, Drained: drained[n.ID], Inflight: inflight[n.ID], PinnedSessions: pins[n.ID], Hot: hot})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -339,7 +346,7 @@ func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
 			c.Drained++
 		}
 	}
-	for _, b := range Backends(nodes, drained, "") {
+	for _, b := range Backends(nodes, drained, "", s.ThermalLimitC()) {
 		if !b.Drained {
 			c.ReadyBackends++
 			c.Models[b.Model]++
@@ -361,7 +368,7 @@ func (s *Server) gatewaySettings() GatewaySettings {
 	policy := s.policy
 	s.settingsMu.Unlock()
 	return GatewaySettings{Policy: policy, AffinitySpill: s.affinity.SpillThreshold(),
-		UpstreamTimeout: s.gw.UpstreamTimeout().String(), AuthMode: s.authMode()}
+		UpstreamTimeout: s.gw.UpstreamTimeout().String(), AuthMode: s.authMode(), ThermalLimitC: s.ThermalLimitC()}
 }
 
 func (s *Server) adminGateway(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +393,9 @@ func (s *Server) adminSetGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.AuthMode != nil {
 		attrs = append(attrs, "auth_mode", *u.AuthMode)
+	}
+	if u.ThermalLimitC != nil {
+		attrs = append(attrs, "thermal_limit_c", *u.ThermalLimitC)
 	}
 	s.audit(r, "gateway_set", err, attrs...)
 	if err != nil {
@@ -436,6 +446,9 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 			return http.StatusBadRequest, errors.New(`auth_mode must be "keys" or "open"`)
 		}
 	}
+	if u.ThermalLimitC != nil && (*u.ThermalLimitC < 0 || *u.ThermalLimitC > 150) {
+		return http.StatusBadRequest, errors.New("thermal_limit_c must be between 0 (disabled) and 150")
+	}
 	if picker != nil {
 		s.gw.SetPicker(picker)
 		s.policy = *u.Policy
@@ -445,6 +458,9 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 	}
 	if timeout > 0 {
 		s.gw.SetUpstreamTimeout(timeout)
+	}
+	if u.ThermalLimitC != nil {
+		s.SetThermalLimitC(*u.ThermalLimitC)
 	}
 	return 0, nil
 }
