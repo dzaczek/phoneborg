@@ -1,0 +1,57 @@
+# Dev cluster: controller + Prometheus + Grafana + emulated Android phones (redroid).
+# See docs/DEV_EMULATION.md. Phones are reached from the host via adb on
+# 127.0.0.1:5555/5556, exactly like network-adb to a real phone.
+name: phoneborg
+
+x-phone: &phone
+  image: ${REDROID_IMAGE:-redroid/redroid:12.0.0_64only-latest}
+  privileged: true # required by redroid (binder, mounts)
+  command: ["androidboot.redroid_gpu_mode=guest"]
+  restart: unless-stopped
+
+services:
+  controller:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.controller
+    # Nodes' inference servers are reached through adb forwards on the host
+    # running adb (this Mac), see ADR-006.
+    # Long timeout: agent clients (e.g. opencode) send 10k+ token prompts.
+    command: ["-backend-host", "host.docker.internal", "-upstream-timeout", "600s"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["${CONTROLLER_PORT:-18080}:18080"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    depends_on: [controller]
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    environment:
+      # Dev only: anonymous read access, admin/admin for editing.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/phoneborg.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+  # Low-end profile: the weakest phone we expect to use.
+  phone-low:
+    <<: *phone
+    mem_limit: ${PHONE_LOW_MEM:-2g}
+    cpus: ${PHONE_LOW_CPUS:-2}
+    ports: ["5555:5555"]
+
+  # Mid profile. Real target phones (8-12 GB) need a bigger colima VM,
+  # e.g. `colima start --memory 16` and PHONE_MID_MEM=8g.
+  phone-mid:
+    <<: *phone
+    mem_limit: ${PHONE_MID_MEM:-3g}
+    cpus: ${PHONE_MID_CPUS:-4}
+    ports: ["5556:5555"]
