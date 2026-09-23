@@ -2,9 +2,9 @@
 
 **Turn a drawer full of old Android phones into an AI inference cluster.**
 
-> **Status: proof of concept.** It works end to end on emulated phones and
-> has not yet been run on real phones. APIs, metrics and file layout
-> will change. Do not expose it to untrusted networks.
+> **Status: proof of concept.** It works end to end on emulated phones and has
+> run on a first real phone (Xiaomi Mi 8). APIs, metrics and file layout will
+> change. Do not expose it to untrusted networks.
 
 Plug phones into a Linux or macOS host over USB. PhoneBorg installs an agent on
 each phone over ADB. The phone benchmarks itself, joins the cluster and serves
@@ -89,23 +89,27 @@ Guides:
 - [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md): emulator setup
   (macOS/colima), load testing, API keys and opencode.
 
-## Measured on emulated phones
+## Measured
 
-| | 2-core / 2 GB | 4-core / 3 GB |
-|---|---|---|
-| Qwen2.5-0.5B Q4 generation | 74 tok/s | 132 tok/s |
-| Qwen2.5-0.5B Q4 prompt processing | 108 tok/s | 204 tok/s |
+Qwen2.5-0.5B-Instruct Q4_K_M:
+
+| | Xiaomi Mi 8 (real) | Emulated, 2 cores / 2 GB | Emulated, 4 cores / 3 GB |
+|---|---|---|---|
+| SoC | Snapdragon 845, LineageOS 22.2 | host (Apple M2) | host (Apple M2) |
+| Generation | ~15 tok/s | 74 tok/s | 132 tok/s |
+| Prompt processing | ~23–37 tok/s | 108 tok/s | 204 tok/s |
 
 - Freezing a phone under load: 0 failed requests out of 1138.
 - opencode, new session: 115 s. Follow-up turns: 3 s (99.9% prompt cache hits).
 
-Emulated phones run on the host's CPU cores, so expect real phones to be
-several times slower. See the limitations table in `docs/DEV_EMULATION.md`.
+Emulated phones run on the host's CPU cores and are far faster than real
+phones. See the limitations table in `docs/DEV_EMULATION.md`.
 
 ## Hardware target
 
 Any ARM64 Android phone with USB debugging. The llama.cpp build targets
-`armv8.2-a+dotprod` (Snapdragon 845 and newer).
+`armv8.2-a+dotprod` (Snapdragon 855 and newer). Older SoCs such as the
+Snapdragon 845 lack dotprod and need `make llama ARM_ARCH=armv8.2-a+fp16`.
 
 Preferred first-generation node: Snapdragon 865-class SoC, 8–12 GB RAM, USB-C.
 Examples: OnePlus 8 / 8 Pro, Xiaomi Mi 10, Snapdragon Galaxy S20. Use a powered

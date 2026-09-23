@@ -35,7 +35,7 @@ for S in "${SERIALS[@]}"; do
 
   # Preflight: CPU features and memory, discovered at runtime.
   if ! dsh "grep -qw asimddp /proc/cpuinfo && echo yes" | grep -q yes; then
-    fail "CPU lacks dotprod (asimddp); rebuild: make llama ARM_ARCH=armv8-a"; continue
+    fail "CPU lacks dotprod (asimddp); rebuild without dotprod: make llama ARM_ARCH=armv8.2-a+fp16 (or armv8-a)"; continue
   fi
   THREADS=$(dsh "n=\$(nproc); q=\$(cat /sys/fs/cgroup/cpu.max 2>/dev/null); set -- \$q; \
     if [ \"\$1\" != max ] && [ -n \"\$2\" ]; then c=\$(( (\$1 + \$2 - 1) / \$2 )); [ \$c -lt \$n ] && n=\$c; fi; echo \$n")

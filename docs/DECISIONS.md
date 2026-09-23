@@ -63,7 +63,9 @@ statically against musl in an Alpine arm64 container.
 **Trade-offs.** (2) is reproducible in Docker and runs on any arm64 Android,
 since it does not use bionic or `/system` libraries. It cannot use Android-only
 APIs (Vulkan/OpenCL GPU backends, NNAPI). musl malloc may be slower. The build
-targets `armv8.2-a+dotprod+fp16` (Cortex-A55/A75+, Snapdragon 845 and newer).
+targets `armv8.2-a+dotprod+fp16` (Snapdragon 855 and newer). The Snapdragon
+845 (Kryo 385) has FP16 but no dotprod; it crashed with SIGILL on this build
+and needs `ARM_ARCH=armv8.2-a+fp16`.
 The smoke test checks `/proc/cpuinfo` for `asimddp` before running.
 
 **Decision.** (2) for CPU-only smoke tests (`runtime/llama/Dockerfile`,

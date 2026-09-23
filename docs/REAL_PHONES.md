@@ -53,7 +53,8 @@ adb -s $S shell getprop ro.soc.model                # SoC (Android 12+; else ro.
 # CPU: must list arm64-v8a
 adb -s $S shell getprop ro.product.cpu.abilist
 # dotprod is required by the default llama.cpp build; i8mm makes prompts much faster
-adb -s $S shell 'grep -m1 -o -w asimddp /proc/cpuinfo || echo "NO dotprod: rebuild: make llama ARM_ARCH=armv8-a"'
+adb -s $S shell 'grep -m1 -o -w asimddp /proc/cpuinfo || echo "NO dotprod: see Troubleshooting (SIGILL)"'
+adb -s $S shell 'grep -m1 -i features /proc/cpuinfo'   # fphp/asimdhp = FP16, picks the fallback build
 adb -s $S shell 'grep -m1 -o -w i8mm /proc/cpuinfo || echo "no i8mm (ok)"'
 # Core clusters (big.LITTLE): count of cores per max frequency in kHz
 adb -s $S shell 'cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq | sort | uniq -c'
@@ -171,7 +172,7 @@ adb -s $S shell settings put global stay_on_while_plugged_in 0
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | `pcprov` fails with "unsupported ABI" | 32-bit phone | not supported |
-| smoke test fails with "CPU lacks dotprod" | SoC older than Snapdragon 845 | `make llama ARM_ARCH=armv8-a` (slower), then re-provision |
+| smoke test fails with "CPU lacks dotprod", or `agent.log` shows `signal: illegal instruction` | SoC without dotprod (Snapdragon 845 and older) | build without dotprod: `make llama ARM_ARCH=armv8.2-a+fp16` if `Features` lists `fphp asimdhp`, else `ARM_ARCH=armv8-a`; then re-provision |
 | node goes `SUSPECT` when the screen turns off | CPU sleeps | step 4 |
 | `phoneborg_node_runtime_restarts` keeps growing | llama-server is being killed (out of memory or vendor task killer) | smaller model or context; close apps; check `runtime.log` |
 | tokens/s drops after a few minutes | thermal throttling | cooling, no case, lower brightness; watch temperature in Grafana |
