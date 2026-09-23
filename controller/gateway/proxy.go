@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -25,14 +26,42 @@ import (
 type BackendSource func() []Backend
 
 type Config struct {
-	UpstreamTimeout time.Duration // whole request, including generation
+	UpstreamTimeout time.Duration // whole request, including generation; see SetUpstreamTimeout
 	MaxAttempts     int           // distinct backends tried per request
 	Cooldown        time.Duration // how long a failed backend is avoided
+	Usage           UsageRecorder // optional usage accounting
 }
+
+// UsageEvent is one outcome for usage accounting: a finished request, or a
+// failed attempt on a node (Code CodeUpstreamError) that may be retried.
+type UsageEvent struct {
+	Principal string
+	NodeID    string // empty when no node served the request
+	Model     string
+	Code      string // HTTP status, "aborted" or CodeUpstreamError
+
+	PromptTokens, CachedTokens, CompletionTokens int
+	GenTPS                                       float64 // generation tokens/s reported by the node, 0 = unknown
+}
+
+// CodeUpstreamError marks a failed attempt against a node. The client
+// request continues on another node, or ends with a separate 502 event.
+const CodeUpstreamError = "upstream_error"
+
+// UsageRecorder receives usage events. It is called on the request path, so
+// implementations must be fast and safe for concurrent use.
+type UsageRecorder interface {
+	Record(UsageEvent)
+}
+
+type noUsage struct{}
+
+func (noUsage) Record(UsageEvent) {}
 
 type Gateway struct {
 	auth     Authenticator
-	picker   Picker
+	picker   atomic.Pointer[Picker]
+	timeout  atomic.Int64 // upstream timeout, ns
 	backends BackendSource
 	cfg      Config
 	log      *slog.Logger
@@ -58,7 +87,7 @@ type Gateway struct {
 func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, reg prometheus.Registerer, log *slog.Logger) *Gateway {
 	buckets := []float64{.1, .25, .5, 1, 2, 5, 10, 20, 40, 80}
 	g := &Gateway{
-		auth: auth, picker: picker, backends: backends, cfg: cfg,
+		auth: auth, backends: backends, cfg: cfg,
 		log: log.With("component", "gateway"), now: time.Now,
 		client: &http.Client{Transport: &http.Transport{
 			DialContext:         (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
@@ -92,12 +121,54 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 		mPromptTPS: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "phoneborg_node_prompt_tokens_per_second", Help: "Prompt processing speed of the node's last request."}, []string{"node_id"}),
 	}
+	if g.cfg.Usage == nil {
+		g.cfg.Usage = noUsage{}
+	}
+	g.SetPicker(picker)
+	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
 	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "backends_failed"} {
 		g.mRejected.WithLabelValues(reason)
 	}
 	return g
+}
+
+// SetPicker switches the routing policy. Requests already routed are not
+// affected; safe to call while serving.
+func (g *Gateway) SetPicker(p Picker) { g.picker.Store(&p) }
+
+// Picker returns the current routing policy.
+func (g *Gateway) Picker() Picker { return *g.picker.Load() }
+
+// SetUpstreamTimeout changes the timeout of requests that start afterwards.
+func (g *Gateway) SetUpstreamTimeout(d time.Duration) { g.timeout.Store(int64(d)) }
+
+// UpstreamTimeout returns the timeout applied to new requests.
+func (g *Gateway) UpstreamTimeout() time.Duration { return time.Duration(g.timeout.Load()) }
+
+// Inflight returns the number of in-flight requests per node.
+func (g *Gateway) Inflight() map[string]int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[string]int, len(g.inflight))
+	for k, v := range g.inflight {
+		if v > 0 {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// routable returns the backends that may take new requests.
+func (g *Gateway) routable() []Backend {
+	var out []Backend
+	for _, b := range g.backends() {
+		if !b.Drained {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 func (g *Gateway) Register(mux *http.ServeMux) {
@@ -144,7 +215,7 @@ type attempt struct{ cancel context.CancelCauseFunc }
 // retried elsewhere instead of waiting for UpstreamTimeout. Call periodically.
 func (g *Gateway) Reap() {
 	live := map[string]bool{}
-	for _, b := range g.backends() {
+	for _, b := range g.backends() { // drained nodes stay live: their requests finish
 		live[b.NodeID] = true
 	}
 	g.mu.Lock()
@@ -202,17 +273,19 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var meta requestMeta
 	if err := json.Unmarshal(body, &meta); err != nil {
 		g.mRejected.WithLabelValues("bad_request").Inc()
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Code: "400"})
 		openAIError(w, http.StatusBadRequest, "invalid_request_error", "", "invalid JSON: "+err.Error())
 		return
 	}
 
-	all := g.backends()
+	all := g.routable()
 	if !hasModel(all, meta.Model) {
 		g.mRejected.WithLabelValues("model_not_found").Inc()
 		code, msg := http.StatusNotFound, fmt.Sprintf("model %q is not served by any ready node", meta.Model)
 		if len(all) == 0 {
 			code, msg = http.StatusServiceUnavailable, "no ready nodes"
 		}
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(code)})
 		openAIError(w, code, "invalid_request_error", "model_not_found", msg)
 		return
 	}
@@ -221,11 +294,11 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	for attempt := 1; attempt <= g.cfg.MaxAttempts; attempt++ {
 		// Re-read backends each attempt: nodes may have joined or left
 		// (e.g. reaped as SUSPECT) since the request arrived.
-		cands := g.candidates(g.backends(), meta.Model, tried)
+		cands := g.candidates(g.routable(), meta.Model, tried)
 		if len(cands) == 0 {
 			break
 		}
-		b := g.picker.Pick(Request{Model: meta.Model, AffinityKey: meta.affinityKey(), PromptBytes: len(body)}, cands, g.inflightOf)
+		b := g.Picker().Pick(Request{Model: meta.Model, AffinityKey: meta.affinityKey(), PromptBytes: len(body)}, cands, g.inflightOf)
 		tried[b.NodeID] = true
 		err := g.forward(w, r, b, body, meta.Stream, principal, reqID)
 		if err == nil {
@@ -233,12 +306,16 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		g.mUpstream.WithLabelValues(b.NodeID).Inc()
 		g.markDown(b.NodeID)
+		if errors.Is(err, errRetryable) { // otherwise forward already recorded the outcome
+			g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, NodeID: b.NodeID, Model: b.Model, Code: CodeUpstreamError})
+		}
 		log.Warn("backend failed", "node_id", b.NodeID, "attempt", attempt, "err", err)
 		if !errors.Is(err, errRetryable) {
 			return // response already started; nothing more we can do
 		}
 	}
 	g.mRejected.WithLabelValues("backends_failed").Inc()
+	g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusBadGateway)})
 	openAIError(w, http.StatusBadGateway, "server_error", "backends_failed", "all attempted nodes failed")
 }
 
@@ -252,7 +329,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	a := &attempt{cancel: cancelCause}
 	g.track(b.NodeID, a, true)
 	defer g.track(b.NodeID, a, false)
-	ctx, cancel := context.WithTimeout(cctx, g.cfg.UpstreamTimeout)
+	ctx, cancel := context.WithTimeout(cctx, g.UpstreamTimeout())
 	defer cancel()
 	up, err := http.NewRequestWithContext(ctx, http.MethodPost, b.URL+r.URL.Path, bytes.NewReader(body))
 	if err != nil {
@@ -264,6 +341,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	if err != nil {
 		if r.Context().Err() != nil {
 			g.mRequests.WithLabelValues(b.Model, b.NodeID, "499", p.Name).Inc()
+			g.cfg.Usage.Record(UsageEvent{Principal: p.Name, NodeID: b.NodeID, Model: b.Model, Code: "499"})
 			return nil // client went away
 		}
 		return fmt.Errorf("%w: %v", errRetryable, err)
@@ -322,8 +400,10 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	}
 	g.mRequests.WithLabelValues(b.Model, b.NodeID, code, p.Name).Inc()
 	g.mDuration.WithLabelValues(b.Model).Observe(g.now().Sub(start).Seconds())
+	ev := UsageEvent{Principal: p.Name, NodeID: b.NodeID, Model: b.Model, Code: code}
 	if resp.StatusCode == http.StatusOK {
 		if u, ok := parseUsage(tail.Bytes(), stream); ok {
+			ev.PromptTokens, ev.CachedTokens, ev.CompletionTokens, ev.GenTPS = u.PromptTokens, u.CachedTokens, u.CompletionTokens, u.GenTPS
 			g.mTokens.WithLabelValues(b.Model, b.NodeID, "prompt", p.Name).Add(float64(u.PromptTokens))
 			g.mTokens.WithLabelValues(b.Model, b.NodeID, "completion", p.Name).Add(float64(u.CompletionTokens))
 			g.mTokens.WithLabelValues(b.Model, b.NodeID, "prompt_cached", p.Name).Add(float64(u.CachedTokens))
@@ -335,6 +415,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 			}
 		}
 	}
+	g.cfg.Usage.Record(ev)
 	g.log.Info("request done", "request_id", reqID, "node_id", b.NodeID, "model", b.Model,
 		"principal", p.Name, "status", code, "stream", stream, "duration_ms", g.now().Sub(start).Milliseconds())
 	if copyErr != nil {
@@ -349,7 +430,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	seen := map[string]int{}
-	for _, b := range g.backends() {
+	for _, b := range g.routable() {
 		seen[b.Model]++
 	}
 	type model struct {
