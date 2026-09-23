@@ -112,6 +112,12 @@ ts("Benchmark CPU (synthetic)", [('phoneborg_node_benchmark_cpu_gflops', "{{node
 ts("Total RAM / cores", [('phoneborg_node_ram_total_bytes / 2^30', "{{node_id}} GiB"),
                          ('phoneborg_node_cpu_cores', "{{node_id}} cores")], 12, w=12, h=6)
 y[0] += 6
+ts("Self-test tok/s per node", [('phoneborg_node_runtime_gen_tokens_per_second', "{{node_id}} gen"),
+                                ('phoneborg_node_runtime_prompt_tokens_per_second', "{{node_id}} prompt")], 0, w=12, h=6,
+   desc="Measured against the node's own llama-server once it becomes ready and after each restart (ADR-010); this is the speed used for routing once any node reports it, unlike the synthetic benchmark above")
+ts("Hot nodes", [('phoneborg_node_hot', "{{node_id}}")], 12, w=12, h=6,
+   desc="1 = temperature at or above -thermal-limit-c: gets no new sessions unless every candidate node is hot (ADR-010; pbctl gateway set thermal_limit=<c>)")
+y[0] += 6
 
 row("Administration")
 ts("Drained nodes", [('phoneborg_node_drained', "{{node_id}}")], 0, w=12, h=6,

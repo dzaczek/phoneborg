@@ -48,7 +48,9 @@ func TestCommands(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{[]string{"nodes"}, []string{"NODE", "n1", "BENCHMARKING", "Xiaomi Mi 8"}},
+		{[]string{"nodes"}, []string{"NODE", "TOK/S", "n1", "BENCHMARKING", "Xiaomi Mi 8"}},
+		{[]string{"gateway", "set", "thermal_limit=60"}, []string{"thermal_limit", "60"}},
+		{[]string{"gateway"}, []string{"thermal_limit", "60"}},
 		{[]string{"drain", "n1"}, []string{"node n1 drained"}},
 		{[]string{"nodes"}, []string{"DRAINED"}},
 		{[]string{"undrain", "n1"}, []string{"node n1 undrained"}},
@@ -120,11 +122,11 @@ func TestTokenFileAndModels(t *testing.T) {
 }
 
 func TestParseGatewaySet(t *testing.T) {
-	u, err := parseGatewaySet([]string{"policy=affinity", "spill=3", "timeout=600s", "auth=keys"})
-	if err != nil || *u.Policy != "affinity" || *u.AffinitySpill != 3 || *u.UpstreamTimeout != "600s" || *u.AuthMode != "keys" {
+	u, err := parseGatewaySet([]string{"policy=affinity", "spill=3", "timeout=600s", "auth=keys", "thermal_limit=60"})
+	if err != nil || *u.Policy != "affinity" || *u.AffinitySpill != 3 || *u.UpstreamTimeout != "600s" || *u.AuthMode != "keys" || *u.ThermalLimitC != 60 {
 		t.Fatalf("%+v %v", u, err)
 	}
-	for _, bad := range [][]string{{"spill=x"}, {"policy"}, {"policy="}, {"color=red"}} {
+	for _, bad := range [][]string{{"spill=x"}, {"policy"}, {"policy="}, {"color=red"}, {"thermal_limit=hot"}} {
 		if _, err := parseGatewaySet(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}

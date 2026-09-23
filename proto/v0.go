@@ -77,6 +77,15 @@ type RuntimeStatus struct {
 	AdvertisePort int    `json:"advertise_port"`
 	Restarts      int64  `json:"restarts"`
 	Threads       int    `json:"threads"`
+	// GenTPS and PromptTPS come from a self-test the agent runs against its
+	// own llama-server once it becomes ready (and again after each restart):
+	// a fixed prompt, read from the response's `timings`. Zero means the
+	// self-test has not completed yet or failed (see ADR-010). Unlike
+	// Benchmark.CPUGFLOPS (a synthetic score measured before llama-server
+	// starts), these are real llama.cpp tokens/s.
+	GenTPS     float64   `json:"gen_tps,omitempty"`
+	PromptTPS  float64   `json:"prompt_tps,omitempty"`
+	SelfTestAt time.Time `json:"self_test_at,omitempty"`
 }
 
 type NodeState string
