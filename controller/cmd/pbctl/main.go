@@ -34,6 +34,7 @@ commands:
   gateway                     show gateway settings
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> auth=keys
+                              thermal_limit=<celsius, 0 disables>
   models                      list served models (/v1/models)
 
 environment:
@@ -166,8 +167,14 @@ func parseGatewaySet(kvs []string) (controller.GatewayUpdate, error) {
 			u.UpstreamTimeout = &v
 		case "auth":
 			u.AuthMode = &v
+		case "thermal_limit":
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return u, fmt.Errorf("thermal_limit: %w", err)
+			}
+			u.ThermalLimitC = &f
 		default:
-			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, auth)", k)
+			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, auth, thermal_limit)", k)
 		}
 	}
 	return u, nil
@@ -297,7 +304,7 @@ func nodes(c *client, o *out) error {
 	}
 	var rows [][]string
 	for _, n := range ns {
-		model, runtime, build := "-", "-", "-"
+		model, runtime, build, toks := "-", "-", "-", "-"
 		if hb := n.LastHeartbeat; hb != nil && hb.Runtime != nil {
 			rt := hb.Runtime
 			model, runtime = rt.Model, map[bool]string{true: "ready", false: "loading"}[rt.Ready]
@@ -305,15 +312,22 @@ func nodes(c *client, o *out) error {
 			if rt.Threads > 0 {
 				build += fmt.Sprintf(" %dt", rt.Threads)
 			}
+			if rt.GenTPS > 0 {
+				toks = fmt.Sprintf("%.1f", rt.GenTPS)
+			}
 		}
 		drained := "-"
 		if n.Drained {
 			drained = "DRAINED"
 		}
-		rows = append(rows, []string{n.ID, string(n.State), drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
-			model, runtime, build, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
+		state := string(n.State)
+		if n.Hot {
+			state += " HOT"
+		}
+		rows = append(rows, []string{n.ID, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
+			model, runtime, build, toks, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
 	}
-	o.table("NODE\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tINFLIGHT\tPINNED\tLAST SEEN", rows)
+	o.table("NODE\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tTOK/S\tINFLIGHT\tPINNED\tLAST SEEN", rows)
 	return nil
 }
 
@@ -447,9 +461,13 @@ func showGateway(o *out, raw []byte, err error) error {
 	if err := json.Unmarshal(raw, &g); err != nil {
 		return err
 	}
+	thermalLimit := "disabled"
+	if g.ThermalLimitC > 0 {
+		thermalLimit = fmt.Sprintf("%.1f", g.ThermalLimitC)
+	}
 	o.table("SETTING\tVALUE", [][]string{
 		{"policy", g.Policy}, {"spill", strconv.Itoa(g.AffinitySpill)},
-		{"timeout", g.UpstreamTimeout}, {"auth", g.AuthMode}})
+		{"timeout", g.UpstreamTimeout}, {"auth", g.AuthMode}, {"thermal_limit", thermalLimit}})
 	return nil
 }
 
