@@ -30,10 +30,13 @@ cluster-down:
 e2e:
 	bash tests/e2e/redroid_e2e.sh
 
-# Static arm64 llama.cpp for phones (ADR-005). Override: make llama LLAMA_TAG=bXXXX
+# Static arm64 llama.cpp for phones (ADR-005).
+# Override: make llama LLAMA_TAG=bXXXX, or ARM_ARCH=armv8-a for SoCs without dotprod.
 LLAMA_TAG ?= b11136
+ARM_ARCH ?= armv8.2-a+dotprod+fp16
 llama:
-	docker build --build-arg LLAMA_TAG=$(LLAMA_TAG) -f runtime/llama/Dockerfile -o type=local,dest=bin/llama runtime/llama
+	docker build --build-arg LLAMA_TAG=$(LLAMA_TAG) --build-arg ARM_ARCH=$(ARM_ARCH) \
+		-f runtime/llama/Dockerfile -o type=local,dest=bin/llama runtime/llama
 
 models/qwen2.5-0.5b-instruct-q4_k_m.gguf:
 	mkdir -p models
