@@ -28,6 +28,7 @@ func main() {
 	ctxSize := flag.Int("ctx-size", 2048, "llama-server context size")
 	threadsOverride := flag.Int("threads", 0, "llama-server thread count override (0 = choose automatically from CPU topology, see -threads-policy)")
 	threadsPolicy := flag.String("threads-policy", "all", `automatic thread selection when -threads=0: "all" (every allowed CPU, today's behavior) or "big" (only the highest-frequency CPU cluster)`)
+	runtimeVariant := flag.String("runtime-variant", "", "llama.cpp build variant (set by pcprov); reported as the engine name")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -57,7 +58,7 @@ func main() {
 			"allowed_cpus", allowedCPUs, "big_cores", bigCores)
 		runtime = nodeagent.NewRuntime(nodeagent.RuntimeConfig{
 			ServerBin: *llamaServer, ModelPath: *model, Port: *servePort, AdvertisePort: *advertisePort,
-			Threads: threads, CtxSize: *ctxSize,
+			Threads: threads, CtxSize: *ctxSize, Variant: *runtimeVariant,
 		}, log)
 	}
 	log.Info("node-agent starting", "version", version, "node_id", nodeID, "controller", *ctrl, "pid", os.Getpid())

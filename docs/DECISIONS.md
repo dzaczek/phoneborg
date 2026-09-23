@@ -110,3 +110,31 @@ on another node, and the failed node is avoided for 30 s. Requests in flight on
 a node that leaves the ready set (e.g. SUSPECT) are cancelled and retried
 elsewhere. Once response bytes have reached the client, a request cannot be
 retried.
+
+## ADR-007: pcprov selects the llama.cpp build from the phone's CPU features
+
+**Problem.** ADR-005's build targets `armv8.2-a+dotprod+fp16`. A real Xiaomi Mi
+8 (Snapdragon 845) turned out to lack dotprod (`asimddp`) entirely, so that
+build hits SIGILL on it; only `armv8.2-a+fp16` runs. Requiring the operator to
+pass `-llama-server bin/llama-<variant>/llama-server` by hand does not scale
+to a drawer of mixed phones.
+
+**Alternatives.** (1) Ship one lowest-common-denominator build (`armv8-a`,
+no dotprod/fp16) for every phone. (2) Build a few variants and pick the right
+one per phone automatically.
+
+**Trade-offs.** (1) is simplest but throws away real speedups on newer SoCs.
+(2) needs `make llama-all` (three Docker builds instead of one, a few extra
+minutes) and a bit of selection logic, but every phone gets the fastest build
+it can run without any manual flag.
+
+**Decision.** (2). `make llama-all` builds `armv8.2-a+dotprod+fp16`,
+`armv8.2-a+fp16` and `armv8-a` into `bin/llama/<ARM_ARCH>/`. During
+provisioning, `pcprov` reads `/proc/cpuinfo`'s `Features` line over adb and
+picks the fastest of these three variants whose CPU requirements are met and
+which was actually built, logging the choice; a phone matching none (missing
+build) gets a clear error naming its features and the available builds. The
+`-llama-server` flag becomes an explicit override that skips this selection.
+The chosen variant is passed to node-agent (`-runtime-variant`) and reported
+in heartbeats as `engine: "llama.cpp/<variant>"`, so Grafana/the dashboard can
+tell which build each phone runs.

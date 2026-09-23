@@ -33,7 +33,7 @@ connect_booted() { adb connect "$1" >/dev/null 2>&1; booted "$1"; }
 
 log "build"
 make -s agent pcprov "$MODEL"
-[ -x bin/llama/llama-server ] || make -s llama
+[ -x bin/llama/armv8.2-a+dotprod+fp16/llama-server ] || make -s llama
 
 log "start cluster"
 sh deploy/colima-binder.sh

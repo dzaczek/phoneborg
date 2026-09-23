@@ -16,7 +16,8 @@ type Options struct {
 	AgentBinary    string // local path to the android/arm64 node-agent
 	ControllerPort int    // host port exposed to the phone via adb reverse
 	AgentArgs      string // extra flags passed to node-agent
-	LlamaServer    string // local llama-server binary; with Model enables serving
+	LlamaServer    string // explicit llama-server binary override; skips auto-selection when set
+	LlamaDir       string // directory of ARM_ARCH variant subdirs (see ADR-007), used when LlamaServer is empty
 	Model          string // local .gguf to serve; empty = inventory/heartbeat only
 	ServePort      int    // on-device llama-server port
 }
@@ -97,10 +98,14 @@ func (p *Provisioner) Provision(ctx context.Context, serial string) error {
 // same size is already there), forwards the serving port and returns the
 // node-agent flags that enable serving.
 func (p *Provisioner) pushRuntime(ctx context.Context, serial string) (string, error) {
+	llamaServer, variant, err := p.selectLlamaServer(ctx, serial)
+	if err != nil {
+		return "", err
+	}
 	if _, err := p.ADB.Shell(ctx, serial, "mkdir -p "+RemoteDir+"/bin "+RemoteDir+"/models"); err != nil {
 		return "", err
 	}
-	if err := p.ADB.Push(ctx, serial, p.Opts.LlamaServer, RemoteDir+"/bin/llama-server"); err != nil {
+	if err := p.ADB.Push(ctx, serial, llamaServer, RemoteDir+"/bin/llama-server"); err != nil {
 		return "", err
 	}
 	remoteModel := RemoteDir + "/models/" + filepath.Base(p.Opts.Model)
@@ -126,8 +131,35 @@ func (p *Provisioner) pushRuntime(ctx context.Context, serial string) (string, e
 		return "", err
 	}
 	p.Log.Info("serving port forwarded", "serial", serial, "host_port", hostPort, "device_port", p.Opts.ServePort)
-	return fmt.Sprintf(" --llama-server bin/llama-server --model models/%s --serve-port %d --advertise-port %d",
-		filepath.Base(p.Opts.Model), p.Opts.ServePort, hostPort), nil
+	variantArg := ""
+	if variant != "" {
+		variantArg = " --runtime-variant " + variant
+	}
+	return fmt.Sprintf(" --llama-server bin/llama-server --model models/%s --serve-port %d --advertise-port %d%s",
+		filepath.Base(p.Opts.Model), p.Opts.ServePort, hostPort, variantArg), nil
+}
+
+// selectLlamaServer returns the local llama-server binary to push to serial
+// and the variant name to report to the controller. When Opts.LlamaServer is
+// set explicitly, it is used as-is and auto-selection is skipped (variant is
+// then reported as empty, i.e. the plain "llama.cpp" engine name). Otherwise
+// the phone's CPU features are read over adb and matched against the builds
+// available under Opts.LlamaDir (see ADR-007).
+func (p *Provisioner) selectLlamaServer(ctx context.Context, serial string) (path, variant string, err error) {
+	if p.Opts.LlamaServer != "" {
+		return p.Opts.LlamaServer, "", nil
+	}
+	out, err := p.ADB.Shell(ctx, serial, "grep -m1 -i '^features' /proc/cpuinfo")
+	if err != nil {
+		return "", "", fmt.Errorf("device %s: read CPU features: %w", serial, err)
+	}
+	available := AvailableLlamaVariants(p.Opts.LlamaDir)
+	variant, err = SelectLlamaVariant(ParseCPUFeatures(out), available)
+	if err != nil {
+		return "", "", fmt.Errorf("device %s: %w", serial, err)
+	}
+	p.Log.Info("llama variant selected", "serial", serial, "variant", variant, "features", strings.TrimSpace(out))
+	return filepath.Join(p.Opts.LlamaDir, variant, "llama-server"), variant, nil
 }
 
 // killAgent stops the agent recorded in the pidfile (run from RemoteDir).

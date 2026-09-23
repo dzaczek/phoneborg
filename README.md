@@ -65,7 +65,7 @@ Requirements: Go 1.25+, `adb`, and Docker for monitoring and emulation.
 
 ```sh
 make test agent pcprov controller     # unit tests + binaries
-make llama                            # static arm64 llama.cpp (built in Docker)
+make llama-all                        # static arm64 llama.cpp, all CPU variants (built in Docker)
 make models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 bin/controller &                      # API + dashboard on http://127.0.0.1:18080

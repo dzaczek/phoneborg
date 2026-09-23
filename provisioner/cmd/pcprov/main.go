@@ -41,7 +41,8 @@ func main() {
 	port := fs.Int("controller-port", 18080, "controller port on this host (exposed to phones via adb reverse)")
 	agentArgs := fs.String("agent-args", "", "extra node-agent flags")
 	model := fs.String("model", "", "GGUF model to serve on each phone (empty: no serving)")
-	llamaServer := fs.String("llama-server", "bin/llama/llama-server", "arm64 llama-server binary (make llama)")
+	llamaServer := fs.String("llama-server", "", "explicit arm64 llama-server binary; overrides auto-selection from -llama-dir when set")
+	llamaDir := fs.String("llama-dir", "bin/llama", "directory of llama.cpp ARM_ARCH variant builds (make llama-all); the best one for each phone's CPU is picked automatically")
 	servePort := fs.Int("serve-port", 18090, "on-device llama-server port")
 	all := fs.Bool("all", false, "provision all ready devices")
 	var serials, connects multi
@@ -56,7 +57,7 @@ func main() {
 	adb := provisioner.ADB{Bin: *adbBin, Timeout: 60 * time.Second}
 	p := &provisioner.Provisioner{ADB: adb, Log: log, Opts: provisioner.Options{
 		AgentBinary: *agent, ControllerPort: *port, AgentArgs: *agentArgs,
-		Model: *model, LlamaServer: *llamaServer, ServePort: *servePort}}
+		Model: *model, LlamaServer: *llamaServer, LlamaDir: *llamaDir, ServePort: *servePort}}
 
 	for _, c := range connects {
 		if err := adb.Connect(ctx, c); err != nil {
@@ -71,11 +72,18 @@ func main() {
 			os.Exit(1)
 		}
 		if *model != "" {
-			for _, f := range []string{*model, *llamaServer} {
-				if _, err := os.Stat(f); err != nil {
-					log.Error("serving file missing (make llama / download model)", "path", f)
+			if _, err := os.Stat(*model); err != nil {
+				log.Error("serving file missing (download model)", "path", *model)
+				os.Exit(1)
+			}
+			if *llamaServer != "" {
+				if _, err := os.Stat(*llamaServer); err != nil {
+					log.Error("serving file missing (make llama)", "path", *llamaServer)
 					os.Exit(1)
 				}
+			} else if len(provisioner.AvailableLlamaVariants(*llamaDir)) == 0 {
+				log.Error("no llama.cpp build found, run 'make llama-all'", "path", *llamaDir)
+				os.Exit(1)
 			}
 		}
 	}

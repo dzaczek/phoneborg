@@ -72,13 +72,14 @@ off for 30 minutes and confirm it stays `ACTIVE`.
 ## Running a small LLM on the phones
 
 ```sh
-make llama        # static arm64 llama-bench + llama-server (ADR-005), ~2–3 min
+make llama-all    # static arm64 llama-bench + llama-server, all CPU variants (ADR-005/ADR-007)
 make llm-smoke    # downloads Qwen2.5-0.5B-Instruct Q4_K_M (~470 MiB), runs on every adb device
 bash tests/e2e/llm_smoke.sh 127.0.0.1:5555   # one device
 ```
 
-For each device the smoke test checks for dotprod and free RAM (model + 50%),
-pushes the binaries and the model to `/data/local/tmp/phoneborg`, runs
+For each device the smoke test picks the fastest llama.cpp build the phone's
+CPU supports (same selection pcprov does, ADR-007) and checks free RAM (model
++ 50%), pushes the binaries and the model to `/data/local/tmp/phoneborg`, runs
 `llama-bench`, then starts `llama-server` and sends one
 `/v1/chat/completions` request through `adb forward`.
 
@@ -100,7 +101,7 @@ boot). If phones were started without binder, run
 ## Serving through the gateway (one API for the whole cluster)
 
 ```sh
-make llama agent pcprov cluster-up
+make llama-all agent pcprov cluster-up
 bin/pcprov provision -connect 127.0.0.1:5555 -connect 127.0.0.1:5556 \
   -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 curl -s http://127.0.0.1:18080/v1/models

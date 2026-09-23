@@ -37,9 +37,10 @@ authorizations**, then replug.
 
 ## 3. Preflight checks
 
-Run these before provisioning. `pcprov` checks the ABI itself, and
-`tests/e2e/llm_smoke.sh` checks dotprod and RAM. The commands below let you
-judge a phone before you use it.
+Run these before provisioning. `pcprov` checks the ABI itself and picks the
+fastest llama.cpp build the phone's CPU supports automatically (see
+ADR-007, requires `make llama-all`); `tests/e2e/llm_smoke.sh` checks RAM. The
+commands below let you judge a phone before you use it.
 
 ```sh
 S=<SERIAL>
@@ -52,9 +53,9 @@ adb -s $S shell getprop ro.soc.model                # SoC (Android 12+; else ro.
 
 # CPU: must list arm64-v8a
 adb -s $S shell getprop ro.product.cpu.abilist
-# dotprod is required by the default llama.cpp build; i8mm makes prompts much faster
-adb -s $S shell 'grep -m1 -o -w asimddp /proc/cpuinfo || echo "NO dotprod: see Troubleshooting (SIGILL)"'
-adb -s $S shell 'grep -m1 -i features /proc/cpuinfo'   # fphp/asimdhp = FP16, picks the fallback build
+# dotprod/fp16 pick which llama.cpp build pcprov uses (ADR-007); i8mm makes prompts much faster
+adb -s $S shell 'grep -m1 -o -w asimddp /proc/cpuinfo || echo "no dotprod: pcprov falls back to a slower build (needs make llama-all)"'
+adb -s $S shell 'grep -m1 -i features /proc/cpuinfo'   # full flag list (fphp/asimdhp = FP16)
 adb -s $S shell 'grep -m1 -o -w i8mm /proc/cpuinfo || echo "no i8mm (ok)"'
 # Core clusters (big.LITTLE): count of cores per max frequency in kHz
 adb -s $S shell 'cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq | sort | uniq -c'
@@ -172,7 +173,8 @@ adb -s $S shell settings put global stay_on_while_plugged_in 0
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | `pcprov` fails with "unsupported ABI" | 32-bit phone | not supported |
-| smoke test fails with "CPU lacks dotprod", or `agent.log` shows `signal: illegal instruction` | SoC without dotprod (Snapdragon 845 and older) | build without dotprod: `make llama ARM_ARCH=armv8.2-a+fp16` if `Features` lists `fphp asimdhp`, else `ARM_ARCH=armv8-a`; then re-provision |
+| `pcprov` fails with "no llama.cpp build matches this phone's CPU" | SoC lacks dotprod/fp16, and the fallback build was never made | `make llama-all` (builds every variant), then re-provision |
+| `agent.log` shows `signal: illegal instruction` | llama.cpp build too new for the CPU (only possible with an explicit `-llama-server` override) | drop the override and let pcprov choose the build |
 | node goes `SUSPECT` when the screen turns off | CPU sleeps | step 4 |
 | `phoneborg_node_runtime_restarts` keeps growing | llama-server is being killed (out of memory or vendor task killer) | smaller model or context; close apps; check `runtime.log` |
 | tokens/s drops after a few minutes | thermal throttling | cooling, no case, lower brightness; watch temperature in Grafana |
