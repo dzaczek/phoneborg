@@ -17,10 +17,18 @@ TMPD=$(mktemp -d)
 log()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAIL: %s\033[0m\n' "$*"; $COMPOSE logs --tail 30 controller || true; exit 1; }
 
-# nodes_json | jq-free query helper: prints "id state ram_total" per node.
-nodes() { curl -fsS "$CTRL/v1/nodes" | python3 -c '
-import json,sys
-for n in json.load(sys.stdin): print(n["id"], n["state"], n["inventory"]["ram_total_bytes"], n["inventory"]["cpu_cores"])'; }
+# jq-free query helper: prints "id state ram_total cores runtime_ready" per node.
+# Once EMU_IDS is set, only the phones this test provisioned are listed, so the
+# test also works when real phones are part of the cluster.
+nodes() { curl -fsS "$CTRL/v1/nodes" | EMU_IDS="${EMU_IDS:-}" python3 -c '
+import json,os,sys
+ids=os.environ["EMU_IDS"].split()
+for n in json.load(sys.stdin):
+    if ids and n["id"] not in ids: continue
+    r=((n.get("last_heartbeat") or {}).get("runtime") or {})
+    print(n["id"], n["state"], n["inventory"]["ram_total_bytes"], n["inventory"]["cpu_cores"], r.get("ready", False))'; }
+# Node ID as the agent derives it: ro.serialno, else android_id.
+node_id() { local id; id=$(adb -s "$1" shell getprop ro.serialno | tr -d '\r'); [ -n "$id" ] || id=$(adb -s "$1" shell settings get secure android_id | tr -d '\r'); echo "$id"; }
 
 wait_for() { # wait_for <timeout_s> <description> <command...>
   local t=$1 d=$2; shift 2
@@ -47,6 +55,9 @@ log "provision"
 args=(); for p in "${PHONES[@]}"; do args+=(-connect "$p"); done
 bin/pcprov provision -controller-port "${CONTROLLER_PORT:-18080}" "${args[@]}" -agent-args "-bench-duration 1s" -model "$MODEL"
 
+EMU_IDS=$(for p in "${PHONES[@]}"; do node_id "$p"; done | xargs)
+echo "emulated node ids: $EMU_IDS"
+
 log "expect 2 ACTIVE nodes"
 wait_for 60 "2 nodes ACTIVE" count_state ACTIVE 2
 nodes
@@ -57,16 +68,16 @@ nodes | awk '$3 == 2147483648 && $4 == 2 {low=1} $3 == 3221225472 && $4 == 4 {mi
 echo ok
 
 log "metrics exposed"
-curl -fsS "$CTRL/metrics" | grep -E '^phoneborg_nodes\{state="ACTIVE"\} 2$' || fail "phoneborg_nodes metric"
+curl -fsS "$CTRL/metrics" | awk '/^phoneborg_nodes\{state="ACTIVE"\}/ {n=$2} END {exit !(n >= 2)}' || fail "phoneborg_nodes metric"
+curl -fsS "$CTRL/metrics" | grep -E '^phoneborg_nodes\{state="ACTIVE"\}' 
 
 log "gateway: model ready on both phones, load spread across them"
-models_ready() { curl -fsS "$CTRL/v1/models" | grep -q '"nodes":2'; }
+models_ready() { [ "$(nodes | awk '$5 == "True"' | wc -l | tr -d ' ')" -ge 2 ]; }
 wait_for 120 "model ready on 2 nodes" models_ready
 LOAD="python3 tests/load/chat_load.py --url $CTRL"
 $LOAD -n 20 -c 2 > $TMPD/load1.txt || { cat $TMPD/load1.txt; fail "requests failed"; }
 tail -4 $TMPD/load1.txt
-grep '^by node:' $TMPD/load1.txt | grep -q "$(nodes | awk 'NR==1{print $1}')" && \
-  grep '^by node:' $TMPD/load1.txt | grep -q "$(nodes | awk 'NR==2{print $1}')" || fail "load not spread over both nodes"
+for id in $EMU_IDS; do grep '^by node:' $TMPD/load1.txt | grep -q "$id" || fail "load did not reach node $id"; done
 
 log "heartbeat loss under load: freeze phone-low, no request may fail"
 LOW_ID=$(nodes | awk '$3 == 2147483648 {print $1}')
