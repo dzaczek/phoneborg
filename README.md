@@ -107,9 +107,10 @@ phones. See the limitations table in `docs/DEV_EMULATION.md`.
 
 ## Hardware target
 
-Any ARM64 Android phone with USB debugging. The llama.cpp build targets
-`armv8.2-a+dotprod` (Snapdragon 855 and newer). Older SoCs such as the
-Snapdragon 845 lack dotprod and need `make llama ARM_ARCH=armv8.2-a+fp16`.
+Any ARM64 Android phone with USB debugging. `make llama-all` builds llama.cpp
+for three CPU levels, and pcprov picks the fastest build each phone supports:
+dotprod (Snapdragon 855 and newer), FP16 only (e.g. Snapdragon 845), or plain
+ARMv8.
 
 Preferred first-generation node: Snapdragon 865-class SoC, 8–12 GB RAM, USB-C.
 Examples: OnePlus 8 / 8 Pro, Xiaomi Mi 10, Snapdragon Galaxy S20. Use a powered
