@@ -14,6 +14,9 @@ type Backend struct {
 	Model  string
 	URL    string  // e.g. http://host.docker.internal:40123
 	Speed  float64 // relative node speed (benchmark score); higher is faster, 0 = unknown
+	// Drained nodes get no new requests; requests already running on them
+	// finish (they are not reaped).
+	Drained bool
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies
@@ -161,4 +164,45 @@ func (a *Affinity) prune(now time.Time) {
 		}
 		delete(a.keys, oldest)
 	}
+}
+
+// SetSpill changes the spill threshold for subsequent picks.
+func (a *Affinity) SetSpill(n int) {
+	a.mu.Lock()
+	a.Spill = n
+	a.mu.Unlock()
+}
+
+// SpillThreshold returns the current spill threshold.
+func (a *Affinity) SpillThreshold() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.Spill
+}
+
+// Pins returns the number of live sessions pinned to each node.
+func (a *Affinity) Pins() map[string]int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.prune(a.now())
+	out := map[string]int{}
+	for _, p := range a.keys {
+		out[p.node]++
+	}
+	return out
+}
+
+// Unpin forgets every session pinned to nodeID, so their next requests are
+// routed afresh (e.g. when the node is drained). It returns how many moved.
+func (a *Affinity) Unpin(nodeID string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for k, p := range a.keys {
+		if p.node == nodeID {
+			delete(a.keys, k)
+			n++
+		}
+	}
+	return n
 }

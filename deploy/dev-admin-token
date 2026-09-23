@@ -1,0 +1,3 @@
+# DEV ONLY: admin token for the local docker compose stack. It is public (in git).
+# Outside development, generate your own (e.g. `openssl rand -hex 32`) and keep it 0600.
+phoneborg-dev-admin-token-not-for-production

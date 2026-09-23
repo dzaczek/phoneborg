@@ -18,8 +18,9 @@ func TestBackendsOnlyReadyActiveNodes(t *testing.T) {
 		{ID: "no-runtime", State: proto.StateActive, LastHeartbeat: &proto.Heartbeat{}},
 		{ID: "no-heartbeat", State: proto.StateActive},
 	}
-	got := Backends(nodes, "host.docker.internal")
-	if len(got) != 2 || got[0].URL != "http://host.docker.internal:4000" || got[1].URL != "http://10.0.0.7:4000" {
+	got := Backends(nodes, map[string]bool{"wifi": true}, "host.docker.internal")
+	if len(got) != 2 || got[0].URL != "http://host.docker.internal:4000" || got[1].URL != "http://10.0.0.7:4000" ||
+		got[0].Drained || !got[1].Drained {
 		t.Fatalf("backends = %+v", got)
 	}
 }

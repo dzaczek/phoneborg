@@ -111,6 +111,13 @@ y[0] += 8
 ts("Benchmark CPU (synthetic)", [('phoneborg_node_benchmark_cpu_gflops', "{{node_id}}")], 0, w=12, h=6)
 ts("Total RAM / cores", [('phoneborg_node_ram_total_bytes / 2^30', "{{node_id}} GiB"),
                          ('phoneborg_node_cpu_cores', "{{node_id}} cores")], 12, w=12, h=6)
+y[0] += 6
+
+row("Administration")
+ts("Drained nodes", [('phoneborg_node_drained', "{{node_id}}")], 0, w=12, h=6,
+   desc="1 = drained with pbctl drain: the node gets no new requests, in-flight ones finish")
+ts("Admin actions", [('sum by (action, result) (increase(phoneborg_admin_actions_total[5m]))', "{{action}} {{result}}")], 12, w=12, h=6,
+   desc="Admin API calls per 5 minutes; result=unauthorized means a wrong or missing admin token")
 
 dash = {"uid": "phoneborg", "title": "PhoneBorg", "tags": ["phoneborg"], "timezone": "browser",
         "schemaVersion": 39, "version": 1, "refresh": "5s", "time": {"from": "now-30m", "to": "now"},

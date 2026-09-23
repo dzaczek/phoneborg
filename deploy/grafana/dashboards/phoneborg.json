@@ -1645,6 +1645,125 @@
      "mode": "multi"
     }
    }
+  },
+  {
+   "type": "row",
+   "title": "Administration",
+   "id": 35,
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 75
+   },
+   "panels": []
+  },
+  {
+   "type": "timeseries",
+   "title": "Drained nodes",
+   "id": 36,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "1 = drained with pbctl drain: the node gets no new requests, in-flight ones finish",
+   "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 0,
+    "y": 76
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "phoneborg_node_drained",
+     "legendFormat": "{{node_id}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Admin actions",
+   "id": 37,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Admin API calls per 5 minutes; result=unauthorized means a wrong or missing admin token",
+   "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 12,
+    "y": 76
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (action, result) (increase(phoneborg_admin_actions_total[5m]))",
+     "legendFormat": "{{action}} {{result}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
   }
  ]
 }

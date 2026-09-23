@@ -115,7 +115,8 @@ Any OpenAI client works with `base_url=http://127.0.0.1:18080/v1`. The
 
 API keys: create a file with one `<name> <key>` pair per line and start the
 controller with `-api-keys-file`. Clients send `Authorization: Bearer <key>`
-(or `x-api-key`). Metrics are labelled with the key's name.
+(or `x-api-key`). Metrics are labelled with the key's name. To create and
+revoke hashed keys at runtime with `pbctl`, see [USAGE.md](USAGE.md#api-keys).
 
 Measured with the e2e test: freezing a phone under load (2 concurrent clients)
 caused zero failed requests. The one request that was in flight on the frozen
