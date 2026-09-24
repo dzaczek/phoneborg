@@ -67,13 +67,15 @@ function planTable(pl) {
       h('td', null, p.reason || '–'),
       h('td.num', null, p.ctx_size ? `${int(p.ctx_size)} · ${p.slots || 1} · ${p.kv_type || '?'}` : '–'),
       h('td.num', null, `${bytes(p.est_ram_bytes)} / ${bytes(n && n.ram_total_bytes)}`),
+      h('td.num', null, bytes(n && n.budget_bytes)),
       h('td', null, p.model_id ? (p.fits ? badge('fits', 'ok') : badge('too big', 'bad')) : '–'));
   });
   const changes = rows.filter((r) => r.classList.contains('changed')).length;
   return {
     changes,
     el: table(['Node', 'Class', 'Runtime', 'Current model', 'Target', 'Reason',
-      { label: 'Ctx · slots · KV', num: true }, { label: 'Est. RAM / total', num: true }, 'Fits'], rows, 'No nodes to place.'),
+      { label: 'Ctx · slots · KV', num: true }, { label: 'Est. RAM / total', num: true },
+      { label: 'Budget', num: true, title: "Node's own reported memory budget (ADR-012)" }, 'Fits'], rows, 'No nodes to place.'),
   };
 }
 

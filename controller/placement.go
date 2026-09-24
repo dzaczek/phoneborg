@@ -53,6 +53,9 @@ type PlacementNode struct {
 	Progress      float64 `json:"progress"`
 	Error         string  `json:"error"`
 	Drained       bool    `json:"drained"`
+	// BudgetBytes is the node's self-reported memory budget (ADR-012); 0 =
+	// unknown, the planner falls back to the class heuristic for fit.
+	BudgetBytes int64 `json:"budget_bytes,omitempty"`
 }
 
 // DeviceClass is one row of GET /admin/device-classes.
@@ -170,13 +173,14 @@ func (s *Server) planInputs(prev map[string]models.Assignment) ([]models.Node, [
 			CurrentModel: currentModel(rt), Drained: drained[n.ID]}
 		if rt != nil {
 			pn.Speed = rt.GenTPS
+			pn.BudgetBytes = rt.BudgetBytes
 		}
 		if a := prev[n.ID]; assigning(a.Reason) {
 			pn.Assigned = a.ModelID
 		}
 		nodes = append(nodes, pn)
 		v := PlacementNode{NodeID: n.ID, Class: pn.Class, RAMTotalBytes: pn.RAMTotalBytes, CurrentModel: pn.CurrentModel,
-			State: runtimeState(rt), Drained: pn.Drained}
+			State: runtimeState(rt), Drained: pn.Drained, BudgetBytes: pn.BudgetBytes}
 		if rt != nil {
 			v.Progress, v.Error = rt.Progress, rt.Error
 		}
