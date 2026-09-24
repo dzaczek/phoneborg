@@ -2319,6 +2319,125 @@
      "mode": "multi"
     }
    }
+  },
+  {
+   "type": "row",
+   "title": "Pools and virtual models",
+   "id": 49,
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 107
+   },
+   "panels": []
+  },
+  {
+   "type": "timeseries",
+   "title": "Requests / s by target",
+   "id": 50,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "What clients asked for: model (a served model id), auto, pool/<name> or node/<alias> (ADR-014)",
+   "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 0,
+    "y": 108
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (target) (rate(phoneborg_gateway_target_requests_total[1m]))",
+     "legendFormat": "{{target}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Eligible nodes per pool",
+   "id": 51,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Pool members that can take requests now: ready, not drained, not hot, matching the pool's filters (pbctl pools)",
+   "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 12,
+    "y": 108
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "phoneborg_pool_members",
+     "legendFormat": "{{pool}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
   }
  ]
 }
