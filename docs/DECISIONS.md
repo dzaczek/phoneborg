@@ -680,3 +680,96 @@ There are no per-key restrictions on targets (any key may use any pool or
 node) and no quotas per pool. Renaming an alias silently removes the node
 from pools that list the old alias. Prewarm does not pin anything, so under
 `affinity` routing the first real request may still land on another node.
+
+## ADR-015: Performance tiers from measured bandwidth
+
+**Problem.** Devices are classed only by RAM (ADR-011's `xs`..`xl`). A phone
+with enough RAM but a slow CPU/memory system (an older SoC, a busy background
+app) can be assigned a model it technically fits but runs uselessly slowly.
+Nothing in placement looks at speed, only fit.
+
+**Measured fact.** On phones, token generation is memory-bandwidth bound: the
+model's weights stream from RAM (or the mmapped file) once per generated
+token, so `gen_tok_s * model_file_bytes` is roughly constant for a given
+phone ("effective bandwidth"), regardless of which model is loaded. Measured
+on a Xiaomi Mi 8 (Snapdragon 845, ADR-009/REAL_PHONES.md): Qwen2.5-0.5B (468
+MiB) 14.8 tok/s -> 6.9 GB/s; Qwen2.5-1.5B (1065 MiB) 6.8 tok/s -> 7.2 GB/s;
+Gemma 3 4B (2374 MiB) measured 2.4 tok/s against 3.0 predicted from that
+bandwidth (the gap is sliding-window attention and compute buffers the simple
+model ignores, ADR-011). An emulated phone on an M2 host is a different
+regime entirely: ~120 tok/s x 0.47 GB = 56 GB/s. Prompt processing scales the
+same way, more noisily: `prompt_tok_s * file_bytes` is roughly constant too
+(Mi 8: 36.2 x 0.49 GB = 17.7; 11.4 x 1.12 GB = 12.7).
+
+This needs no phone lists or hardware database: it falls out of the self-test
+the agent already runs after every model switch (ADR-010).
+
+**Decision.**
+
+- **Measurement** (`controller/models.Bandwidth`, `PredictedTPS`,
+  `PerfTierOf`). The agent reports `RuntimeStatus.ModelBytes`, the size of
+  the file it currently serves, read from the file itself (`os.Stat`), not
+  looked up in the controller's catalog — so a node started with plain
+  `pcprov -model` and no catalog entry also reports it. Combined with the
+  existing self-test (`GenTPS`, `PromptTPS`, ADR-010), the controller
+  computes `gen_gbps = GenTPS * ModelBytes / 1e9` and `prompt_gbps` the same
+  way, every heartbeat.
+- **Per-node state** (`controller.nodePerf`). The controller keeps the last
+  known-good `gen_gbps`/`prompt_gbps` per node id, the same way it keeps
+  aliases and drain flags (ADR-008/ADR-014): a heartbeat with no fresh
+  self-test yet (mid switch, `GenTPS`/`PromptTPS`/`ModelBytes` still 0) never
+  clears a previous good value. It is persisted in `routing.json`'s new
+  `performance` field, alongside aliases and pools, so a controller restart
+  does not lose it; it is naturally re-measured after every model switch,
+  since that is when the agent's self-test reruns.
+- **Performance tiers**, by `gen_gbps`: `t1` < 4, `t2` 4-10, `t3` 10-25, `t4`
+  >= 25 GB/s; `"?"` when a node has not measured its bandwidth yet.
+  `perf_tier`, `gen_gbps` and `prompt_gbps` are exposed on `AdminNode`,
+  `PlacementNode` and `/admin/device-classes`, which gains a `perf_tiers`
+  list with node counts (`classes` is unchanged).
+- **Predicted speed**, per (node, model): `pred_gen_tps = gen_gbps * 1e9 /
+  model.size_bytes`, `pred_prompt_tps` the same way with `prompt_gbps`. Added
+  to plan entries (`pred_gen_tps`, `pred_prompt_tps`; 0 when unknown).
+- **Planner exclusion.** A node is not eligible for a model when its
+  predicted generation tok/s is below a threshold: a policy's own
+  `min_tok_s` (new optional `Policy` field), or else the controller's
+  `-min-predicted-tok-s` flag (default 3, `models.DefaultPlanner.MinTokS`).
+  An unknown prediction (the node has not measured its bandwidth) never
+  excludes — a newly connected phone is not penalized before its first
+  self-test. Pins are not blocked by speed, the same way they are not
+  blocked by a memory-fit shortfall (ADR-011): they still place, with a
+  warning ("gemma-3-4b on mi8: predicted 3.0 tok/s < 4"). Replicas and
+  percent policies simply do not count a too-slow node as eligible; if that
+  empties the pool, the existing "0 nodes" warning names the reason. This is
+  about placing *models*; pools' existing `min_gen_tps` (ADR-014, the
+  measured speed of whatever a node already serves) is unrelated and
+  unchanged.
+- **Catalog.** Models gain an optional `recommended_tiers` list, exactly
+  like `recommended_classes`: editable via `PATCH /admin/models/{id}` and
+  `pbctl models recommend <id> classes=s,m tiers=t2,t3` (the older `pbctl
+  models recommend <id> s,m` form, classes only, keeps working).
+- **CLI and panel.** `pbctl nodes` shows class and tier together (`m/t2`);
+  `pbctl classes` shows both the RAM-class and the performance-tier tables;
+  `pbctl placement` gains a `PRED TOK/S` column. The web panel shows
+  class/tier in the Nodes and Placement views, predicted tok/s in the
+  placement plan table, a min-tok/s field in the policy editor, and
+  recommended tiers in the model edit form.
+
+**Trade-offs.** Effective bandwidth is a simplification: it ignores prompt
+processing's different compute/memory balance (hence the separate, noisier
+`prompt_gbps`) and architecture differences in compute-per-byte (attention
+variants, MoE). It is good enough to stop a node from being handed a model
+that is *categorically* too slow for it, not a precise performance model.
+Because the threshold uses a *predicted* speed from another model's
+bandwidth, a newly added, never-tried model can be excluded (or wrongly
+allowed) based entirely on file size; the agent's own self-test after the
+switch is still the ground truth; ADR-010's `Backends()` speed comparison,
+used for routing already-served models, is untouched by this ADR.
+
+**Not solved.** No tier ever downgrades a node's *current* assignment mid-flight;
+exclusion only affects future placement decisions. A node's bandwidth is a
+single number carried across every model it might serve, which is a
+simplification for architectures with unusual attention or MoE patterns
+(the RAM heuristic has the same kind of gap, ADR-011). There is no
+UI/CLI warning when a policy's `min_tok_s` is set below what any connected
+node can ever reach.

@@ -29,8 +29,13 @@ type ModelOptions struct {
 	PlacementFile string
 	// Placement is the initial placement (see LoadPlacement).
 	Placement models.Spec
-	// Planner computes plans; nil = models.DefaultPlanner.
+	// Planner computes plans; nil = models.DefaultPlanner{MinTokS: MinPredictedTokS}.
 	Planner models.Planner
+	// MinPredictedTokS is the default minimum predicted generation tok/s
+	// (ADR-015) below which the planner will not place a model on a node;
+	// a policy's own min_tok_s overrides it. Used only when Planner is nil.
+	// Normally the controller's -min-predicted-tok-s flag.
+	MinPredictedTokS float64
 }
 
 // Placement is the response of GET/PUT /admin/placement and
@@ -56,6 +61,12 @@ type PlacementNode struct {
 	// BudgetBytes is the node's self-reported memory budget (ADR-012); 0 =
 	// unknown, the planner falls back to the class heuristic for fit.
 	BudgetBytes int64 `json:"budget_bytes,omitempty"`
+	// PerfTier, GenGBps and PromptGBps are the node's measured performance
+	// class and memory bandwidth (ADR-015); PerfTier is "?" and the GB/s
+	// fields are 0 when not measured yet.
+	PerfTier   string  `json:"perf_tier"`
+	GenGBps    float64 `json:"gen_gbps,omitempty"`
+	PromptGBps float64 `json:"prompt_gbps,omitempty"`
 }
 
 // DeviceClass is one row of GET /admin/device-classes.
@@ -65,9 +76,17 @@ type DeviceClass struct {
 	RecommendedModels []string `json:"recommended_models"`
 }
 
+// PerfTierCount is one row of the perf_tiers list in GET /admin/device-classes.
+type PerfTierCount struct {
+	models.PerfTier
+	Nodes             int      `json:"nodes"`
+	RecommendedModels []string `json:"recommended_models"`
+}
+
 // DeviceClasses is the response of GET /admin/device-classes.
 type DeviceClasses struct {
-	Classes []DeviceClass `json:"classes"`
+	Classes   []DeviceClass   `json:"classes"`
+	PerfTiers []PerfTierCount `json:"perf_tiers"`
 }
 
 type placementFile struct {
@@ -169,8 +188,9 @@ func (s *Server) planInputs(prev map[string]models.Assignment) ([]models.Node, [
 		if n.LastHeartbeat != nil {
 			rt = n.LastHeartbeat.Runtime
 		}
+		perf := s.perf.get(n.ID)
 		pn := models.Node{ID: n.ID, Class: models.ClassOf(n.Inventory.RAMTotalBytes), RAMTotalBytes: n.Inventory.RAMTotalBytes,
-			CurrentModel: currentModel(rt), Drained: drained[n.ID]}
+			CurrentModel: currentModel(rt), Drained: drained[n.ID], GenGBps: perf.GenGBps, PromptGBps: perf.PromptGBps}
 		if rt != nil {
 			pn.Speed = rt.GenTPS
 			pn.BudgetBytes = rt.BudgetBytes
@@ -180,7 +200,8 @@ func (s *Server) planInputs(prev map[string]models.Assignment) ([]models.Node, [
 		}
 		nodes = append(nodes, pn)
 		v := PlacementNode{NodeID: n.ID, Class: pn.Class, RAMTotalBytes: pn.RAMTotalBytes, CurrentModel: pn.CurrentModel,
-			State: runtimeState(rt), Drained: pn.Drained, BudgetBytes: pn.BudgetBytes}
+			State: runtimeState(rt), Drained: pn.Drained, BudgetBytes: pn.BudgetBytes,
+			PerfTier: models.PerfTierOf(perf.GenGBps), GenGBps: perf.GenGBps, PromptGBps: perf.PromptGBps}
 		if rt != nil {
 			v.Progress, v.Error = rt.Progress, rt.Error
 		}

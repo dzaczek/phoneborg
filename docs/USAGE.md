@@ -225,9 +225,10 @@ Phones are grouped by total RAM:
 | `xl` | 10 GiB+ |
 
 `pbctl classes` shows how many phones each class has and which models you
-recommended for it (`pbctl models recommend <id> s,m`; recommendations and
-tags are notes for operators and the web panel, the planner does not use
-them).
+recommended for it (`pbctl models recommend <id> classes=s,m`; recommendations
+and tags are notes for operators and the web panel, the planner does not use
+them). Models can also be recommended for performance tiers
+(`tiers=t2,t3`, see below).
 
 For each model the controller estimates the RAM it needs with a 16k-token
 context: the file size, plus an f16 KV cache for 16384 tokens (or the
@@ -249,6 +250,57 @@ placement` shows each phone's budget in the `BUDGET` column (also
 catalog stays the class heuristic, since it describes a class of phones, not
 one connected phone.
 
+### Performance tiers and predicted speed
+
+RAM class says whether a model *fits*; it says nothing about whether the
+phone runs it at a usable speed. Token generation on phones is
+memory-bandwidth bound: `gen_tok_s * model_file_bytes` is roughly constant
+per phone, an "effective bandwidth" the controller computes from the
+existing self-test (ADR-010) and the size of the file the node actually
+serves — no phone list, no benchmark to run by hand. See ADR-015 for the
+measurements this is based on.
+
+Phones are grouped into performance tiers by that measured bandwidth:
+
+| Tier | Bandwidth |
+|---|---|
+| `t1` | < 4 GB/s |
+| `t2` | 4–10 GB/s |
+| `t3` | 10–25 GB/s |
+| `t4` | 25 GB/s+ |
+| `?` | not measured yet (no self-test has completed) |
+
+```sh
+pbctl nodes      # CLASS column shows "m/t2": RAM class / performance tier
+pbctl classes    # RAM classes, then performance tiers, each with node counts
+```
+
+`gen_gbps`, `prompt_gbps` and `perf_tier` appear on `/admin/nodes`,
+`Placement.nodes` and the web panel's Nodes and Placement views. A node's
+measured bandwidth is kept across restarts (`routing.json`, alongside
+aliases and pools) and updated after every model switch, once its self-test
+completes; a heartbeat mid-switch never erases the last known-good value.
+
+For placement, the controller predicts a candidate model's speed on a node
+from that bandwidth: `pred_gen_tps = gen_gbps * 1e9 / model_size_bytes`. A
+node is not given a model whose predicted speed is below a threshold: a
+policy's own `min_tok_s`, or else `-min-predicted-tok-s` (default 3). A node
+that has not measured its bandwidth yet is never excluded by this — only a
+measured, too-slow prediction blocks placement. Model recommendations can
+also name tiers, like classes:
+
+```sh
+pbctl models recommend qwen2.5-1.5b-instruct-q4_k_m classes=s,m tiers=t2,t3
+pbctl placement set google_gemma-3-1b-it-q4_k_m percent=50 min_tok_s=4
+pbctl placement   # PRED TOK/S column: what each node is predicted to reach
+```
+
+A pin still places even below `min_tok_s` (like a memory-fit shortfall,
+ADR-011), with a warning naming the node and the predicted speed. Replicas
+and percent policies simply do not count a too-slow node as eligible. This
+is unrelated to a pool's `min_gen_tps` (a filter on nodes already serving a
+model, ADR-014); this threshold decides which nodes a *new* placement may use.
+
 ### Placement
 
 Placement decides which model each phone serves. One phone serves one
@@ -264,7 +316,10 @@ model. Policies are applied in this order:
    `pcprov -model` pushed).
 
 `classes=s,m` limits replicas and percent policies to those device
-classes. Bigger models choose first and get the faster phones (measured
+classes. `min_tok_s=<n>` additionally excludes phones whose predicted speed
+for this model is below `n` tok/s (ADR-015; default threshold 3, or
+`-min-predicted-tok-s`; a phone with no measured bandwidth yet is never
+excluded). Bigger models choose first and get the faster phones (measured
 tok/s). A phone that already serves a model stays on it rather than
 switching. Drained phones only follow pins.
 

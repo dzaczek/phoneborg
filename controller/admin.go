@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dzaczek/phoneborg/controller/gateway"
+	"github.com/dzaczek/phoneborg/controller/models"
 	"github.com/dzaczek/phoneborg/proto"
 )
 
@@ -69,6 +70,14 @@ type AdminNode struct {
 	// Hot is true when the node's last heartbeat temperature is at or above
 	// the current thermal limit (ADR-010); it then gets no new sessions.
 	Hot bool `json:"hot"`
+	// Class is the device class by total RAM (ADR-011). PerfTier, GenGBps
+	// and PromptGBps are the node's measured performance class and memory
+	// bandwidth (ADR-015); PerfTier is "?" and the GB/s fields are 0 when
+	// not measured yet.
+	Class      string  `json:"class"`
+	PerfTier   string  `json:"perf_tier"`
+	GenGBps    float64 `json:"gen_gbps,omitempty"`
+	PromptGBps float64 `json:"prompt_gbps,omitempty"`
 }
 
 // AdminKey is one API key owner as returned by GET /admin/keys.
@@ -223,7 +232,9 @@ func (s *Server) adminNodeList() []AdminNode {
 	out := make([]AdminNode, 0, len(nodes))
 	for _, n := range nodes {
 		hot := limit > 0 && n.LastHeartbeat != nil && n.LastHeartbeat.TemperatureC != nil && *n.LastHeartbeat.TemperatureC >= limit
-		out = append(out, AdminNode{Node: n, Drained: drained[n.ID], Inflight: inflight[n.ID], PinnedSessions: pins[n.ID], Hot: hot})
+		perf := s.perf.get(n.ID)
+		out = append(out, AdminNode{Node: n, Drained: drained[n.ID], Inflight: inflight[n.ID], PinnedSessions: pins[n.ID], Hot: hot,
+			Class: models.ClassOf(n.Inventory.RAMTotalBytes), PerfTier: models.PerfTierOf(perf.GenGBps), GenGBps: perf.GenGBps, PromptGBps: perf.PromptGBps})
 	}
 	return out
 }

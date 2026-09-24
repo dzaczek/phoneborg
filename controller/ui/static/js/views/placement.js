@@ -17,6 +17,7 @@ function clean(draft) {
       replicas: p.mode === 'replicas' ? Number(p.replicas) || 0 : 0,
       percent: p.mode === 'percent' ? Number(p.percent) || 0 : 0,
       classes: [...p.classes],
+      min_tok_s: Number(p.min_tok_s) || 0,
     })),
   };
 }
@@ -26,7 +27,7 @@ function fromServer(pl) {
     default_model: pl.default_model || '',
     policies: (pl.policies || []).map((p) => ({
       model_id: p.model_id || '', mode: p.mode || 'replicas', nodes: p.nodes || [],
-      replicas: p.replicas || 1, percent: p.percent || 0, classes: p.classes || [],
+      replicas: p.replicas || 1, percent: p.percent || 0, classes: p.classes || [], min_tok_s: p.min_tok_s || 0,
     })),
   };
 }
@@ -60,7 +61,7 @@ function planTable(pl) {
     const changed = (p.model_id || '') !== cur;
     return h('tr', { class: changed ? 'changed' : null },
       h('td', null, h('span.mono', null, p.node_id)),
-      h('td', null, n ? n.class || '–' : '–'),
+      h('td', null, n ? `${n.class || '–'}/${n.perf_tier || '?'}` : '–'),
       h('td', null, runtimeCell(n)),
       h('td', null, cur || h('span.muted', null, 'none')),
       h('td', null, changed ? h('strong', null, '→ ', p.model_id || 'none') : h('span.muted', null, p.model_id ? 'unchanged' : 'none')),
@@ -68,6 +69,7 @@ function planTable(pl) {
       h('td.num', null, p.ctx_size ? `${int(p.ctx_size)} · ${p.slots || 1} · ${p.kv_type || '?'}` : '–'),
       h('td.num', null, `${bytes(p.est_ram_bytes)} / ${bytes(n && n.ram_total_bytes)}`),
       h('td.num', null, bytes(n && n.budget_bytes)),
+      h('td.num', null, p.pred_gen_tps > 0 ? p.pred_gen_tps.toFixed(1) : '–'),
       h('td', null, p.model_id ? (p.fits ? badge('fits', 'ok') : badge('too big', 'bad')) : '–'));
   });
   const changes = rows.filter((r) => r.classList.contains('changed')).length;
@@ -75,7 +77,8 @@ function planTable(pl) {
     changes,
     el: table(['Node', 'Class', 'Runtime', 'Current model', 'Target', 'Reason',
       { label: 'Ctx · slots · KV', num: true }, { label: 'Est. RAM / total', num: true },
-      { label: 'Budget', num: true, title: "Node's own reported memory budget (ADR-012)" }, 'Fits'], rows, 'No nodes to place.'),
+      { label: 'Budget', num: true, title: "Node's own reported memory budget (ADR-012)" },
+      { label: 'Pred tok/s', num: true, title: "Predicted generation speed from the node's measured bandwidth (ADR-015)" }, 'Fits'], rows, 'No nodes to place.'),
   };
 }
 
@@ -105,8 +108,12 @@ export default function placementView() {
   function eligible(p) {
     const m = modelById(p.model_id);
     const fits = m && m.fits_classes;
+    const minTokS = Number(p.min_tok_s) || 0;
+    // A node with no measured bandwidth yet (gen_gbps 0) is never excluded
+    // by speed (ADR-015), matching the planner's own rule.
+    const fastEnough = (n) => !minTokS || !n.gen_gbps || !m || !m.size_bytes || (n.gen_gbps * 1e9) / m.size_bytes >= minTokS;
     return (server.nodes || []).filter((n) =>
-      (!p.classes.length || p.classes.includes(n.class)) && (!fits || fits.includes(n.class)));
+      (!p.classes.length || p.classes.includes(n.class)) && (!fits || fits.includes(n.class)) && fastEnough(n));
   }
 
   function updateButtons() {
@@ -170,13 +177,18 @@ export default function placementView() {
           onchange: change((e) => { p.classes = e.target.checked ? [...p.classes, c.id] : p.classes.filter((x) => x !== c.id); }) }),
         c.id))));
 
+    const minTokS = h('label', null, 'Min predicted tok/s ',
+      h('input', { type: 'number', min: 0, step: 0.5, value: String(p.min_tok_s || ''), placeholder: 'default',
+        title: 'Below this predicted generation tok/s (ADR-015) a node is not eligible; blank uses the controller default.',
+        oninput: change((e) => { p.min_tok_s = Number(e.target.value) || 0; }) }));
+
     const row = h('div.policy', { role: 'group', 'aria-label': `Policy ${i + 1}` },
       h('div.row', null,
         h('label', { class: 'grow' }, 'Model ', modelSelect(p.model_id, (v) => { p.model_id = v; updateCount(); }, '— choose —')),
         h('label', null, 'Mode ', h('select', { value: p.mode, onchange: change((e) => { p.mode = e.target.value; }, true) },
           Object.entries(MODES).map(([k, v]) => h('option', { value: k }, v)))),
         h('button.small.danger', { type: 'button', onclick: () => { draft.policies.splice(i, 1); renderEditor(); } }, 'Remove')),
-      modeControl, classes, p.mode === 'pin' ? count : null);
+      modeControl, classes, minTokS, p.mode === 'pin' ? count : null);
     updateCount();
     return row;
   }
@@ -235,7 +247,7 @@ export default function placementView() {
       h('p.muted.small', null, 'Pins are placed first, then replicas, then percentages; remaining nodes get the default model, or keep what they serve.'),
       draft.policies.length ? draft.policies.map(policyRow) : h('p.muted', null, 'No policies.'),
       h('div.row', null, h('button', { type: 'button', onclick: () => {
-        draft.policies.push({ model_id: '', mode: 'replicas', nodes: [], replicas: 1, percent: 50, classes: [] });
+        draft.policies.push({ model_id: '', mode: 'replicas', nodes: [], replicas: 1, percent: 50, classes: [], min_tok_s: 0 });
         renderEditor();
       } }, '+ Add policy')),
       h('div.field', null, h('label', { for: 'pl-default' }, 'Default model'),
@@ -255,14 +267,21 @@ export default function placementView() {
     previewCard.hidden = false;
   }
 
-  function renderClasses(classes) {
+  function renderClasses(classes, tiers) {
     const rows = (classes || []).map((c) => [
       h('strong', null, c.id), c.label || '–',
       { v: `${bytes(c.min_ram_bytes)} – ${c.max_ram_bytes ? bytes(c.max_ram_bytes) : '∞'}`, num: true },
       { v: int(c.nodes), num: true },
       (c.recommended_models || []).length ? c.recommended_models.map((m) => h('span.chip', null, m)) : h('span.muted', null, '–')]);
+    const tierRows = (tiers || []).map((t) => [
+      h('strong', null, t.id), t.label || '–',
+      { v: `${t.min_gbps} – ${t.max_gbps || '∞'} GB/s`, num: true },
+      { v: int(t.nodes), num: true },
+      (t.recommended_models || []).length ? t.recommended_models.map((m) => h('span.chip', null, m)) : h('span.muted', null, '–')]);
     fill(classesCard, h('h2', null, 'Device classes'),
-      table(['Class', 'Label', { label: 'RAM range', num: true }, { label: 'Nodes', num: true }, 'Recommended models'], rows, 'No classes reported.'));
+      table(['Class', 'Label', { label: 'RAM range', num: true }, { label: 'Nodes', num: true }, 'Recommended models'], rows, 'No classes reported.'),
+      h('h2', null, 'Performance tiers', h('span.muted.small', null, ' (measured generation bandwidth, ADR-015)')),
+      table(['Tier', 'Label', { label: 'GB/s range', num: true }, { label: 'Nodes', num: true }, 'Recommended models'], tierRows, 'No tiers reported.'));
   }
 
   function renderPlan() {
@@ -285,7 +304,7 @@ export default function placementView() {
     server = pl;
     models = (cat && cat.models) || [];
     const newSig = JSON.stringify(clean(fromServer(pl)));
-    renderClasses(cls && cls.classes);
+    renderClasses(cls && cls.classes, cls && cls.perf_tiers);
     renderPlan();
     if (first || (!wasDirty && newSig !== serverSig)) {
       // Pick up the server's policies unless the operator is editing.

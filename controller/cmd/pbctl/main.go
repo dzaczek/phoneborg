@@ -45,11 +45,13 @@ commands:
                               https://.../<file>.gguf or file:///abs/path.gguf
   models rm <id>              remove a model and its file
   models tag <id> a,b         set tags ("-" clears)
-  models recommend <id> s,m   set recommended device classes ("-" clears)
+  models recommend <id> classes=s,m tiers=t2,t3
+                              set recommended device classes/perf tiers (or the older <id> s,m form; "-" clears)
   models default <id>|none    model for nodes no policy claims
-  classes                     device classes (by RAM) with node counts
+  classes                     device classes (by RAM) and perf tiers (by GB/s) with node counts
   placement                   policies, plan and node model states
   placement set <model> pin=<node,...>|replicas=<n>|percent=<p> [classes=s,m]
+                              [min_tok_s=<n>] (minimum predicted generation tok/s, ADR-015)
   placement unset <model>     remove the model's policy
   placement preview [set|unset] [<model> ...]
                               show the plan a change would give, apply nothing
@@ -372,10 +374,11 @@ func nodes(c *client, o *out) error {
 		if n.Alias != "" {
 			node = n.Alias + " (" + n.ID + ")"
 		}
-		rows = append(rows, []string{node, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
+		class := n.Class + "/" + n.PerfTier
+		rows = append(rows, []string{node, class, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
 			model, runtime, build, toks, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
 	}
-	o.table("NODE\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tTOK/S\tINFLIGHT\tPINNED\tLAST SEEN", rows)
+	o.table("NODE\tCLASS\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tTOK/S\tINFLIGHT\tPINNED\tLAST SEEN", rows)
 	return nil
 }
 

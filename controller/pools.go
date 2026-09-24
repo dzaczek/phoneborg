@@ -86,11 +86,12 @@ type PrewarmResponse struct {
 	Results []gateway.PrewarmResult `json:"results"`
 }
 
-// RoutingState is what the routing file persists: node aliases by node id
-// and pools.
+// RoutingState is what the routing file persists: node aliases by node id,
+// pools, and each node's last known-good measured bandwidth (ADR-015).
 type RoutingState struct {
-	Aliases map[string]string `json:"aliases"`
-	Pools   []Pool            `json:"pools"`
+	Aliases     map[string]string      `json:"aliases"`
+	Pools       []Pool                 `json:"pools"`
+	Performance map[string]models.Perf `json:"performance,omitempty"`
 }
 
 // RoutingOptions configures aliases and pools.
@@ -210,7 +211,7 @@ func (s *Server) saveRouting() error {
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}}
+	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}, Performance: s.perf.snapshot()}
 	for _, p := range ps.byName {
 		st.Pools = append(st.Pools, p)
 	}

@@ -53,6 +53,7 @@ type Server struct {
 
 	catalog *models.Catalog
 	place   *placement
+	perf    *nodePerf // measured memory bandwidth per node (ADR-015)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -82,12 +83,13 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		gwOpts.Models.Catalog, _ = models.NewCatalog(models.CatalogOptions{Log: log}) // cannot fail without a state file
 	}
 	if gwOpts.Models.Planner == nil {
-		gwOpts.Models.Planner = models.DefaultPlanner{}
+		gwOpts.Models.Planner = models.DefaultPlanner{MinTokS: gwOpts.Models.MinPredictedTokS}
 	}
 	s := &Server{
 		catalog: gwOpts.Models.Catalog,
 		place: &placement{planner: gwOpts.Models.Planner, path: gwOpts.Models.PlacementFile,
 			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
+		perf:           newNodePerf(),
 		keys:           gwOpts.Keys,
 		usage:          gwOpts.Usage,
 		least:          &gateway.LeastInflight{},
@@ -118,6 +120,9 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	}
 	for _, p := range gwOpts.Routing.State.Pools {
 		s.pools.byName[p.Name] = p
+	}
+	if len(gwOpts.Routing.State.Performance) > 0 {
+		s.perf.load(gwOpts.Routing.State.Performance)
 	}
 	reg.onTransition = func(_ string, from, to proto.NodeState) {
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
@@ -275,6 +280,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	s.heartbeats.Inc()
 	s.log.Debug("heartbeat", "node_id", hb.NodeID, "ram_avail", hb.RAMAvailBytes, "load1", hb.Load1)
+	if s.perf.update(hb.NodeID, hb.Runtime) {
+		if err := s.saveRouting(); err != nil {
+			s.log.Error("saving node performance", "node_id", hb.NodeID, "err", err)
+		}
+	}
 	d := s.desired(hb.NodeID)
 	if d == nil {
 		w.WriteHeader(http.StatusNoContent) // keep the current runtime

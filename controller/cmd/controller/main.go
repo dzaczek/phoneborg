@@ -38,6 +38,7 @@ func main() {
 	modelsDir := flag.String("models-dir", "", "directory for model files served to nodes; default <state-dir>/models, or a temporary directory without -state-dir")
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
 	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
+	minPredictedTokS := flag.Float64("min-predicted-tok-s", 3, "minimum predicted generation tok/s (ADR-015) below which the planner will not place a model on a node; a policy's own min_tok_s overrides it; unknown predictions never exclude")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -86,6 +87,7 @@ func main() {
 		fatal("loading model catalog", "err", err)
 	}
 	defer modelOpts.Catalog.Close()
+	modelOpts.MinPredictedTokS = *minPredictedTokS
 
 	var routing controller.RoutingOptions
 	if *stateDir != "" {

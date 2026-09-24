@@ -1,6 +1,6 @@
 // Models: the catalog of GGUF models the controller can hand out to nodes.
 import { api, getOptional } from '../api.js';
-import { h, fill, table, badge, bytes, int, CLASSES } from '../dom.js';
+import { h, fill, table, badge, bytes, int, CLASSES, TIERS } from '../dom.js';
 import { toast, errorToast, confirmDialog, formDialog, field, unavailable } from '../ui.js';
 
 const refreshNow = () => window.dispatchEvent(new Event('pb:refresh'));
@@ -14,6 +14,14 @@ function classChecks(legend, selected = []) {
       h('input', { type: 'checkbox', name: 'classes', value: c.id, checked: set.has(c.id) }), `${c.id} (${c.label})`))));
 }
 const checkedClasses = (form) => [...form.querySelectorAll('input[name="classes"]:checked')].map((i) => i.value);
+
+function tierChecks(legend, selected = []) {
+  const set = new Set(selected);
+  return h('fieldset', null, h('legend', null, legend),
+    h('div.checks', null, TIERS.map((t) => h('label', null,
+      h('input', { type: 'checkbox', name: 'tiers', value: t.id, checked: set.has(t.id) }), `${t.id} (${t.label})`))));
+}
+const checkedTiers = (form) => [...form.querySelectorAll('input[name="tiers"]:checked')].map((i) => i.value);
 
 function statusCell(m) {
   return [badge(m.status || '?'),
@@ -38,6 +46,7 @@ function addModel() {
       field('Name (optional)', name),
       field('Tags (optional)', tags, 'Comma separated.'),
       classChecks('Recommended device classes (optional)'),
+      tierChecks('Recommended performance tiers (optional)'),
     ],
     onSubmit: async (form) => {
       const body = { source: source.value.trim() };
@@ -47,6 +56,8 @@ function addModel() {
       if (tags.value.trim()) body.tags = splitTags(tags.value);
       const rc = checkedClasses(form);
       if (rc.length) body.recommended_classes = rc;
+      const rt = checkedTiers(form);
+      if (rt.length) body.recommended_tiers = rt;
       const m = await api('POST', '/admin/models', body);
       toast(`${m && m.id ? m.id : 'Model'}: download started.`);
       refreshNow();
@@ -65,11 +76,13 @@ function editModel(m) {
       field('Name', name),
       field('Tags', tags, 'Comma separated.'),
       classChecks('Recommended device classes', m.recommended_classes),
+      tierChecks('Recommended performance tiers', m.recommended_tiers),
       h('label.row', null, def, 'Default model'),
     ],
     onSubmit: async (form) => {
       await api('PATCH', '/admin/models/' + encodeURIComponent(m.id), {
-        name: name.value.trim(), tags: splitTags(tags.value), recommended_classes: checkedClasses(form), default: def.checked,
+        name: name.value.trim(), tags: splitTags(tags.value), recommended_classes: checkedClasses(form),
+        recommended_tiers: checkedTiers(form), default: def.checked,
       });
       toast(`${m.id}: saved.`);
       refreshNow();
@@ -99,6 +112,7 @@ async function deleteModel(m) {
 const COLS = ['Model', 'Status', 'Params', 'Quant', { label: 'Size', num: true },
   { label: 'Est. RAM', num: true, title: 'Weights + 16k context KV cache (f16) + overhead' },
   { label: 'Fits', title: 'Device classes where it fits with a 16k context' }, 'Tags', 'Recommended',
+  { label: 'Tiers', title: 'Recommended performance tiers (ADR-015)' },
   { label: 'Serving', num: true, title: 'Nodes serving it' }, { label: 'Actions', num: true }];
 
 export default function modelsView() {
@@ -126,6 +140,7 @@ export default function modelsView() {
       h('td', null, chips(m.fits_classes)),
       h('td', null, chips(m.tags)),
       h('td', null, chips(m.recommended_classes)),
+      h('td', null, chips(m.recommended_tiers)),
       h('td.num', null, int(m.nodes_serving || 0)),
       h('td.actions', null,
         h('button.small', { type: 'button', onclick: () => editModel(m), 'data-focus-key': m.id + ':edit' }, 'Edit'),

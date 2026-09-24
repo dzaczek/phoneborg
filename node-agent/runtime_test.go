@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -68,6 +70,29 @@ func TestSelfTestRequest(t *testing.T) {
 	content, _ := msgs[0].(map[string]any)["content"].(string)
 	if !strings.Contains(content, "phones") {
 		t.Fatalf("prompt content = %q", content)
+	}
+}
+
+// TestStatusReportsModelBytes covers ADR-015: the agent reports the served
+// file's own size (not a catalog lookup), so static-provisioned nodes
+// (pcprov -model, no controller catalog) also let the controller compute
+// measured bandwidth.
+func TestStatusReportsModelBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "model.gguf")
+	data := []byte("fake gguf bytes for a size test")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(RuntimeConfig{ModelPath: path}, discardLog())
+	if got := r.Status(context.Background()).ModelBytes; got != int64(len(data)) {
+		t.Fatalf("ModelBytes = %d, want %d", got, len(data))
+	}
+}
+
+func TestStatusModelBytesZeroWhenFileMissing(t *testing.T) {
+	r := NewRuntime(RuntimeConfig{ModelPath: filepath.Join(t.TempDir(), "missing.gguf")}, discardLog())
+	if got := r.Status(context.Background()).ModelBytes; got != 0 {
+		t.Fatalf("ModelBytes = %d, want 0", got)
 	}
 }
 
