@@ -64,6 +64,10 @@ Prometheus and Grafana.
   nodes, manage API keys, and change the routing policy and timeouts without a
   restart. Usage per API key and per node (requests, errors, tokens, tok/s)
   can be persisted across restarts.
+- **Model catalog and placement.** Add GGUF models from Hugging Face to the
+  controller (`pbctl models add hf://...`), see which phones they fit by RAM
+  class, and assign them by pin, replica count or percentage of the fleet.
+  Phones download their model from the controller over USB and switch.
 - **Observability.** Structured JSON logs, `phoneborg_*` Prometheus metrics and
   a provisioned Grafana dashboard: cluster health, latency, tokens/s, cache hit
   ratio, and token usage per API key (input/output).
