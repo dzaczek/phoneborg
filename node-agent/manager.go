@@ -134,6 +134,7 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 		st = &proto.RuntimeStatus{AdvertisePort: m.cfg.AdvertisePort}
 	}
 	st.RAMEstimateBytes = ramBytes
+	st.BudgetBytes = m.budgetBytes()
 	st.Error = errMsg
 	if switching {
 		st.ModelID = target

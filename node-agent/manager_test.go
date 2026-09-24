@@ -43,6 +43,18 @@ func TestManagerReconcileSkipsUnchangedDesired(t *testing.T) {
 	}
 }
 
+// TestManagerStatusReportsBudget checks that Status reports a memory budget
+// (ADR-012) even before any model is loaded, so the controller sees a node's
+// real headroom from its very first heartbeat.
+func TestManagerStatusReportsBudget(t *testing.T) {
+	m := NewManager(ManagerConfig{MemReserveMB: 100}, discardLog())
+	st := m.Status(context.Background())
+	want := MemoryBudget(AvailableRAM(), 0, 100*mib)
+	if st.BudgetBytes != want {
+		t.Fatalf("BudgetBytes = %d, want %d", st.BudgetBytes, want)
+	}
+}
+
 func TestManagerReconcileFailureSetsErrorState(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
