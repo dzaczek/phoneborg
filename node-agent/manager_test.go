@@ -2,8 +2,12 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,5 +80,42 @@ func TestManagerReconcileFailureSetsErrorState(t *testing.T) {
 	}
 	if m.lastApplied != nil {
 		t.Fatalf("lastApplied = %+v, want nil after a failed switch", m.lastApplied)
+	}
+}
+
+// TestManagerKeepsRunningModelWhenSettingsDoNotFit covers a node that already
+// serves the desired model (started by pcprov -model) when the controller's
+// requested settings exceed the memory budget: the agent keeps serving and
+// does not report an error.
+func TestManagerKeepsRunningModelWhenSettingsDoNotFit(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("gguf-bytes")
+	sum := sha256.Sum256(content)
+	if err := os.WriteFile(filepath.Join(dir, "m1.gguf"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A reserve far above any real MemAvailable makes every plan fail.
+	m := NewManager(ManagerConfig{ModelsDir: dir, MemReserveMB: 1 << 30}, discardLog())
+	m.runtime, m.current = &Runtime{}, "m1"
+	d := &proto.DesiredRuntime{ModelID: "m1", SHA256: hex.EncodeToString(sum[:]), SizeBytes: int64(len(content)),
+		CtxSize: 16384, Slots: 1, KVType: "auto", Layers: 24, KVHeads: 2, HeadDim: 64}
+
+	m.reconcile(context.Background(), d)
+
+	if m.lastErr != "" {
+		t.Fatalf("lastErr = %q, want empty (running model kept)", m.lastErr)
+	}
+	if m.lastApplied != d {
+		t.Fatal("lastApplied not set: the agent would retry on every heartbeat")
+	}
+
+	// A different model that does not fit is still an error.
+	m.lastApplied = nil
+	d2 := *d
+	d2.ModelID = "m2"
+	os.WriteFile(filepath.Join(dir, "m2.gguf"), content, 0o644)
+	m.reconcile(context.Background(), &d2)
+	if !strings.Contains(m.lastErr, "m2") {
+		t.Fatalf("lastErr = %q, want an error for the non-running model", m.lastErr)
 	}
 }

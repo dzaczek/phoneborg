@@ -210,6 +210,16 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 		BudgetBytes:   budget,
 	})
 	if err != nil {
+		if m.serving(d.ModelID) {
+			// The model is already running (e.g. started by pcprov -model) and
+			// the requested settings do not fit; keep what works instead of
+			// reporting an error and retrying on every heartbeat.
+			log.Warn("requested runtime settings do not fit; keeping the running instance", "err", err)
+			m.mu.Lock()
+			m.lastApplied, m.lastErr = d, ""
+			m.mu.Unlock()
+			return
+		}
 		m.fail(d, err, log)
 		return
 	}
@@ -229,6 +239,13 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 	m.lastApplied, m.lastErr = d, ""
 	m.mu.Unlock()
 	log.Info("model switch complete", "duration_ms", time.Since(start).Milliseconds())
+}
+
+// serving reports whether modelID is the model currently running.
+func (m *Manager) serving(modelID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runtime != nil && m.current == modelID
 }
 
 func (m *Manager) setSubState(s string) {
