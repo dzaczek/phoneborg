@@ -571,6 +571,18 @@ Once generated, call them like any other subagent, including in parallel:
 use @borg-review and @borg-summarize in parallel on the diff and the PR description
 ```
 
+Measured on the dev cluster (Xiaomi Mi 8 with Qwen2.5-1.5B plus two emulated
+phones with Qwen2.5-0.5B). Three tool-less agent tasks run in parallel:
+
+| Target | Wall time | Answers |
+|---|---|---|
+| `pool/fast` (spread over 3 phones) | 9.9 s | 1 of 3 correct (the 0.5B phones got 2 wrong) |
+| `node/mi8` (queued on one phone) | 23.8 s | 3 of 3 correct |
+
+Spreading work over phones gives the parallelism. Pool membership decides the
+quality. Use a pool restricted to stronger models (e.g. `pool/smart`) for
+tasks where correctness matters.
+
 ## Grafana
 
 `make cluster-up` provisions Grafana on http://localhost:3000 with the
