@@ -1,5 +1,6 @@
 // Command pbctl manages a PhoneBorg cluster through the controller's admin
-// API: nodes, draining, API keys, usage statistics and gateway settings.
+// API: nodes, draining, API keys, usage statistics, gateway settings, the
+// model catalog and model placement.
 package main
 
 import (
@@ -35,12 +36,26 @@ commands:
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
-  models                      list served models (/v1/models)
+  served                      list models ready nodes serve (/v1/models)
+  models                      model catalog (size, status, fits, tags, serving)
+  models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]
+                              download a model: hf://<owner>/<repo>/<file>.gguf,
+                              https://.../<file>.gguf or file:///abs/path.gguf
+  models rm <id>              remove a model and its file
+  models tag <id> a,b         set tags ("-" clears)
+  models recommend <id> s,m   set recommended device classes ("-" clears)
+  models default <id>|none    model for nodes no policy claims
+  classes                     device classes (by RAM) with node counts
+  placement                   policies, plan and node model states
+  placement set <model> pin=<node,...>|replicas=<n>|percent=<p> [classes=s,m]
+  placement unset <model>     remove the model's policy
+  placement preview [set|unset] [<model> ...]
+                              show the plan a change would give, apply nothing
 
 environment:
   PHONEBORG_URL          controller URL (default http://127.0.0.1:18080)
   PHONEBORG_ADMIN_TOKEN  admin token (or -token-file)
-  PHONEBORG_API_KEY      API key for "models" when the gateway enforces keys
+  PHONEBORG_API_KEY      API key for "served" when the gateway enforces keys
 `
 
 func main() {
@@ -139,8 +154,14 @@ func dispatch(c *client, o *out, args []string) error {
 		}
 		raw, err := c.do(http.MethodPut, "/admin/gateway", u)
 		return showGateway(o, raw, err)
-	case cmd == "models" && len(rest) == 0:
-		return models(c, o)
+	case cmd == "served" && len(rest) == 0:
+		return served(c, o)
+	case cmd == "models":
+		return modelsCmd(c, o, rest)
+	case cmd == "classes" && len(rest) == 0:
+		return classes(c, o)
+	case cmd == "placement":
+		return placementCmd(c, o, rest)
 	}
 	return errUsage
 }
@@ -474,7 +495,8 @@ func showGateway(o *out, raw []byte, err error) error {
 	return nil
 }
 
-func models(c *client, o *out) error {
+// served lists the models that ready nodes serve (the gateway's /v1/models).
+func served(c *client, o *out) error {
 	raw, err := c.request(http.MethodGet, "/v1/models", nil, c.apiKey)
 	if err != nil {
 		return err
