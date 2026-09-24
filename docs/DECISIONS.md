@@ -1,5 +1,29 @@
 # Architecture Decision Records
 
+Why PhoneBorg is built the way it is. The current system is described in
+[ARCHITECTURE.md](ARCHITECTURE.md) and all measurements are collected in
+[BENCHMARKS.md](BENCHMARKS.md). ADRs are kept as written; later changes are
+added as dated "Update (2026-09)" notes instead of rewriting the original
+text.
+
+| ADR | Title | Status | Summary |
+|---|---|---|---|
+| [001](#adr-001-milestone-1-node-agent-is-a-go-binary-launched-over-adb-not-an-android-app) | Node agent is a Go binary launched over adb | accepted | Static binary in `/data/local/tmp`, no Android app yet; does not survive reboots. |
+| [002](#adr-002-v0-transport-is-json-over-http) | v0 transport is JSON over HTTP | accepted | Curl-able wire types in `proto/v0.go`; gRPC + mTLS before non-localhost use. |
+| [003](#adr-003-phones-reach-the-controller-through-adb-reverse) | Phones reach the controller through `adb reverse` | accepted | Agent always talks to `127.0.0.1:18080`; phones stay on USB. |
+| [004](#adr-004-redroid-as-the-development-phone) | redroid as the development "phone" | accepted | Real arm64 Android in containers with real adb, sized by cgroups. |
+| [005](#adr-005-llamacpp-as-a-static-musl-arm64-binary-no-ndk-for-first-llm-tests) | Static musl llama.cpp, no NDK | superseded in part by 007 | CPU-only static build; variant selection moved to ADR-007. |
+| [006](#adr-006-inference-gateway-in-the-controller-reaching-phones-over-adb-forward) | Gateway in the controller, phones over `adb forward` | accepted, updated by 010 and 014 | One OpenAI endpoint; affinity picker, failover, reaping. |
+| [007](#adr-007-pcprov-selects-the-llamacpp-build-from-the-phones-cpu-features) | pcprov selects the llama.cpp build per CPU | accepted | `make llama-all` builds three variants; pcprov picks the fastest that runs. |
+| [008](#adr-008-admin-api-and-usage-statistics) | Admin API and usage statistics | accepted | Token-protected `/admin/`, `pbctl`, hashed API keys, persisted usage. |
+| [009](#adr-009-llama-server-threads-on-biglittle-phones) | llama-server threads on big.LITTLE | accepted | Default `-threads-policy all`; benchmark through llama-server. |
+| [010](#adr-010-measured-inference-speed-and-thermal-aware-routing) | Measured speed and thermal-aware routing | accepted | Self-test tok/s replaces the synthetic score; hot nodes get no new sessions. |
+| [011](#adr-011-model-catalog-and-placement) | Model catalog and placement | accepted, updated by 012 and 015 | Controller downloads GGUFs, plans placement, phones download over USB. |
+| [012](#adr-012-agent-side-model-switching-and-memory-sizing) | Agent-side model switching and memory sizing | accepted, with updates | Download, verify, size to RAM, load, fall back; resident bytes. |
+| [013](#adr-013-web-management-panel) | Web management panel | accepted | Static embedded panel that is just another admin API client. |
+| [014](#adr-014-virtual-models-and-pools-for-agent-workloads) | Virtual models and pools | accepted | `auto`, `pool/<name>`, `node/<alias>`; `spread` routing for small agents. |
+| [015](#adr-015-performance-tiers-from-measured-bandwidth) | Performance tiers from measured bandwidth | accepted, with update | Effective bandwidth per node, tiers `t1`..`t4`, predicted tok/s gate placement. |
+
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
 **Problem.** The target architecture is a Kotlin app + NDK runtime on the phone. Milestone 1
@@ -72,6 +96,12 @@ The smoke test checks `/proc/cpuinfo` for `asimddp` before running.
 `make llama`). Switch to an NDK build when GPU backends or the Kotlin service
 arrive.
 
+
+**Update (2026-09).** The smoke test no longer only checks for `asimddp`:
+like pcprov it picks the fastest built variant the CPU supports (ADR-007).
+The Makefile's `make llama` still defaults to `armv8.2-a+dotprod+fp16`;
+`make llama-all` builds all three variants.
+
 ## ADR-006: Inference gateway in the controller, reaching phones over adb forward
 
 **Problem.** Clients need one OpenAI-compatible endpoint for the whole
@@ -110,6 +140,17 @@ on another node, and the failed node is avoided for 30 s. Requests in flight on
 a node that leaves the ready set (e.g. SUSPECT) are cancelled and retried
 elsewhere. Once response bytes have reached the client, a request cannot be
 retried.
+
+
+**Update (2026-09).** Changed since this ADR: the speed tie-break is the
+node's measured llama.cpp self-test tok/s, falling back to the synthetic
+benchmark only when no node has one, and hot nodes get no new sessions
+(ADR-010). Requests can name `auto`, `pool/<name>` or `node/<alias>`, pools
+may use a `Spread` picker, and node targets never fail over (ADR-014).
+Nodes whose context is smaller than the estimated prompt are skipped, and a
+prompt larger than every node's context gets 400 `context_length_exceeded`;
+a node that rejects a prompt as too long is not marked down. Switching
+nodes (downloading or loading a model) are skipped (ADR-011).
 
 ## ADR-007: pcprov selects the llama.cpp build from the phone's CPU features
 
@@ -227,6 +268,12 @@ no TLS: run the admin API only on localhost or a trusted network until the
 mTLS work (ADR-002). Keys have no scopes, expiry or quotas yet. Drain flags
 and gateway settings are lost when the controller restarts.
 
+
+**Update (2026-09).** ADR-007 (llama.cpp variant selection) has since been
+merged, so the numbering note above is only historical. `thermal_limit` was
+added to the runtime gateway settings by ADR-010; like the others it is not
+persisted.
+
 ## ADR-009: llama-server threads on big.LITTLE phones
 
 **Problem.** Phones mix fast and slow cores. llama.cpp can be held back by slow
@@ -252,6 +299,10 @@ usable cores are also catastrophic.
 **Decision.** Default policy stays `all`, capped by the usable cores. `big` and
 `-threads` remain as per-phone overrides, to be re-measured on other SoCs.
 Benchmark through llama-server, not pinned `llama-bench` runs.
+
+
+**Update (2026-09).** The measurements are also listed in
+[BENCHMARKS.md](BENCHMARKS.md#threads-on-biglittle).
 
 ## ADR-010: Measured inference speed and thermal-aware routing
 
@@ -421,6 +472,13 @@ checked against the source (Hugging Face publishes it); the hash only
 lets agents verify their copy. Context size, slots and KV type are not
 yet configurable per policy.
 
+
+**Update (2026-09).** The RAM heuristic and the per-node fit check now use
+the model's resident bytes instead of the file size (ADR-012 update below),
+and placement also excludes nodes whose predicted speed is below
+`min_tok_s` / `-min-predicted-tok-s` (ADR-015). The old read-only node table
+moved from `/` to `/status` (ADR-013).
+
 ## ADR-012: Agent-side model switching and memory sizing
 
 **Problem.** The controller is gaining a model catalog and a placement
@@ -531,7 +589,9 @@ bandwidth limiting on downloads sharing the same USB link as request
 traffic; `-mem-reserve-mb` is a single flag, not learned from observed OOM
 kills.
 
-### Addendum: resident bytes, not file bytes (Gemma 3n)
+### Update (2026-09): resident bytes, not file bytes (Gemma 3n)
+
+(Referred to in code comments as the "ADR-012 addendum".)
 
 **Problem.** Sizing assumed the whole GGUF file must be resident. Measured on
 a real Xiaomi Mi 8, Gemma 3n E2B it (Q4_K_M, file 2886 MiB) kept a huge
@@ -576,6 +636,16 @@ architectures with sparse tensors are measured. The catalog's older, simpler
 RAM heuristic (`EstimateRAM`, ADR-011) also switched to resident bytes, but
 without the 10% allowance, since it already ignores compute buffers and
 sliding-window attention and is only a placement guide.
+
+### Update (2026-09): retry backoff and keeping a running model
+
+Two behaviours were added after the ADR above. A switch to the same desired
+state that just failed is retried after 30 s, doubling up to 10 minutes,
+or earlier once the node's RAM budget has grown by more than 10%; before,
+the agent retried on every heartbeat. And when the requested settings do
+not fit but the requested model is already running (for example started
+by `pcprov -model` with a smaller context), the agent keeps that instance
+and reports no error instead of failing the switch.
 
 ## ADR-013: Web management panel
 
@@ -820,7 +890,7 @@ simplification for architectures with unusual attention or MoE patterns
 UI/CLI warning when a policy's `min_tok_s` is set below what any connected
 node can ever reach.
 
-### Addendum: bandwidth from resident bytes, not file bytes
+### Update (2026-09): bandwidth from resident bytes, not file bytes
 
 **Problem.** `gen_gbps = GenTPS * ModelBytes` overstates bandwidth for a model
 like Gemma 3n E2B, whose file is much bigger than what llama.cpp actually
@@ -842,4 +912,12 @@ whatever byte count the caller passes, so this is purely a change in what
 **Trade-off.** None of this changes for models with no sparse tensors
 (`resident_bytes` equals `size_bytes` there), so every number in the table
 above is unaffected; it only corrects the Gemma-3n-shaped case ADR-012's
-addendum measured.
+update measured.
+
+### Update (2026-09): bandwidth arithmetic
+
+The Mi 8 generation bandwidths quoted under "Measured fact" (6.9 and
+7.2 GB/s) treated MiB as 10^6 bytes. In bytes, as the code computes them,
+they are 7.3 and 7.6 GB/s (`controller/models/perf_test.go` checks 7.59).
+The tier (`t2`) and the conclusions are unchanged. See
+[BENCHMARKS.md](BENCHMARKS.md#effective-bandwidth-and-performance-tiers).

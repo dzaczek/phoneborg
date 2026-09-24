@@ -1,7 +1,10 @@
-# Testing without phones: redroid emulation
+# Developer environment: emulated phones
+
+This guide is for developing PhoneBorg without real phones. Design context:
+[ARCHITECTURE.md](ARCHITECTURE.md); ADR-004 explains why redroid.
 
 `deploy/docker-compose.yml` starts two emulated Android 12 arm64 phones plus the
-controller and Prometheus. The phones are reached through **real adb**
+controller, Prometheus and Grafana. The phones are reached through **real adb**
 (`127.0.0.1:5555`, `127.0.0.1:5556`), so the same `pcprov` / node-agent path is
 used as with USB phones.
 
@@ -42,23 +45,30 @@ docker compose -f deploy/docker-compose.yml unpause phone-low # -> ACTIVE
 make cluster-down
 ```
 
-## What the e2e test proves
+## What the e2e test checks
+
+`tests/e2e/redroid_e2e.sh` (`make e2e`):
 
 - adb connect → ABI check → push → `adb reverse` → detached start works on real Android
 - agent registers, inventory reports the **container's** RAM/CPU limits
-- benchmark → `ACTIVE`; frozen phone → `SUSPECT` → `OFFLINE` → recovers
+- benchmark → `ACTIVE`; the model is served on both phones through the
+  gateway, and a `spread` pool reaches both
+- freezing a phone under load → `SUSPECT` → `OFFLINE` with zero failed
+  requests → recovers to `ACTIVE`
 - controller restart → agents re-register on their own
-- `pcprov watch` re-provisions a device that disappears and comes back
 
-Measured on the 2 GiB profile: Android itself uses ~0.65 GiB, leaving ~1.35 GiB
-for inference. A 0.5B Q4 GGUF fits; 1.5B Q4 is tight.
+`pcprov watch` re-provisioning a replugged device is not covered by the e2e
+test; check it by hand.
 
-## What emulation does NOT tell you about real phones
+On the 2 GiB profile Android itself uses ~0.65 GiB, leaving ~1.35 GiB for
+inference ([BENCHMARKS.md](BENCHMARKS.md#memory-what-android-leaves-free)).
+
+## What emulation does not tell you
 
 | Area | redroid | Real phone — check on first device |
 |------|---------|-------------------------------------|
 | CPU speed | Apple M2 cores, only the core **count** is limited | Big.LITTLE, much slower; benchmark numbers are not comparable |
-| Memory bandwidth | ~65 GB/s (host) | ~10–30 GB/s |
+| Memory bandwidth | ~56 GB/s effective (tier `t4`) | ~7 GB/s effective on a Mi 8 (tier `t2`) |
 | Thermals / throttling | no thermal zones, temperature is `n/a` | zones may be SELinux-blocked for `shell`; falls back to battery temp |
 | Battery | none | reported via `dumpsys battery` |
 | USB authorisation | not needed | tap "Allow USB debugging"; `pcprov watch` logs `unauthorized` until then |
@@ -83,15 +93,9 @@ CPU supports (same selection pcprov does, ADR-007) and checks free RAM (model
 `llama-bench`, then starts `llama-server` and sends one
 `/v1/chat/completions` request through `adb forward`.
 
-Measured on redroid (host M2 cores, so real phones will be several times
-slower):
-
-| Profile | Threads | Prompt tok/s | Generation tok/s |
-|---------|---------|--------------|------------------|
-| phone-low (2 GiB) | 2 | 108 | 74 |
-| phone-mid (3 GiB) | 4 | 204 | 132 |
-
-The model fits on the 2 GiB profile. The RAM check counts page cache in cgroup
+Emulated phones run roughly 5–10× faster than a real Mi 8
+([BENCHMARKS.md](BENCHMARKS.md#emulator-vs-mi-8-baseline)). The model fits on
+the 2 GiB profile. The RAM check counts page cache in cgroup
 `memory.current`, so it is conservative.
 
 After a colima restart: `sh deploy/colima-binder.sh` (makes binder load at VM
@@ -110,47 +114,12 @@ curl -s http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: application
 python3 tests/load/chat_load.py -d 120 -c 3     # traffic for the Grafana dashboard
 ```
 
-Any OpenAI client works with `base_url=http://127.0.0.1:18080/v1`. The
+Any OpenAI client works with `base_url=http://127.0.0.1:18080/v1`; the
 `X-PhoneBorg-Node` response header shows which phone answered.
+`tests/load/chat_load.py` flags: `--url`, `--key`, `--model` (also
+`pool/<name>` etc.), `-n` requests or `-d` seconds, `-c` concurrency,
+`--stream` fraction, `--max-tokens`.
 
-API keys: create a file with one `<name> <key>` pair per line and start the
-controller with `-api-keys-file`. Clients send `Authorization: Bearer <key>`
-(or `x-api-key`). Metrics are labelled with the key's name. To create and
-revoke hashed keys at runtime with `pbctl`, see [USAGE.md](USAGE.md#api-keys).
-
-Measured with the e2e test: freezing a phone under load (2 concurrent clients)
-caused zero failed requests. The one request that was in flight on the frozen
-phone was cancelled when the node became SUSPECT and retried on the other
-phone (14 s instead of the 120 s timeout).
-
-## Using the cluster from opencode
-
-opencode's system prompt and tool definitions are ~11.7k tokens, so phones
-need a larger context than the default 2048:
-
-```sh
-bin/pcprov provision -connect 127.0.0.1:5555 -connect 127.0.0.1:5556 \
-  -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -agent-args "-ctx-size 16384"
-```
-
-Provider entry (`~/.config/opencode/opencode.jsonc`, under `"provider"`):
-
-```jsonc
-"phoneborg": {
-  "npm": "@ai-sdk/openai-compatible",
-  "name": "PhoneBorg (phones)",
-  "options": { "baseURL": "http://127.0.0.1:18080/v1", "timeout": false,
-               "headerTimeout": 1800000, "chunkTimeout": 1800000 },
-  "models": { "qwen2.5-0.5b-instruct-q4_k_m": {
-    "name": "Qwen2.5 0.5B on phones", "limit": { "context": 16384, "output": 2048 } } }
-}
-```
-
-Run `opencode -m phoneborg/qwen2.5-0.5b-instruct-q4_k_m`. Measured on
-redroid: the first turn of a new session takes ~115 s (prompt processing on the
-4-core phone). Later turns take ~3 s, because session affinity keeps the
-session on the same phone and >99% of the prompt comes from llama-server's
-cache. Grafana shows this under "Prompt cache hit ratio" and "Routing
-decisions".
-A 0.5B model is too small for reliable tool use; this setup proves the
-integration, not coding quality.
+For API keys, pools, opencode and the rest of day-to-day use, see
+[OPERATIONS.md](OPERATIONS.md). Failover and prompt-cache measurements from
+this setup are in [BENCHMARKS.md](BENCHMARKS.md#failover-under-load).
