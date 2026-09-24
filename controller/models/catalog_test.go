@@ -95,7 +95,7 @@ func TestCatalogDownloadFromHuggingFace(t *testing.T) {
 	dir := t.TempDir()
 	hf := newHF(t, nil)
 	c, _ := newCatalog(t, dir, hf)
-	m, err := c.Add(AddRequest{Source: hfSource, Tags: []string{"Chat", " chat", "small"}, RecommendedClasses: []string{"m", "s"}})
+	m, err := c.Add(AddRequest{Source: hfSource, Tags: []string{"Chat", " chat", "small"}, RecommendedClasses: []string{"m", "s"}, RecommendedTiers: []string{"t3", "T2", "t2"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +118,10 @@ func TestCatalogDownloadFromHuggingFace(t *testing.T) {
 	}
 	if strings.Join(m.Tags, ",") != "chat,small" || strings.Join(m.RecommendedClasses, ",") != "s,m" {
 		t.Fatalf("tags = %v classes = %v", m.Tags, m.RecommendedClasses)
+	}
+	// Deduplicated case-insensitively and ordered t1..t4, like classes.
+	if strings.Join(m.RecommendedTiers, ",") != "t2,t3" {
+		t.Fatalf("tiers = %v", m.RecommendedTiers)
 	}
 	path, _, ok := c.File(m.ID)
 	if data, _ := os.ReadFile(path); !ok || !bytes.Equal(data, testFile) {
@@ -234,11 +238,19 @@ func TestCatalogFileSourceAndRemove(t *testing.T) {
 		t.Fatalf("model = %+v", m)
 	}
 	name := "Renamed"
-	if m, err = c.Update("local-model", Patch{Name: &name, Tags: []string{}, RecommendedClasses: []string{"xl"}}); err != nil || m.Name != "Renamed" || len(m.RecommendedClasses) != 1 {
+	if m, err = c.Update("local-model", Patch{Name: &name, Tags: []string{}, RecommendedClasses: []string{"xl"}, RecommendedTiers: []string{"t4"}}); err != nil ||
+		m.Name != "Renamed" || len(m.RecommendedClasses) != 1 || strings.Join(m.RecommendedTiers, ",") != "t4" {
 		t.Fatalf("update = %+v %v", m, err)
 	}
 	if _, err := c.Update("local-model", Patch{RecommendedClasses: []string{"huge"}}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bad class: %v", err)
+	}
+	if _, err := c.Update("local-model", Patch{RecommendedTiers: []string{"t9"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("bad tier: %v", err)
+	}
+	// A nil RecommendedTiers (not passed) leaves the tier set from above alone.
+	if m, err = c.Update("local-model", Patch{Name: &name}); err != nil || strings.Join(m.RecommendedTiers, ",") != "t4" {
+		t.Fatalf("update without tiers = %+v %v", m, err)
 	}
 	path, _, _ := c.File("local-model")
 	if err := c.Remove("local-model"); err != nil {
@@ -297,6 +309,7 @@ func TestCatalogRejectsBadRequests(t *testing.T) {
 		{Source: "https://example.com/x.gguf", ID: "Bad ID"},
 		{Source: "https://example.com/x.gguf", Tags: []string{"a,b"}},
 		{Source: "https://example.com/x.gguf", RecommendedClasses: []string{"xxl"}},
+		{Source: "https://example.com/x.gguf", RecommendedTiers: []string{"t9"}},
 	} {
 		if _, err := c.Add(req); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%+v: err = %v", req, err)

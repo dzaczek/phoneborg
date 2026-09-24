@@ -55,6 +55,7 @@ type Model struct {
 	FitsClasses        []string `json:"fits_classes"`
 	Tags               []string `json:"tags"`
 	RecommendedClasses []string `json:"recommended_classes"`
+	RecommendedTiers   []string `json:"recommended_tiers"`
 	License            string   `json:"license"`
 	Default            bool     `json:"default"`
 	NodesServing       int      `json:"nodes_serving"`
@@ -72,6 +73,7 @@ type AddRequest struct {
 	Name               string   `json:"name,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
 	RecommendedClasses []string `json:"recommended_classes,omitempty"`
+	RecommendedTiers   []string `json:"recommended_tiers,omitempty"`
 }
 
 // Patch is the body of PATCH /admin/models/{id}; nil (or JSON null) fields
@@ -81,6 +83,7 @@ type Patch struct {
 	Name               *string  `json:"name,omitempty"`
 	Tags               []string `json:"tags"`
 	RecommendedClasses []string `json:"recommended_classes"`
+	RecommendedTiers   []string `json:"recommended_tiers"`
 	Default            *bool    `json:"default,omitempty"`
 }
 
@@ -227,6 +230,7 @@ func (e *entry) view() Model {
 	m := e.m
 	m.Tags = nonNil(m.Tags)
 	m.RecommendedClasses = nonNil(m.RecommendedClasses)
+	m.RecommendedTiers = nonNil(m.RecommendedTiers)
 	m.FitsClasses = nonNil(m.FitsClasses)
 	switch m.Status {
 	case StatusReady:
@@ -303,6 +307,10 @@ func (c *Catalog) Add(req AddRequest) (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
+	tiers, err := normTiers(req.RecommendedTiers)
+	if err != nil {
+		return Model{}, err
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = strings.TrimSuffix(src.File, filepath.Ext(src.File))
@@ -334,7 +342,7 @@ func (c *Catalog) Add(req AddRequest) (Model, error) {
 		c.log.Warn("no models directory configured; model files are kept in a temporary directory and lost on restart", "dir", d)
 	}
 	e := &entry{m: Model{ID: id, Name: name, Source: req.Source, File: src.File, Status: StatusDownloading,
-		Tags: tags, RecommendedClasses: classes}}
+		Tags: tags, RecommendedClasses: classes, RecommendedTiers: tiers}}
 	c.models[id] = e
 	c.startLocked(e)
 	m := e.view()
@@ -347,7 +355,7 @@ func (c *Catalog) Add(req AddRequest) (Model, error) {
 
 // Update changes a model's name, tags or recommended classes.
 func (c *Catalog) Update(id string, p Patch) (Model, error) {
-	var tags, classes []string
+	var tags, classes, tiers []string
 	var err error
 	if p.Tags != nil {
 		if tags, err = normTags(p.Tags); err != nil {
@@ -356,6 +364,11 @@ func (c *Catalog) Update(id string, p Patch) (Model, error) {
 	}
 	if p.RecommendedClasses != nil {
 		if classes, err = normClasses(p.RecommendedClasses); err != nil {
+			return Model{}, err
+		}
+	}
+	if p.RecommendedTiers != nil {
+		if tiers, err = normTiers(p.RecommendedTiers); err != nil {
 			return Model{}, err
 		}
 	}
@@ -376,6 +389,9 @@ func (c *Catalog) Update(id string, p Patch) (Model, error) {
 	}
 	if p.RecommendedClasses != nil {
 		e.m.RecommendedClasses = classes
+	}
+	if p.RecommendedTiers != nil {
+		e.m.RecommendedTiers = tiers
 	}
 	return e.view(), c.saveLocked()
 }
@@ -478,4 +494,25 @@ func normClasses(in []string) ([]string, error) {
 
 func classIndex(id string) int {
 	return slices.IndexFunc(Classes, func(c Class) bool { return c.ID == id })
+}
+
+func normTiers(in []string) ([]string, error) {
+	out := []string{}
+	for _, t := range in {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" || slices.Contains(out, t) {
+			continue
+		}
+		if !IsPerfTier(t) {
+			return nil, invalid("unknown performance tier %q", t)
+		}
+		out = append(out, t)
+	}
+	// Keep tier order (t1..t4) regardless of input order.
+	slices.SortFunc(out, func(a, b string) int { return cmp.Compare(tierIndex(a), tierIndex(b)) })
+	return out, nil
+}
+
+func tierIndex(id string) int {
+	return slices.IndexFunc(PerfTiers, func(t PerfTier) bool { return t.ID == id })
 }

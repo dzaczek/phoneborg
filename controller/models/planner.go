@@ -36,6 +36,11 @@ type Policy struct {
 	Replicas int      `json:"replicas"` // replicas: number of nodes
 	Percent  float64  `json:"percent"`  // percent: share of eligible nodes, 0..100
 	Classes  []string `json:"classes"`  // optional device class filter; empty = all
+	// MinTokS is the minimum predicted generation tok/s (ADR-015) a node must
+	// have for this model to be placed on it; 0 = use the planner's default
+	// (DefaultPlanner.MinTokS, normally the -min-predicted-tok-s flag). A
+	// node whose bandwidth is not measured yet is never excluded.
+	MinTokS float64 `json:"min_tok_s,omitempty"`
 }
 
 // Spec is the operator's placement: policies plus a default model for
@@ -66,9 +71,15 @@ type Node struct {
 	Class         string
 	RAMTotalBytes uint64
 	Speed         float64 // measured generation tok/s; 0 = unknown
-	CurrentModel  string  // model the node serves or is switching to
-	Assigned      string  // model the previous plan gave it, for stability
-	Drained       bool
+	// GenGBps and PromptGBps are the node's last known-good measured memory
+	// bandwidth (ADR-015: gen_tok_s x model_file_bytes is roughly constant
+	// per phone), used to predict how fast a candidate model would run
+	// before it is ever placed there. 0 = not measured yet.
+	GenGBps      float64
+	PromptGBps   float64
+	CurrentModel string // model the node serves or is switching to
+	Assigned     string // model the previous plan gave it, for stability
+	Drained      bool
 	// BudgetBytes is the node's self-reported memory budget from its last
 	// heartbeat (RuntimeStatus.BudgetBytes, ADR-012): what its agent's own
 	// PlanMemory would have available if it switched models right now. 0
@@ -111,6 +122,11 @@ type Assignment struct {
 	KVType      string `json:"kv_type"`
 	EstRAMBytes int64  `json:"est_ram_bytes"`
 	Fits        bool   `json:"fits"`
+	// PredGenTPS and PredPromptTPS predict the model's speed on this node
+	// from its measured bandwidth (ADR-015); 0 when the node's bandwidth is
+	// not measured yet.
+	PredGenTPS    float64 `json:"pred_gen_tps"`
+	PredPromptTPS float64 `json:"pred_prompt_tps"`
 }
 
 // Plan maps every planned node to a model, with warnings for policies that
@@ -131,7 +147,12 @@ type Planner interface {
 // then replicas, then percentages, then the default model; otherwise a node
 // keeps what it serves. Bigger models pick first and prefer faster nodes;
 // a node already serving (or assigned) a model is kept on it.
-type DefaultPlanner struct{}
+type DefaultPlanner struct {
+	// MinTokS is the default minimum predicted generation tok/s (ADR-015)
+	// used when a policy does not set its own; normally the controller's
+	// -min-predicted-tok-s flag. 0 = no default threshold.
+	MinTokS float64
+}
 
 // Validate checks spec against the known node ids and catalog model ids.
 func Validate(spec Spec, nodeIDs, modelIDs []string) error {
@@ -202,7 +223,7 @@ func matchesClass(filter []string, class string) bool {
 }
 
 // Plan implements Planner.
-func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
+func (d DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 	nodes = slices.Clone(nodes)
 	slices.SortFunc(nodes, func(a, b Node) int { return cmp.Compare(a.ID, b.ID) })
 	byModel := map[string]PlanModel{}
@@ -218,7 +239,8 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 	assigned := map[string]Assignment{}
 	assign := func(n Node, m PlanModel, reason string) {
 		assigned[n.ID] = Assignment{NodeID: n.ID, ModelID: m.ID, Reason: reason, CtxSize: m.CtxSize(), Slots: 1,
-			KVType: "auto", EstRAMBytes: m.EstRAM(), Fits: fitsNode(m, n)}
+			KVType: "auto", EstRAMBytes: m.EstRAM(), Fits: fitsNode(m, n),
+			PredGenTPS: PredictedTPS(n.GenGBps, m.SizeBytes), PredPromptTPS: PredictedTPS(n.PromptGBps, m.SizeBytes)}
 	}
 
 	// Policies for models that are not ready yet (or were removed) wait.
@@ -249,6 +271,9 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 				if !assigned[id].Fits {
 					warn("%s: pinned to %s (%s) but needs about %s with a %d-token context", p.ModelID, id, gib(n.RAMTotalBytes), gib(uint64(m.EstRAM())), m.CtxSize())
 				}
+				if threshold := effectiveMinTokS(p, d.MinTokS); !meetsSpeed(m, n, threshold) {
+					warn("%s", speedWarning(m.ID, n.ID, PredictedTPS(n.GenGBps, m.SizeBytes), threshold))
+				}
 			}
 		}
 	}
@@ -266,8 +291,9 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 		})
 		for _, p := range ps {
 			m := byModel[p.ModelID]
+			threshold := effectiveMinTokS(p, d.MinTokS)
 			eligible := func(n Node) bool {
-				return !n.Drained && matchesClass(p.Classes, n.Class) && fitsNode(m, n)
+				return !n.Drained && matchesClass(p.Classes, n.Class) && fitsNode(m, n) && meetsSpeed(m, n, threshold)
 			}
 			pool := 0
 			for _, n := range nodes {
@@ -282,7 +308,7 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 			if pool == 0 {
 				// percentOf(p, 0) is 0, so without this the policy would
 				// silently place nothing and warn about nothing.
-				warn("%s: %s -> 0 nodes (%s)", m.ID, describe(p), noFitReason(m, p, nodes))
+				warn("%s: %s -> 0 nodes (%s)", m.ID, describe(p), noFitReason(m, p, nodes, threshold))
 				continue
 			}
 			var free []Node
@@ -310,11 +336,14 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 	for _, n := range nodes {
 		a, ok := assigned[n.ID]
 		if !ok && hasDefault && !n.Drained {
-			if fitsNode(dm, n) {
+			switch {
+			case !fitsNode(dm, n):
+				tooSmall = append(tooSmall, n.ID)
+			case !meetsSpeed(dm, n, d.MinTokS):
+				warn("%s", speedWarning(dm.ID, n.ID, PredictedTPS(n.GenGBps, dm.SizeBytes), d.MinTokS))
+			default:
 				assign(n, dm, ReasonDefault)
 				a, ok = assigned[n.ID], true
-			} else {
-				tooSmall = append(tooSmall, n.ID)
 			}
 		}
 		if !ok {
@@ -393,14 +422,52 @@ func fitsNode(m PlanModel, n Node) bool {
 	return Fits(m.EstRAM(), n.RAMTotalBytes)
 }
 
-// noFitReason explains why no node was eligible for policy p and model m:
-// either no connected, undrained node matches its class filter, or none of
-// those has enough memory.
-func noFitReason(m PlanModel, p Policy, nodes []Node) string {
+// noFitReason explains why no node was eligible for policy p and model m: no
+// connected, undrained node matches its class filter, none of those has
+// enough memory, or none of those is fast enough (minTokS, ADR-015).
+func noFitReason(m PlanModel, p Policy, nodes []Node, minTokS float64) string {
+	sawClass, sawFit := false, false
 	for _, n := range nodes {
-		if !n.Drained && matchesClass(p.Classes, n.Class) {
-			return fmt.Sprintf("none has enough memory: needs ~%s", gib(uint64(m.EstRAM())))
+		if n.Drained || !matchesClass(p.Classes, n.Class) {
+			continue
+		}
+		sawClass = true
+		if fitsNode(m, n) {
+			sawFit = true
 		}
 	}
-	return "no connected node matches the class filter"
+	switch {
+	case !sawClass:
+		return "no connected node matches the class filter"
+	case !sawFit:
+		return fmt.Sprintf("none has enough memory: needs ~%s", gib(uint64(m.EstRAM())))
+	default:
+		return fmt.Sprintf("none is fast enough: needs >= %g tok/s", minTokS)
+	}
+}
+
+// effectiveMinTokS is p's own minimum predicted tok/s (ADR-015), or def when
+// p does not set one.
+func effectiveMinTokS(p Policy, def float64) float64 {
+	if p.MinTokS > 0 {
+		return p.MinTokS
+	}
+	return def
+}
+
+// meetsSpeed reports whether m's predicted generation speed on n is at least
+// minTokS. A threshold of 0 (no minimum) or an unmeasured node (n has not
+// reported its bandwidth yet, so the prediction is 0) never excludes.
+func meetsSpeed(m PlanModel, n Node, minTokS float64) bool {
+	if minTokS <= 0 {
+		return true
+	}
+	pred := PredictedTPS(n.GenGBps, m.SizeBytes)
+	return pred == 0 || pred >= minTokS
+}
+
+// speedWarning is the "too slow" warning for one node (ADR-015), e.g.
+// "gemma-3-4b on mi8: predicted 3.0 tok/s < 4".
+func speedWarning(modelID, nodeID string, predTPS, minTokS float64) string {
+	return fmt.Sprintf("%s on %s: predicted %.1f tok/s < %g", modelID, nodeID, predTPS, minTokS)
 }

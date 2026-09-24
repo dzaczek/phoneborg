@@ -205,6 +205,81 @@ func TestPlanNodeBudget(t *testing.T) {
 	}
 }
 
+// TestPlanExcludesBySpeed covers ADR-015: a node is not given a model whose
+// predicted generation tok/s (from the node's measured bandwidth and the
+// model's file size) is below the threshold. Mi 8 numbers: a bandwidth of
+// 7.2 GB/s predicts 6 tok/s for a 1.2 GB model (allowed at min 3) and 3
+// tok/s for a 2.4 GB model (excluded at min 4).
+func TestPlanExcludesBySpeed(t *testing.T) {
+	// 8 GiB of RAM so both models fit comfortably (~2.4 GiB estimate at
+	// most): the only thing excluding the 4B model here is its speed.
+	mi8 := node("mi8", 8, 0, "")
+	mi8.GenGBps = 7.2
+	small := PlanModel{ID: "qwen2.5-1.5b", SizeBytes: 1_200_000_000, CtxTrain: 2048, Layers: 2, KVHeads: 2, HeadDim: 8} // pred 6.0 tok/s
+	big := PlanModel{ID: "gemma-3-4b", SizeBytes: 2_400_000_000, CtxTrain: 2048, Layers: 2, KVHeads: 2, HeadDim: 8}     // pred 3.0 tok/s
+	catalog := []PlanModel{small, big}
+
+	for _, tc := range []struct {
+		name     string
+		minTokS  float64
+		model    string
+		want     string
+		warnings []string
+	}{
+		{name: "1.5B allowed at min 3", minTokS: 3, model: small.ID, want: "mi8=qwen2.5-1.5b/default"},
+		{name: "4B excluded at min 4", minTokS: 4, model: big.ID,
+			want:     "mi8=/none",
+			warnings: []string{"gemma-3-4b on mi8: predicted 3.0 tok/s < 4"}},
+		{name: "4B allowed at the exact boundary", minTokS: 3, model: big.ID, want: "mi8=gemma-3-4b/default"},
+		{name: "no threshold never excludes", minTokS: 0, model: big.ID, want: "mi8=gemma-3-4b/default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := DefaultPlanner{MinTokS: tc.minTokS}.Plan(Spec{DefaultModel: tc.model}, []Node{mi8}, catalog)
+			if got := summary(p); got != tc.want {
+				t.Errorf("plan = %s, want %s", got, tc.want)
+			}
+			if len(p.Warnings) != len(tc.warnings) {
+				t.Fatalf("warnings = %q, want %d", p.Warnings, len(tc.warnings))
+			}
+			for i, w := range tc.warnings {
+				if !strings.Contains(p.Warnings[i], w) {
+					t.Errorf("warning %d = %q, want it to contain %q", i, p.Warnings[i], w)
+				}
+			}
+		})
+	}
+
+	// A policy's own min_tok_s overrides the planner default, for both
+	// replicas/percent eligibility and pins (which still place, but warn).
+	t.Run("policy min_tok_s overrides the planner default", func(t *testing.T) {
+		spec := Spec{Policies: []Policy{{ModelID: big.ID, Mode: ModeReplicas, Replicas: 1, MinTokS: 2}}}
+		p := DefaultPlanner{MinTokS: 4}.Plan(spec, []Node{mi8}, catalog)
+		if got := summary(p); got != "mi8=gemma-3-4b/replicas" {
+			t.Fatalf("plan = %s, want mi8=gemma-3-4b/replicas", got)
+		}
+	})
+	t.Run("replicas excluded by speed warns like a missing fit", func(t *testing.T) {
+		spec := Spec{Policies: []Policy{{ModelID: big.ID, Mode: ModeReplicas, Replicas: 1}}}
+		p := DefaultPlanner{MinTokS: 4}.Plan(spec, []Node{mi8}, catalog)
+		if got := summary(p); got != "mi8=/none" {
+			t.Fatalf("plan = %s, want mi8=/none", got)
+		}
+		if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "none is fast enough") {
+			t.Fatalf("warnings = %q", p.Warnings)
+		}
+	})
+	t.Run("pin still places but warns when too slow", func(t *testing.T) {
+		spec := Spec{Policies: []Policy{{ModelID: big.ID, Mode: ModePin, Nodes: []string{"mi8"}}}}
+		p := DefaultPlanner{MinTokS: 4}.Plan(spec, []Node{mi8}, catalog)
+		if got := summary(p); got != "mi8=gemma-3-4b/pin" {
+			t.Fatalf("plan = %s, want mi8=gemma-3-4b/pin", got)
+		}
+		if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "gemma-3-4b on mi8: predicted 3.0 tok/s < 4") {
+			t.Fatalf("warnings = %q", p.Warnings)
+		}
+	})
+}
+
 func TestPercentOf(t *testing.T) {
 	for _, tc := range []struct {
 		p    float64
