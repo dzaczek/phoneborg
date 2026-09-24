@@ -68,6 +68,11 @@ adb -s $S shell 'df -h /data | tail -1'
 adb -s $S shell 'dumpsys battery | grep -E "powered|level|temperature|health"'
 ```
 
+Gemma 3n is built for phones. Some of its weights (per-layer embeddings) are
+read from the memory-mapped file only when needed, so llama.cpp keeps less
+than the file size resident. Its generation is also faster than its file
+size suggests, so predicted tok/s (ADR-015) underestimates it.
+
 Rules of thumb:
 - **RAM:** `MemAvailable` should be at least 1.5× the model file.
 - **Thermals:** a battery temperature above ~450 (45 °C) under load means the
@@ -299,6 +304,11 @@ available.
 | Qwen3-1.7B | 1056 MiB | 2029 MiB | 8.8 | 4.5 | large KV cache per token |
 | Gemma 3 4B it | 2374 MiB | 2839 MiB | 3.8 | 2.4 | fits, too slow for chat |
 | Qwen3-4B | 2381 MiB | 3248 MiB | 3.3 | 0.3 | memory pressure; unusable |
+| SmolLM3-3B | 1826 MiB | 2541 MiB | 4.3 | 2.9 | slow |
+| Llama 3.2 3B Instruct | 1925 MiB | 2911 MiB | 4.2 | 2.6 | slow |
+| Phi-4-mini (3.8B) | 2376 MiB | 3445 MiB | 3.4 | 0.6 | memory pressure |
+| **Gemma 3n E2B it** | 2886 MiB | **1774 MiB** | 5.8 | 3.7 | **uses less RAM than its file; best 2–4B option** |
+| Gemma 3n E4B it | 4328 MiB | 3032 MiB | 2.8 | 1.9 | fits a 5.5 GiB phone, slow |
 
 Rules of thumb:
 - Generation speed on phones is bound by memory bandwidth. Tokens/s drop
