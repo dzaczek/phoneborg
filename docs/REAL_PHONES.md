@@ -2,7 +2,27 @@
 
 This guide takes a phone from the drawer to an `ACTIVE` node serving a model.
 Every command below was checked against Android 12. `<SERIAL>` is the first
-column of `adb devices`.
+column of `adb devices`. Measurements referred to here are collected in
+[BENCHMARKS.md](BENCHMARKS.md); day-to-day operation is in
+[OPERATIONS.md](OPERATIONS.md).
+
+## 0. Choosing phones
+
+Any ARM64 Android phone with USB debugging can join. What makes one useful:
+
+| Criterion | Why | How to check |
+|---|---|---|
+| **RAM** | decides which models fit (class `xs` < 3 GiB … `xl` 10 GiB+). Android and its apps take ~0.65 GiB on a bare emulator and ~2.4 GiB on a real Mi 8. | `MemTotal` / `MemAvailable` (step 3) |
+| **Memory bandwidth (SoC)** | generation speed is bandwidth bound; it sets the performance tier (`t1`..`t4`). A Snapdragon 845 measures ~7 GB/s (`t2`). Newer flagship SoCs should do better (not yet measured). | `ro.soc.model`; after joining, `pbctl nodes` shows the tier |
+| **dotprod / i8mm** | pcprov picks the fastest llama.cpp build the CPU supports: dotprod+fp16 (Snapdragon 855 and newer), fp16 only (e.g. Snapdragon 845), or plain ARMv8. i8mm makes prompt processing much faster. | `asimddp`, `asimdhp`, `i8mm` in `/proc/cpuinfo` |
+| **Thermals** | a hot phone throttles; the controller stops sending new sessions at 75 °C by default | battery temperature under load (step 3) |
+| **Battery care** | a phone on USB 24/7 sits at 100% and can swell | charge limit in the ROM (step 4) |
+| **USB-C and a powered hub** | 2–3 A per port for several phones | – |
+
+Preferred first-generation node: Snapdragon 865-class SoC, 8–12 GB RAM,
+USB-C (e.g. OnePlus 8 / 8 Pro, Xiaomi Mi 10, Snapdragon Galaxy S20). These
+have not been tested yet; the only real phone measured so far is a Xiaomi
+Mi 8.
 
 ## 1. Prepare the phone (once per phone)
 
@@ -68,12 +88,9 @@ adb -s $S shell 'df -h /data | tail -1'
 adb -s $S shell 'dumpsys battery | grep -E "powered|level|temperature|health"'
 ```
 
-Gemma 3n is built for phones. Some of its weights (per-layer embeddings) are
-read from the memory-mapped file only when needed, so llama.cpp keeps less
-than the file size resident. The controller's catalog detects this
-(`sparse_bytes`/`resident_bytes`, ADR-012 addendum) and sizes and predicts
-speed from resident bytes, not the file size, so this no longer causes the
-agent to refuse the model or the planner to warn it does not fit.
+Some models keep less resident than their file size (Gemma 3n: a per-layer
+embedding table read sparsely through mmap). The controller sizes and
+predicts speed from these resident bytes, not the file size (ADR-012 update).
 
 Rules of thumb:
 - **RAM:** `MemAvailable` should be at least 1.5× the model file.
@@ -84,10 +101,10 @@ Rules of thumb:
 
 A phone whose CPU sleeps stops sending heartbeats and drops to `SUSPECT`.
 
-Measured on a Xiaomi Mi 8 with LineageOS 22.2: with the screen off and
-stay-awake disabled, the node stayed `ACTIVE` for 40 minutes on USB power, with
-40/40 requests served at ~17 tok/s and heartbeats never older than 5 s. So on
-LineageOS this step is optional. Vendor ROMs (MIUI, One UI) can behave
+On a Xiaomi Mi 8 with LineageOS 22.2 the node stayed `ACTIVE` for 40 minutes
+with the screen off and stay-awake disabled
+([BENCHMARKS.md](BENCHMARKS.md#screen-off-endurance)), so on LineageOS this
+step is optional. Vendor ROMs (MIUI, One UI) can behave
 differently, so run the same check before relying on it: turn the screen off
 and watch `pbctl nodes` for a while.
 
@@ -123,8 +140,10 @@ bin/pcprov provision -all       -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 Notes:
 - Without `-serial`, `watch` takes every device, emulated ones included.
-- `-agent-args "-ctx-size 16384"` is only needed for agent clients such as
-  opencode (see `DEV_EMULATION.md`).
+- `-agent-args "-ctx-size 16384"` is only needed for a static `-model` used
+  by agent clients such as opencode; models placed by the controller get a
+  16k context when RAM allows (see
+  [OPERATIONS.md](OPERATIONS.md#sending-requests)).
 - The first push of a 0.5 GB model takes ~30 s over USB 2.0. Later runs skip
   it when the file size matches.
 
@@ -154,19 +173,21 @@ curl -si http://127.0.0.1:18080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}],"max_tokens":16}' | grep -iE '^x-phoneborg-node|content'
 ```
 
-Dashboards: http://127.0.0.1:18080 (node table) and http://127.0.0.1:3000
-(Grafana: temperature, battery, tokens/s, restarts).
+Dashboards: http://127.0.0.1:18080 (web panel; battery and temperature in
+the Nodes view) and http://127.0.0.1:3000 (Grafana: temperature, tokens/s,
+restarts).
 
 ## 7. Files and logs on the phone
 
 Everything lives in `/data/local/tmp/phoneborg`:
 
 ```text
-node-agent           agent binary
-agent.pid, agent.log agent process and JSON log
-bin/llama-server     inference server
-models/*.gguf        models
+node-agent                 agent binary
+agent.pid, agent.log       agent process and JSON log
+bin/llama-server           inference server
+models/*.gguf              models (models/<id>.gguf.part while downloading)
 runtime.pid, runtime.log   llama-server process and log
+slim.state                 packages disabled by pcprov slim
 ```
 
 ```sh
@@ -235,7 +256,7 @@ re-disables what is already off, and it merges into the same state file so
 browser, music, calendar, clock, recorder, messaging or email app until
 `unslim` is run. Do not slim a phone still used for anything else.
 
-## Model switching (ADR-012)
+## Model switching and storage (ADR-012)
 
 When the controller assigns a node a model (`DesiredRuntime`, from the
 placement planner), the agent downloads and serves it without needing a
@@ -254,7 +275,12 @@ replug or a new `pcprov provision`:
 - Context size, slot count and KV cache type (f16 or q8_0) are chosen
   automatically to fit available RAM: `-mem-reserve-mb` (default 600) is how
   much RAM the agent leaves for Android and itself; lower it on a phone that
-  is otherwise idle, raise it if the node gets killed under memory pressure.
+  is otherwise idle, raise it if the node gets killed under memory pressure
+  (pass it with `-agent-args "-mem-reserve-mb 800"`).
+- If the requested settings do not fit but the same model is already
+  running, the agent keeps it running. A failed switch is retried after
+  30 s, backing off to 10 minutes, or sooner once the RAM budget grows by
+  more than 10%.
 - If a switch fails (bad download, out of RAM, llama-server crash-loops on
   the new model) and the previous model file is still on disk, the agent
   falls back to it, so the node keeps serving. `pbctl nodes` / `/v1/nodes`
@@ -270,6 +296,9 @@ curl -s http://127.0.0.1:18080/v1/nodes | python3 -m json.tool | grep -A8 '"runt
 
 ## Troubleshooting
 
+Controller-side errors (`context_length_exceeded`, `node_unavailable`, ...)
+are in [OPERATIONS.md](OPERATIONS.md#troubleshooting).
+
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | `pcprov` fails with "unsupported ABI" | 32-bit phone | not supported |
@@ -283,6 +312,8 @@ curl -s http://127.0.0.1:18080/v1/nodes | python3 -m json.tool | grep -A8 '"runt
 | node `OFFLINE` after unplugging | expected: phones talk to the controller over USB | replug; `pcprov watch` re-provisions |
 | agent missing after a phone reboot | processes started over adb do not survive a reboot | `pcprov watch` re-provisions when the phone is plugged in |
 | model state stays `loading` | model still loading, or not enough RAM | `tail runtime.log`; compare `MemAvailable` with the model size |
+| `runtime.error` "model needs X MiB, budget Y MiB" | the assigned model does not fit this phone's RAM budget | smaller model or placement with `classes=`; `pcprov slim`; lower `-mem-reserve-mb` on an otherwise idle phone |
+| node stays at tier `?` | no self-test has completed yet (model not ready) | wait for `runtime.state` `serving`; check `runtime.log` |
 
 ## Wireless adb
 
@@ -290,55 +321,30 @@ Not supported yet. The phone must stay on the USB cable, because the
 controller reaches it through `adb reverse` and `adb forward`, and the cable
 also powers it. Wi-Fi nodes are on the roadmap.
 
-## Choosing a model for a phone
+## Choosing a model per phone class
 
-Measured on a Xiaomi Mi 8 (Snapdragon 845, 5.5 GiB RAM, LineageOS 22.2,
-`armv8.2-a+fp16` build, 6 threads). llama-server ran with an 8k context, a
-~300-token prompt and 64 generated tokens. With no model loaded, 3.1 GiB was
-available.
+Derived from the Mi 8 measurements
+([BENCHMARKS.md](BENCHMARKS.md#models-on-the-mi-8)). Class is RAM
+(`xs` < 3 GiB, `s` 3–5, `m` 5–7, `l` 7–10, `xl` 10+), tier is measured
+bandwidth (`t1` < 4, `t2` 4–10, `t3` 10–25, `t4` ≥ 25 GB/s). `pbctl nodes`
+shows both as `m/t2`. Rows marked *untested* are extrapolations.
 
-| Model (Q4_K_M) | File | llama-server RSS | Prompt tok/s | Generation tok/s | Verdict |
-|---|---|---|---|---|---|
-| Qwen2.5-0.5B-Instruct | 468 MiB | 632 MiB | 36.2 | 14.8 | fast, weak answers |
-| Gemma 3 1B it | 768 MiB | 926 MiB | 16.7 | 7.3 | good |
-| Llama 3.2 1B Instruct | 770 MiB | 1120 MiB | 15.8 | 8.4 | good |
-| Qwen2.5-1.5B-Instruct | 1065 MiB | 1375 MiB | 11.4 | 6.8 | **best balance on this phone** |
-| DeepSeek-R1-Distill-Qwen-1.5B | 1065 MiB | 1373 MiB | 9.3 | 6.0 | reasons step by step, so answers take long |
-| Qwen3-1.7B | 1056 MiB | 2029 MiB | 8.8 | 4.5 | large KV cache per token |
-| Gemma 3 4B it | 2374 MiB | 2839 MiB | 3.8 | 2.4 | fits, too slow for chat |
-| Qwen3-4B | 2381 MiB | 3248 MiB | 3.3 | 0.3 | memory pressure; unusable |
-| SmolLM3-3B | 1826 MiB | 2541 MiB | 4.3 | 2.9 | slow |
-| Llama 3.2 3B Instruct | 1925 MiB | 2911 MiB | 4.2 | 2.6 | slow |
-| Phi-4-mini (3.8B) | 2376 MiB | 3445 MiB | 3.4 | 0.6 | memory pressure |
-| **Gemma 3n E2B it** | 2886 MiB | **1774 MiB** | 5.8 | 3.7 | **uses less RAM than its file; best 2–4B option** |
-| Gemma 3n E4B it | 4328 MiB | 3032 MiB | 2.8 | 1.9 | fits a 5.5 GiB phone, slow |
+| Phone | Suggested models | Basis |
+|---|---|---|
+| `xs` (≤ 3 GiB) | Qwen2.5-0.5B | emulated 2 GiB phone: 0.5B fits, 1.5B is tight; *untested on a real xs phone* |
+| `s` / `t2` (3–5 GiB) | Qwen2.5-0.5B, Gemma 3 1B, Llama 3.2 1B | their RSS (0.6–1.1 GiB) and Mi 8 speed (7–15 tok/s); *untested on a real s phone* |
+| `m` / `t2` (5–7 GiB, e.g. Mi 8) | **Qwen2.5-1.5B** (6.8 tok/s) or **Gemma 3n E2B** (3.7–4.7 tok/s, 1.8 GiB RSS) | measured on the Mi 8; 3–4B models fit but run at ≤ 2.9 tok/s |
+| `l` / `t3` (7–10 GiB) | Gemma 3n E4B, Llama 3.2 3B, Gemma 3 4B | *untested*: on the Mi 8 (`t2`) these ran at 1.9–2.6 tok/s, so they need more bandwidth |
+| `xl` (12 GiB) / `t3`+ | 3–4B models, larger contexts | *untested* |
+| `xl` (24 GB flagships) | 8B models, Qwen3-30B-A3B (MoE) | *untested*; the bandwidth model ignores MoE (ADR-015) |
 
 Rules of thumb:
-- Generation speed on phones is bound by memory bandwidth. Tokens/s drop
-  roughly in proportion to model size.
-- Leave at least ~1 GiB of the phone's free memory unused. Qwen3-4B fit on
-  paper, but Android started evicting its pages and speed collapsed
-  (0.3 tok/s).
-- KV cache size differs a lot between architectures. Qwen3-1.7B needs ~4× more
-  memory per context token than Qwen2.5-1.5B, so it needs a smaller context or
-  q8_0 KV (the agent chooses this automatically, see ADR-012).
-- `llama-server` maps weights from the file. `MemAvailable` barely drops when a
-  model loads, so judge fit by RSS or by the agent's budget, not by
-  `MemAvailable`.
-
-The first rule of thumb above is now automated (ADR-015): the controller
-computes each phone's memory bandwidth from `gen_tok_s * model_resident_bytes`
-of its own self-test, sorts it into a performance tier (`t1`..`t4`, `pbctl
-nodes`/`pbctl classes`), and predicts a candidate model's speed on it before
-ever placing it there. A phone that fits a model on paper but would only run
-it at, say, 2.4 tok/s like the Gemma 3 4B row above is excluded from
-placement by `-min-predicted-tok-s` (default 3) unless a policy pins it
-there explicitly. See ADR-015 and `docs/USAGE.md`'s "Performance tiers and
-predicted speed".
-
-"Resident bytes" (ADR-012's addendum) is the file size minus tensors
-llama.cpp only reads a few rows of, such as Gemma 3n's per-layer embeddings
-(1440 MiB of the 2886 MiB E2B file above): sizing, fit checks and predicted
-speed all use it instead of the raw file size, which is why the Gemma 3n E2B
-row above fits and predicts correctly despite its file being nearly as big as
-Gemma 3 4B's.
+- Leave ~1 GiB of free memory unused: Qwen3-4B fit on paper but collapsed
+  to 0.3 tok/s under memory pressure.
+- Judge fit by llama-server RSS or the agent's budget, not `MemAvailable`,
+  which barely moves when a model loads (weights are mmapped).
+- Models with large KV caches per token (Qwen3) need a smaller context or
+  q8_0 KV; the agent picks this automatically.
+- The controller predicts each model's speed per phone and will not place a
+  model predicted below 3 tok/s (`-min-predicted-tok-s`) unless pinned; see
+  [OPERATIONS.md](OPERATIONS.md#performance-tiers-and-predicted-speed).
