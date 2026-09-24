@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>PhoneBorg</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<section id="login" class="login" hidden aria-labelledby="login-title">
+  <form id="login-form" class="card login-card" autocomplete="off">
+    <h1 id="login-title"><img src="icon.svg" alt="" width="28" height="28"> PhoneBorg</h1>
+    <p class="muted">Cluster management. Sign in with the controller's admin token
+      (the file passed as <code>-admin-token-file</code>).</p>
+    <label for="login-token">Admin token</label>
+    <input id="login-token" name="token" type="password" required autocomplete="current-password" spellcheck="false">
+    <p id="login-error" class="form-error" role="alert" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+    <p class="muted small">The token stays in this browser tab only (session storage) and is sent as
+      <code>Authorization: Bearer</code>. A read-only table without login is at <a href="/status">/status</a>.</p>
+  </form>
+</section>
+
+<div id="app" class="layout" hidden>
+  <header class="topbar">
+    <a class="brand" href="#/overview"><img src="icon.svg" alt="" width="22" height="22"> PhoneBorg</a>
+    <span id="live" class="live" title="Auto-refresh status" aria-live="off"></span>
+    <span class="spacer"></span>
+    <nav class="ext" aria-label="External tools">
+      <a id="link-grafana" target="_blank" rel="noopener noreferrer">Grafana</a>
+      <a id="link-prometheus" target="_blank" rel="noopener noreferrer">Prometheus</a>
+    </nav>
+    <button id="btn-settings" type="button" class="ghost" aria-haspopup="dialog">Settings</button>
+    <button id="btn-logout" type="button" class="ghost">Log out</button>
+  </header>
+  <nav id="nav" class="nav" aria-label="Sections">
+    <a href="#/overview">Overview</a>
+    <a href="#/nodes">Nodes</a>
+    <a href="#/models">Models</a>
+    <a href="#/placement">Placement</a>
+    <a href="#/proxy">Proxy</a>
+    <a href="#/keys">API keys</a>
+    <a href="#/usage">Usage</a>
+  </nav>
+  <main id="main" tabindex="-1"></main>
+</div>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>
