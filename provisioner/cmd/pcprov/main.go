@@ -28,7 +28,7 @@ func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pcprov <devices|provision|watch|status|stop|slim|unslim> [flags]\n  run 'pcprov <cmd> -h' for flags")
+	fmt.Fprintln(os.Stderr, "usage: pcprov <devices|provision|watch|status|stop|heal|slim|unslim> [flags]\n  run 'pcprov <cmd> -h' for flags")
 	os.Exit(2)
 }
 
@@ -149,6 +149,17 @@ func main() {
 		}
 		if failed > 0 {
 			os.Exit(1)
+		}
+	case "heal":
+		if len(serials) == 0 {
+			fail(log, fmt.Errorf("-serial required"))
+		}
+		for _, s := range dedupe(serials) {
+			fixed, err := p.Heal(ctx, s)
+			fail(log, err)
+			if len(fixed) == 0 {
+				log.Info("adb links ok", "serial", s)
+			}
 		}
 	case "status", "stop":
 		if len(serials) == 0 {

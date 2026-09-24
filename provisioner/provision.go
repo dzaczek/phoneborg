@@ -180,9 +180,13 @@ func (p *Provisioner) Status(ctx context.Context, serial string) (string, error)
 // that disappears (USB unplugged) is forgotten, so re-plugging re-provisions.
 // after, if non-nil, runs once right after each successful provision (used to
 // chain slim).
+// healInterval is how often Watch verifies adb links of provisioned devices.
+const healInterval = 15 * time.Second
+
 func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include func(serial string) bool, after func(serial string)) error {
 	done := map[string]bool{}
 	warned := map[string]string{}
+	lastHeal := map[string]time.Time{}
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -205,6 +209,14 @@ func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include
 				continue
 			}
 			if done[d.Serial] {
+				// Re-check adb reverse/forward periodically: adb drops them
+				// when a phone re-enumerates on USB without leaving the list.
+				if time.Since(lastHeal[d.Serial]) >= healInterval {
+					lastHeal[d.Serial] = time.Now()
+					if _, err := p.Heal(ctx, d.Serial); err != nil {
+						p.Log.Warn("heal failed", "serial", d.Serial, "err", err)
+					}
+				}
 				continue
 			}
 			p.Log.Info("new device", "serial", d.Serial, "model", d.Model)
@@ -222,6 +234,7 @@ func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include
 				p.Log.Info("device gone", "serial", s)
 				delete(done, s)
 				delete(warned, s)
+				delete(lastHeal, s)
 			}
 		}
 		select {

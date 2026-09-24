@@ -277,6 +277,7 @@ curl -s http://127.0.0.1:18080/v1/nodes | python3 -m json.tool | grep -A8 '"runt
 | `phoneborg_node_runtime_restarts` keeps growing | llama-server is being killed (out of memory or vendor task killer) | smaller model or context; close apps; check `runtime.log` |
 | tokens/s far below expectations | too many threads, or threads pinned to offline cores | keep the default (`-threads-policy all`); try `-agent-args "-threads 4"` and compare; see ADR-009 |
 | tokens/s drops after a few minutes | thermal throttling | cooling, no case, lower brightness; watch temperature in Grafana |
+| node `ACTIVE` but requests to it fail with "connection refused", or the agent logs "connection refused" to 127.0.0.1:18080 | the phone re-enumerated on USB (loose cable, hot phone) and adb dropped its forward/reverse rules | `bin/pcprov heal -serial $S`; keep `pcprov watch` running: it re-checks the links every 15 s |
 | node `OFFLINE` after unplugging | expected: phones talk to the controller over USB | replug; `pcprov watch` re-provisions |
 | agent missing after a phone reboot | processes started over adb do not survive a reboot | `pcprov watch` re-provisions when the phone is plugged in |
 | model state stays `loading` | model still loading, or not enough RAM | `tail runtime.log`; compare `MemAvailable` with the model size |
