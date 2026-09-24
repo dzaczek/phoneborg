@@ -51,6 +51,13 @@ commands:
   placement unset <model>     remove the model's policy
   placement preview [set|unset] [<model> ...]
                               show the plan a change would give, apply nothing
+  opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools]
+                              generate opencode.json + .opencode/agent subagents for the phone cluster
+  opencode sync [-dir D]      regenerate agents/config from the current cluster state (idempotent)
+  opencode watch [-dir D] [-interval 15s]
+                              loop opencode sync until interrupted, logging changes only
+  opencode status [-dir D]    table of managed agents vs. cluster state
+  opencode prewarm [-dir D]   warm each managed agent's target's prompt cache
 
 environment:
   PHONEBORG_URL          controller URL (default http://127.0.0.1:18080)
@@ -162,6 +169,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return classes(c, o)
 	case cmd == "placement":
 		return placementCmd(c, o, rest)
+	case cmd == "opencode":
+		return opencodeCmd(c, o, rest)
 	}
 	return errUsage
 }
