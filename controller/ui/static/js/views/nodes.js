@@ -1,9 +1,39 @@
 // Nodes: live table with drain / undrain / forget and a details drawer.
 import { api, get } from '../api.js';
 import { h, fill, table, badge, bytes, int, tps, ago, classOf } from '../dom.js';
-import { toast, errorToast, confirmDialog, drawer } from '../ui.js';
+import { toast, errorToast, confirmDialog, formDialog, field, drawer } from '../ui.js';
 
 const refreshNow = () => window.dispatchEvent(new Event('pb:refresh'));
+const ALIAS_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+// validateAlias mirrors the controller's rules so mistakes are caught before
+// the request is sent; the controller is still the authority (its errors are
+// shown as-is if this check misses something).
+function validateAlias(alias, id, allNodes) {
+  if (!alias) return ''; // clears it
+  if (!ALIAS_RE.test(alias)) return 'Use lowercase letters, digits and hyphens, starting with a letter or digit, up to 32 characters.';
+  if (alias === 'auto') return '"auto" is reserved for automatic routing.';
+  if (alias.startsWith('pool')) return 'Aliases cannot start with "pool" (reserved for pool/<name> routing).';
+  if (allNodes.some((n) => n.id !== id && (n.id === alias || n.alias === alias))) return 'Already used by another node.';
+  return '';
+}
+
+function setAlias(n, allNodes) {
+  const input = h('input', { name: 'alias', value: n.alias || '', placeholder: 'phone-01', spellcheck: 'false', maxlength: 32 });
+  formDialog({
+    title: `Set alias for ${n.id}`,
+    fields: [field('Alias', input, 'Lowercase letters, digits and hyphens, starting with a letter or digit, up to 32 characters. Clear to remove it. Cannot start with "pool" or be "auto".')],
+    onSubmit: async () => {
+      const alias = input.value.trim();
+      const err = validateAlias(alias, n.id, allNodes);
+      if (err) throw new Error(err);
+      await api('PATCH', '/admin/nodes/' + encodeURIComponent(n.id), { alias });
+      toast(`${n.id}: alias ${alias ? 'set to ' + alias : 'cleared'}.`);
+      refreshNow();
+      return true;
+    },
+  });
+}
 
 function stateCell(n) {
   return [badge(n.state), n.drained ? badge('DRAINED') : null, n.hot ? badge('HOT') : null];
@@ -94,12 +124,15 @@ export default function nodesView() {
       const hb = n.last_heartbeat || {};
       const rt = hb.runtime;
       const actions = h('td.actions', null,
+        h('button.small', { type: 'button', onclick: () => setAlias(n, nodes), 'data-focus-key': n.id + ':alias' }, n.alias ? 'Edit alias' : 'Set alias'),
         n.drained
           ? h('button.small', { type: 'button', onclick: () => act(n, 'undrain'), 'data-focus-key': n.id + ':drain' }, 'Undrain')
           : h('button.small', { type: 'button', onclick: () => act(n, 'drain'), 'data-focus-key': n.id + ':drain' }, 'Drain'),
         h('button.small.danger', { type: 'button', onclick: () => act(n, 'forget'), 'data-focus-key': n.id + ':forget' }, 'Forget'));
       return h('tr', null,
-        h('td.nowrap', null, h('button.link.mono', { type: 'button', onclick: () => details(n), title: 'Show details', 'data-focus-key': n.id + ':details' }, n.id)),
+        h('td.nowrap', null,
+          h('button.link' + (n.alias ? '' : '.mono'), { type: 'button', onclick: () => details(n), title: 'Show details', 'data-focus-key': n.id + ':details' }, n.alias || n.id),
+          n.alias ? h('span.cell-sub.mono', null, n.id) : null),
         h('td', null, `${inv.manufacturer || ''} ${inv.model || ''}`.trim() || '–', h('span.cell-sub', null, inv.soc || '')),
         h('td', null, classOf(inv.ram_total_bytes) || '–'),
         h('td', null, stateCell(n)),

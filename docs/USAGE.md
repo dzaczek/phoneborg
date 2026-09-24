@@ -76,19 +76,20 @@ localhost or a trusted network.
 
 | View | What it does |
 |---|---|
-| Overview | Nodes by state, ready, drained and hot nodes, requests/s and tokens/s (last 30 s, measured in the browser), errors, models served, placement warnings. |
-| Nodes | Every node with device, class, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. Drain, undrain and forget (with confirmation). Select a node id for its inventory and runtime details. |
+| Overview | Nodes by state, ready, drained and hot nodes, requests/s and tokens/s (last 30 s, measured in the browser), errors, models served, placement warnings, and a **Virtual models** card listing `/v1/models` by kind (`auto`, `pool/<name>` with eligible node counts, `node/<alias>` with served model and readiness) with a copy button for each `phoneborg/<id>` reference. |
+| Nodes | Every node with device, class, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. The node's alias (if set) is shown in place of its id, with the id kept underneath. **Set alias**/**Edit alias** assigns or clears the alias used for `node/<alias>` routing. Drain, undrain and forget (with confirmation). Select a node for its inventory and runtime details. |
 | Models | The model catalog: download status, size, estimated RAM, which device classes it fits, tags. Add a model from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`, edit tags, recommended classes and the default flag, delete (the reason is shown if the controller refuses). |
 | Placement | Device classes, and policies per model: pin to nodes, a number of replicas, or a percentage of eligible nodes (shows the resulting node count as you move the slider), optionally only on some classes; the default model. **Preview** shows which nodes would change model, with RAM estimates and warnings; **Apply** is enabled only after a preview of the current edits. The current plan table shows each node's current and target model and download progress. |
+| Pools | Named groups of nodes routed together as `pool/<name>`. Each pool shows its description, routing (`spread` or `affinity`), filters (models, nodes, classes, minimum tok/s) and a members table (node alias/id, served model, eligible yes/no with reason). Add, edit and delete pools; **Prewarm** sends an optional system prompt to every eligible node so its prompt cache is warm, and shows per-node results. |
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Changes apply at once and are not saved across restarts. |
 | API keys | Keys with their usage. Create a key (shown once, with a copy button) and revoke keys. |
 | Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
 
 Live views refresh every 5 s. **Settings** sets the Grafana and Prometheus
 links (by default ports 3000 and 9090 on the controller's host); you can also
-open `/ui/?grafana=URL&prometheus=URL` once to set them. Models and
-Placement need a controller with the model management API; otherwise they
-say so and the other views work as usual.
+open `/ui/?grafana=URL&prometheus=URL` once to set them. Models, Placement
+and Pools need a controller with the matching admin API; otherwise they say
+so and the other views work as usual.
 
 `/status` keeps the old plain table, without login, for a quick look.
 

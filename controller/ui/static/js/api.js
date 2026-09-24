@@ -61,3 +61,24 @@ export async function getOptional(path) {
     throw e;
   }
 }
+
+// gatewayModels fetches GET /v1/models: a gateway endpoint authenticated
+// with an API key, not the admin token, so a 401 (key enforcement on, the
+// admin token is not a valid key) does not mean the admin session is bad.
+// Unlike api(), it never signs the operator out; any failure just returns
+// null and the caller shows the data as unavailable.
+export async function gatewayModels() {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch('/v1/models', {
+      headers: { Authorization: 'Bearer ' + token.get(), Accept: 'application/json' },
+      signal: ctl.signal, cache: 'no-store', credentials: 'omit',
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
