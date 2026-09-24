@@ -302,3 +302,63 @@ heartbeat, so a node can still take one new session in the few seconds before
 its next heartbeat reports it as hot: a soft protection, not a hard cutoff.
 Nodes with no readable thermal zone (e.g. redroid) are never marked hot,
 matching the existing gap in `phoneborg_node_temperature_celsius`.
+
+## ADR-013: Web management panel
+
+**Problem.** Managing the cluster meant `pbctl`, curl, Grafana and the old
+`/` table side by side. Model placement adds editing that a CLI does poorly:
+choosing nodes, percentages and class filters, and checking what a change
+does before applying it. Operators want one place for nodes, models,
+placement, gateway settings, API keys and usage.
+
+**Alternatives.**
+1. A single-page app with a framework and a build step (React, Svelte),
+   bundled into the controller.
+2. Server-rendered HTML templates with forms that post to new endpoints.
+3. Static HTML, CSS and vanilla ES modules, embedded with `go:embed`, that
+   call the existing admin API from the browser.
+
+**Trade-offs.** (1) gives the richest UI, but adds a Node toolchain, a
+lockfile and generated assets to a Go repository, and a supply chain to
+review. (2) keeps everything in Go, but duplicates the admin API as HTML
+handlers, and every change to the API needs a matching form handler. (3)
+has no build step and no new server code paths: the panel is just another
+admin API client, like `pbctl`, so the API stays the only place where
+authentication, validation and audit logging happen. Its cost is a little
+DOM code written by hand.
+
+**Decision.** (3), in `controller/ui`.
+
+- **Serving.** `GET /ui/` serves the embedded files. `/` redirects to `/ui/`,
+  and the old read-only table moved to `/status` (no login, for quick
+  checks). The panel works offline: no CDN, no web fonts. Responses carry a
+  strict Content-Security-Policy (same-origin scripts, styles and requests
+  only, no inline code, no framing), `nosniff` and `no-referrer`, and
+  directory listings are disabled.
+- **Auth.** The operator types the admin token. It is kept in
+  `sessionStorage` (this tab only, gone when the tab closes), sent as
+  `Authorization: Bearer`, and never put in URLs. A 401 returns to the login
+  screen; a 503 shows that the admin API is disabled. The static files
+  themselves need no token: they hold no data.
+- **Rendering.** Server strings only ever become DOM text nodes or attribute
+  values (a small `h()` helper), never HTML, so node names, model ids and
+  warnings cannot inject markup.
+- **Live data.** Live views poll every 5 s while the tab is visible and no
+  dialog is open. Requests and tokens per second are derived in the browser
+  from successive `/admin/stats` totals; no new endpoint was added.
+- **Placement.** Policy edits stay local until previewed with
+  `POST /admin/placement/preview`; Apply (`PUT /admin/placement`) is enabled
+  only for the exact state that was previewed. Views for model management
+  (models, device classes, placement) show a "not available" state when the
+  controller answers 404, so the panel also works with controllers that do
+  not have that API.
+- **Links.** Grafana and Prometheus links default to ports 3000 and 9090 on
+  the controller's host, and can be set in a settings dialog or with
+  `/ui/?grafana=URL&prometheus=URL` (kept in `localStorage`).
+
+**Not solved.** No TLS: the admin token crosses the network in clear text
+unless the panel is used on localhost or behind a TLS proxy (ADR-008).
+There are no per-operator accounts or audit identity beyond
+`principal=admin`. Browser tests are manual; the Go tests check only that
+the files are embedded, served with the right types, and reference no
+missing file.

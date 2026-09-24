@@ -34,7 +34,7 @@ Manual:
 ```sh
 make agent pcprov cluster-up
 bin/pcprov provision -connect 127.0.0.1:5555 -connect 127.0.0.1:5556
-open http://127.0.0.1:18080          # dashboard
+open http://127.0.0.1:18080          # web panel (token: deploy/dev-admin-token); plain table at /status
 open http://127.0.0.1:9090           # Prometheus, try phoneborg_nodes
 open http://127.0.0.1:3000           # Grafana, "PhoneBorg" dashboard (admin/admin to edit)
 docker compose -f deploy/docker-compose.yml pause phone-low   # simulate hang -> SUSPECT -> OFFLINE

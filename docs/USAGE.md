@@ -10,8 +10,9 @@ The controller listens on `http://127.0.0.1:18080` by default:
 | Path | What |
 |---|---|
 | `/v1/chat/completions`, `/v1/completions`, `/v1/models` | OpenAI-compatible gateway |
-| `/admin/...` | admin API (needs the admin token), used by `pbctl` |
-| `/` | HTML dashboard |
+| `/admin/...` | admin API (needs the admin token), used by `pbctl` and the web panel |
+| `/ui/` | [web management panel](#web-panel) (`/` redirects here) |
+| `/status` | read-only HTML table of nodes, no login |
 | `/metrics` | Prometheus metrics (`phoneborg_*`) |
 
 ## Sending requests
@@ -61,6 +62,34 @@ under `"provider"`. Phones need a large context for opencode; see
 
 Requests that share a system prompt and tools stay on one phone (session
 affinity), so follow-up turns reuse its prompt cache.
+
+## Web panel
+
+Open http://127.0.0.1:18080/ (it redirects to `/ui/`). The panel needs the
+admin API, so start the controller with `-admin-token-file` (see
+[pbctl](#pbctl) below for creating the token). Sign in with that token. It
+is kept for this browser tab only (session storage) and sent as a bearer
+header; **Log out** forgets it. The panel is built into the controller and
+loads nothing from the internet. There is no TLS yet, so use it on
+localhost or a trusted network.
+
+| View | What it does |
+|---|---|
+| Overview | Nodes by state, ready, drained and hot nodes, requests/s and tokens/s (last 30 s, measured in the browser), errors, models served, placement warnings. |
+| Nodes | Every node with device, class, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. Drain, undrain and forget (with confirmation). Select a node id for its inventory and runtime details. |
+| Models | The model catalog: download status, size, estimated RAM, which device classes it fits, tags. Add a model from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`, edit tags, recommended classes and the default flag, delete (the reason is shown if the controller refuses). |
+| Placement | Device classes, and policies per model: pin to nodes, a number of replicas, or a percentage of eligible nodes (shows the resulting node count as you move the slider), optionally only on some classes; the default model. **Preview** shows which nodes would change model, with RAM estimates and warnings; **Apply** is enabled only after a preview of the current edits. The current plan table shows each node's current and target model and download progress. |
+| Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Changes apply at once and are not saved across restarts. |
+| API keys | Keys with their usage. Create a key (shown once, with a copy button) and revoke keys. |
+| Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
+
+Live views refresh every 5 s. **Settings** sets the Grafana and Prometheus
+links (by default ports 3000 and 9090 on the controller's host); you can also
+open `/ui/?grafana=URL&prometheus=URL` once to set them. Models and
+Placement need a controller with the model management API; otherwise they
+say so and the other views work as usual.
+
+`/status` keeps the old plain table, without login, for a quick look.
 
 ## pbctl
 
@@ -156,7 +185,7 @@ pbctl undrain 5f1e2d3c4b5a6978
 
 When you drain a phone, its pinned sessions move to other phones on their
 next request. The drain is kept by node id, so it stays in effect when the
-phone reconnects and registers again. The dashboard shows **DRAINED**, and
+phone reconnects and registers again. The web panel and `/status` show **DRAINED**, and
 Prometheus has `phoneborg_node_drained{node_id}`. The drain flag is kept in
 memory and is lost when the controller restarts.
 
