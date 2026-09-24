@@ -115,6 +115,13 @@ type RuntimeStatus struct {
 	Slots            int       `json:"slots,omitempty"`
 	KVType           string    `json:"kv_type,omitempty"`
 	RAMEstimateBytes int64     `json:"ram_estimate_bytes,omitempty"`
+	// BudgetBytes is the agent's current memory budget (ADR-012's
+	// MemoryBudget): what PlanMemory would have available if it switched
+	// models right now. Reported every heartbeat whenever the agent has a
+	// runtime configured, even before it serves a model, so the placement
+	// planner can check fit against a node's real headroom instead of the
+	// class heuristic.
+	BudgetBytes int64 `json:"budget_bytes,omitempty"`
 }
 
 type NodeState string

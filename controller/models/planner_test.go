@@ -131,6 +131,80 @@ func TestPlanAssignmentDetails(t *testing.T) {
 	}
 }
 
+// budgetNode is a node reporting a memory budget (RuntimeStatus.BudgetBytes,
+// ADR-012), the way a real agent's heartbeat does.
+func budgetNode(id string, ramGiB float64, budgetMiB int64) Node {
+	n := node(id, ramGiB, 0, "")
+	n.BudgetBytes = budgetMiB << 20
+	return n
+}
+
+// TestPlanNodeBudget covers the bug this fixes: the class heuristic (RAM
+// minus a fixed 2 GiB Android baseline) found no room for Llama-3.2-1B on
+// classes xs,s even though a real 3 GiB phone has some. Once a node reports
+// its own measured budget, fit is checked against that instead.
+func TestPlanNodeBudget(t *testing.T) {
+	// 770 MiB file, 16 layers, 8 KV heads, head_dim 64 (Llama-3.2-1B's
+	// shape, ADR-012). EstRAM() at the default 16k context is ~1.4 GiB.
+	llama1b := PlanModel{ID: "llama-3.2-1b-instruct-q4_k_m", SizeBytes: 770 << 20, CtxTrain: 131072, Layers: 16, KVHeads: 8, HeadDim: 64}
+	catalog := []PlanModel{llama1b}
+
+	mi8 := budgetNode("mi8", 5.5, 2560) // real Xiaomi Mi 8: ~2.5 GiB budget
+	emu3 := budgetNode("emu3", 3, 1740) // 3 GiB emulator: ~1.7 GiB budget
+	emu2 := budgetNode("emu2", 2, 922)  // 2 GiB emulator: ~0.9 GiB budget
+
+	for _, tc := range []struct {
+		name     string
+		nodes    []Node
+		spec     Spec
+		want     string
+		warnings []string
+	}{
+		{name: "pin fits a 3 GiB phone once its real budget is known", nodes: []Node{emu3},
+			spec: Spec{Policies: []Policy{{ModelID: llama1b.ID, Mode: ModePin, Nodes: []string{"emu3"}}}},
+			want: "emu3=llama-3.2-1b-instruct-q4_k_m/pin"},
+		{name: "pin still warns when the real budget is too small", nodes: []Node{emu2},
+			spec:     Spec{Policies: []Policy{{ModelID: llama1b.ID, Mode: ModePin, Nodes: []string{"emu2"}}}},
+			want:     "emu2=llama-3.2-1b-instruct-q4_k_m/pin",
+			warnings: []string{"pinned to emu2"}},
+		{name: "replicas skips a node whose budget is really too small", nodes: []Node{emu2, emu3, mi8},
+			spec:     Spec{Policies: []Policy{{ModelID: llama1b.ID, Mode: ModeReplicas, Replicas: 3}}},
+			want:     "emu2=/none emu3=llama-3.2-1b-instruct-q4_k_m/replicas mi8=llama-3.2-1b-instruct-q4_k_m/replicas",
+			warnings: []string{"wants 3 node(s)"}},
+		{
+			// The observed bug: percent of classes xs,s got 0 nodes because
+			// the heuristic rejected both the 2 GiB and the 3 GiB phone.
+			// With real budgets, the 3 GiB phone fits.
+			name: "percent of classes xs,s now places on the 3 GiB phone", nodes: []Node{emu2, emu3},
+			spec: Spec{Policies: []Policy{{ModelID: llama1b.ID, Mode: ModePercent, Percent: 50, Classes: []string{"xs", "s"}}}},
+			want: "emu2=/none emu3=llama-3.2-1b-instruct-q4_k_m/percent"},
+		{
+			// Restricted to xs only (the 2 GiB phone), nothing fits even
+			// with its real budget: this must still warn, not silently
+			// place nothing (the other half of the observed bug: percentOf
+			// a zero-sized pool is 0, so "got < want" never fired).
+			name: "percent with no fit still warns instead of placing nothing silently", nodes: []Node{emu2, emu3},
+			spec:     Spec{Policies: []Policy{{ModelID: llama1b.ID, Mode: ModePercent, Percent: 50, Classes: []string{"xs"}}}},
+			want:     "emu2=/none emu3=/none",
+			warnings: []string{"none has enough memory"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := DefaultPlanner{}.Plan(tc.spec, tc.nodes, catalog)
+			if got := summary(p); got != tc.want {
+				t.Errorf("plan:\n got %s\nwant %s", got, tc.want)
+			}
+			if len(p.Warnings) != len(tc.warnings) {
+				t.Fatalf("warnings = %q, want %d", p.Warnings, len(tc.warnings))
+			}
+			for i, w := range tc.warnings {
+				if !strings.Contains(p.Warnings[i], w) {
+					t.Errorf("warning %d = %q, want it to contain %q", i, p.Warnings[i], w)
+				}
+			}
+		})
+	}
+}
+
 func TestPercentOf(t *testing.T) {
 	for _, tc := range []struct {
 		p    float64

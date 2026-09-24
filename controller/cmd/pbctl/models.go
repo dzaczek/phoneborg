@@ -316,10 +316,14 @@ func showPlacement(o *out, raw []byte, err error, title string) error {
 			if a.EstRAMBytes > 0 {
 				est = gib(a.EstRAMBytes)
 			}
-			rows = append(rows, []string{a.NodeID, n.Class, gib(int64(n.RAMTotalBytes)), dash(n.CurrentModel), st,
+			budget := "-"
+			if n.BudgetBytes > 0 {
+				budget = gib(n.BudgetBytes)
+			}
+			rows = append(rows, []string{a.NodeID, n.Class, gib(int64(n.RAMTotalBytes)), budget, dash(n.CurrentModel), st,
 				dash(a.ModelID), a.Reason, est, fits})
 		}
-		o.table("NODE\tCLASS\tRAM\tCURRENT\tSTATE\tPLANNED\tREASON\tEST RAM\tFITS", rows)
+		o.table("NODE\tCLASS\tRAM\tBUDGET\tCURRENT\tSTATE\tPLANNED\tREASON\tEST RAM\tFITS", rows)
 	}
 	for _, n := range pl.Nodes {
 		if n.Error != "" {

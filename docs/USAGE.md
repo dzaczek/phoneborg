@@ -233,6 +233,18 @@ when that estimate is at most the phone's RAM minus 2 GiB for Android.
 smallest phone. The estimate is conservative: the phone's agent may lower
 the context or quantize the KV cache to make a model fit.
 
+This 2 GiB baseline is only a guess at what Android leaves free, and it is
+often wrong: emulated 2–3 GiB phones use closer to 0.65 GiB, while a real
+phone with more background apps can use more. Once a phone has sent one
+heartbeat, placement instead checks fit against its actual reported memory
+budget (the same accounting its agent uses before switching models), so a
+phone with more real headroom than the 2 GiB guess assumes can get a model
+the class-based `FITS (16k)` column would not show as fitting. `pbctl
+placement` shows each phone's budget in the `BUDGET` column (also
+`budget_bytes` in `Placement.nodes` and the web panel); `FITS (16k)` on the
+catalog stays the class heuristic, since it describes a class of phones, not
+one connected phone.
+
 ### Placement
 
 Placement decides which model each phone serves. One phone serves one

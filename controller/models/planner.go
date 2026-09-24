@@ -7,6 +7,8 @@ import (
 	"math"
 	"slices"
 	"strings"
+
+	"github.com/dzaczek/phoneborg/internal/memplan"
 )
 
 // Policy modes.
@@ -67,6 +69,12 @@ type Node struct {
 	CurrentModel  string  // model the node serves or is switching to
 	Assigned      string  // model the previous plan gave it, for stability
 	Drained       bool
+	// BudgetBytes is the node's self-reported memory budget from its last
+	// heartbeat (RuntimeStatus.BudgetBytes, ADR-012): what its agent's own
+	// PlanMemory would have available if it switched models right now. 0
+	// means unknown (an old agent, or no heartbeat yet), and fit falls back
+	// to the class heuristic (see fitsNode).
+	BudgetBytes int64
 }
 
 // PlanModel is the planner's view of a catalog model.
@@ -209,9 +217,8 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 	warn := func(format string, a ...any) { warnings = append(warnings, fmt.Sprintf(format, a...)) }
 	assigned := map[string]Assignment{}
 	assign := func(n Node, m PlanModel, reason string) {
-		est := m.EstRAM()
 		assigned[n.ID] = Assignment{NodeID: n.ID, ModelID: m.ID, Reason: reason, CtxSize: m.CtxSize(), Slots: 1,
-			KVType: "auto", EstRAMBytes: est, Fits: Fits(est, n.RAMTotalBytes)}
+			KVType: "auto", EstRAMBytes: m.EstRAM(), Fits: fitsNode(m, n)}
 	}
 
 	// Policies for models that are not ready yet (or were removed) wait.
@@ -260,17 +267,23 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 		for _, p := range ps {
 			m := byModel[p.ModelID]
 			eligible := func(n Node) bool {
-				return !n.Drained && matchesClass(p.Classes, n.Class) && Fits(m.EstRAM(), n.RAMTotalBytes)
+				return !n.Drained && matchesClass(p.Classes, n.Class) && fitsNode(m, n)
+			}
+			pool := 0
+			for _, n := range nodes {
+				if eligible(n) {
+					pool++
+				}
 			}
 			want := p.Replicas
 			if mode == ModePercent {
-				pool := 0
-				for _, n := range nodes {
-					if eligible(n) {
-						pool++
-					}
-				}
 				want = percentOf(p.Percent, pool)
+			}
+			if pool == 0 {
+				// percentOf(p, 0) is 0, so without this the policy would
+				// silently place nothing and warn about nothing.
+				warn("%s: %s -> 0 nodes (%s)", m.ID, describe(p), noFitReason(m, p, nodes))
+				continue
 			}
 			var free []Node
 			for _, n := range nodes {
@@ -297,7 +310,7 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 	for _, n := range nodes {
 		a, ok := assigned[n.ID]
 		if !ok && hasDefault && !n.Drained {
-			if Fits(dm.EstRAM(), n.RAMTotalBytes) {
+			if fitsNode(dm, n) {
 				assign(n, dm, ReasonDefault)
 				a, ok = assigned[n.ID], true
 			} else {
@@ -308,7 +321,7 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 			a = Assignment{NodeID: n.ID, ModelID: n.CurrentModel, Reason: ReasonKeep, Fits: true}
 			if cur, known := byModel[n.CurrentModel]; known {
 				a.CtxSize, a.Slots, a.KVType, a.EstRAMBytes = cur.CtxSize(), 1, "auto", cur.EstRAM()
-				a.Fits = Fits(a.EstRAMBytes, n.RAMTotalBytes)
+				a.Fits = fitsNode(cur, n)
 			}
 			if n.CurrentModel == "" {
 				a.Reason = ReasonNone
@@ -363,3 +376,31 @@ func describe(p Policy) string {
 }
 
 func gib(b uint64) string { return fmt.Sprintf("%.1f GiB", float64(b)/GiB) }
+
+// fitsNode reports whether m fits n. When n reports a memory budget (its
+// agent's own accounting, ADR-012), fit is checked the same way the agent
+// itself decides a switch: f16 at m's requested context, then q8_0, then the
+// context halved down to 4096 (memplan.Plan, shared with node-agent's
+// PlanMemory) — so the plan agrees with what the agent will actually do, and
+// uses the node's real, measured headroom instead of a fixed 2 GiB Android
+// baseline. Nodes that report no budget (an old agent, or no heartbeat yet)
+// fall back to the class heuristic (EstRAM/Fits, ADR-011).
+func fitsNode(m PlanModel, n Node) bool {
+	if n.BudgetBytes > 0 {
+		shape := memplan.Shape{Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
+		return memplan.Plan(m.SizeBytes, shape, m.CtxSize(), 1, "auto", n.BudgetBytes).Fits
+	}
+	return Fits(m.EstRAM(), n.RAMTotalBytes)
+}
+
+// noFitReason explains why no node was eligible for policy p and model m:
+// either no connected, undrained node matches its class filter, or none of
+// those has enough memory.
+func noFitReason(m PlanModel, p Policy, nodes []Node) string {
+	for _, n := range nodes {
+		if !n.Drained && matchesClass(p.Classes, n.Class) {
+			return fmt.Sprintf("none has enough memory: needs ~%s", gib(uint64(m.EstRAM())))
+		}
+	}
+	return "no connected node matches the class filter"
+}
