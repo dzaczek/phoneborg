@@ -85,6 +85,10 @@ Prometheus and Grafana.
   ratio, and token usage per API key (input/output).
 - **Test without phones.** Emulated Android phones (redroid) in Docker, with
   per-phone RAM/CPU limits, driven through real adb.
+- **OpenCode agent bridge.** `pbctl opencode init/sync/watch/status/prewarm`
+  generates and keeps in sync an opencode provider entry and tool-less
+  `.opencode/agent/` subagents (`pool/fast`, one per aliased phone) targeting
+  the cluster's virtual models; see [docs/USAGE.md](docs/USAGE.md#opencode-agent-bridge).
 
 ## Quick start
 
