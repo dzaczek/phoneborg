@@ -13,13 +13,14 @@ var (
 
 func TestPlan(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		fileSizeMiB int64
-		shape       Shape
-		ctx, slots  int
-		kv          string
-		budgetMiB   int64
-		want        Result
+		name             string
+		fileSizeMiB      int64
+		residentBytesMiB int64
+		shape            Shape
+		ctx, slots       int
+		kv               string
+		budgetMiB        int64
+		want             Result
 	}{
 		{
 			name: "fits with f16 at requested ctx", fileSizeMiB: 469, shape: shapeA,
@@ -47,11 +48,51 @@ func TestPlan(t *testing.T) {
 			ctx: 4096, slots: 1, kv: "auto", budgetMiB: 500,
 			want: Result{Ctx: 4096, Slots: 1, KV: "q8_0", Need: 675807232, Fits: false},
 		},
+		{
+			// Gemma 3n E2B it (docs/REAL_PHONES.md, ADR-012 addendum): 2886
+			// MiB file, 1440 MiB of it a per_layer_token_embd.weight table
+			// read sparsely, so resident bytes are 1446 MiB. Before resident-
+			// bytes accounting this needed the whole 2886 MiB file plus KV
+			// plus overhead and did not fit a 2853 MiB Mi 8 budget at any
+			// degradation step, even though it measured at only 1774 MiB RSS.
+			// The architecture shape below is an approximation (block_count
+			// 35, kv_heads 2, key_length 256) since the real GGUF header was
+			// not captured in this repo; what matters is that resident-bytes
+			// accounting makes it fit at the requested 16k context.
+			name:        "Gemma 3n E2B fits once sparse per-layer embeddings are excluded",
+			fileSizeMiB: 2886, residentBytesMiB: 1446, shape: Shape{Layers: 35, KVHeads: 2, HeadDim: 256},
+			ctx: 16384, slots: 1, kv: "auto", budgetMiB: 2853,
+			want: Result{Ctx: 16384, Slots: 1, KV: "q8_0", Need: 2448424960, Fits: true},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Plan(tc.fileSizeMiB*mibTest, tc.shape, tc.ctx, tc.slots, tc.kv, tc.budgetMiB*mibTest)
+			got := Plan(tc.fileSizeMiB*mibTest, tc.residentBytesMiB*mibTest, tc.shape, tc.ctx, tc.slots, tc.kv, tc.budgetMiB*mibTest)
 			if got != tc.want {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+			if got.Fits && got.Need > tc.budgetMiB*mibTest {
+				t.Fatalf("Need %d exceeds budget %d despite Fits=true", got.Need, tc.budgetMiB*mibTest)
+			}
+		})
+	}
+}
+
+func TestResidentWeightBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		fileSize, residentBytes  int64
+		wantResident, wantSparse int64
+	}{
+		{"unknown (0) counts the whole file as resident", 2886 * mibTest, 0, 2886 * mibTest, 0},
+		{"no sparse tensors: resident equals the file", 1127 * mibTest, 1127 * mibTest, 1127 * mibTest, 0},
+		{"Gemma 3n E2B: 1440 MiB sparse", 2886 * mibTest, 1446 * mibTest, 1446 * mibTest, 1440 * mibTest},
+		{"a bogus resident above the file size is treated as unknown", 100 * mibTest, 200 * mibTest, 100 * mibTest, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resident, sparse := ResidentWeightBytes(tc.fileSize, tc.residentBytes)
+			if resident != tc.wantResident || sparse != tc.wantSparse {
+				t.Fatalf("ResidentWeightBytes(%d, %d) = (%d, %d), want (%d, %d)",
+					tc.fileSize, tc.residentBytes, resident, sparse, tc.wantResident, tc.wantSparse)
 			}
 		})
 	}

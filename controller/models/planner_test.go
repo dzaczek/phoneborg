@@ -131,6 +131,65 @@ func TestPlanAssignmentDetails(t *testing.T) {
 	}
 }
 
+// gemma3nE2B mirrors docs/REAL_PHONES.md's Gemma 3n E2B it row (ADR-012
+// addendum): a 2886 MiB file of which 1440 MiB is a per_layer_token_embd.weight
+// table read sparsely, so resident bytes are 1446 MiB. The architecture shape
+// (block_count 35, kv_heads 2, key_length 256) is an approximation: the real
+// GGUF header was not captured in this repo.
+var gemma3nE2B = PlanModel{ID: "gemma-3n-e2b-it", SizeBytes: 2886 << 20, ResidentBytes: 1446 << 20,
+	CtxTrain: 32768, Layers: 35, KVHeads: 2, HeadDim: 256}
+
+// TestPlanModelEstRAMUsesResidentBytes covers ADR-012's addendum: EstRAM
+// (the ADR-011 class heuristic) uses resident bytes, falling back to the
+// file size when a model has none computed yet (0).
+func TestPlanModelEstRAMUsesResidentBytes(t *testing.T) {
+	if want := EstimateRAM(gemma3nE2B.ResidentBytes, 35, 2, 256, DefaultCtxSize); gemma3nE2B.EstRAM() != want {
+		t.Fatalf("EstRAM = %d, want %d (from resident bytes)", gemma3nE2B.EstRAM(), want)
+	}
+	if got := gemma3nE2B.EstRAM(); got >= EstimateRAM(gemma3nE2B.SizeBytes, 35, 2, 256, DefaultCtxSize) {
+		t.Fatalf("EstRAM = %d did not shrink relative to the file-size estimate", got)
+	}
+	// small has no ResidentBytes set (0): EstRAM must fall back to SizeBytes,
+	// exactly like a model with no sparse tensors.
+	if want := EstimateRAM(small.SizeBytes, small.Layers, small.KVHeads, small.HeadDim, small.CtxSize()); small.EstRAM() != want {
+		t.Fatalf("EstRAM without ResidentBytes = %d, want %d (fall back to SizeBytes)", small.EstRAM(), want)
+	}
+}
+
+// TestPlanFitsGemma3nWithResidentBytes covers the bug this fixes (ADR-012
+// addendum): a Mi 8 with a real 2853 MiB budget refused Gemma 3n E2B because
+// sizing counted the whole 2886 MiB file as resident. With resident bytes
+// (1446 MiB) it fits at the requested 16k context.
+func TestPlanFitsGemma3nWithResidentBytes(t *testing.T) {
+	mi8 := budgetNode("mi8", 5.5, 2853)
+	p := DefaultPlanner{}.Plan(Spec{Policies: []Policy{{ModelID: gemma3nE2B.ID, Mode: ModePin, Nodes: []string{"mi8"}}}},
+		[]Node{mi8}, []PlanModel{gemma3nE2B})
+	a := p.Assignments[0]
+	if !a.Fits {
+		t.Fatalf("assignment = %+v, want Fits true", a)
+	}
+	if len(p.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none (it fits within budget)", p.Warnings)
+	}
+}
+
+// TestPlanPredictedTPSUsesResidentBytes covers ADR-015 + ADR-012's addendum:
+// predicted tok/s for a candidate model is computed from its resident bytes,
+// not its full file size, once the model has one.
+func TestPlanPredictedTPSUsesResidentBytes(t *testing.T) {
+	mi8 := node("mi8", 8, 0, "") // 8 GiB so the model comfortably fits; only speed is under test
+	mi8.GenGBps = 7.2
+	p := DefaultPlanner{}.Plan(Spec{DefaultModel: gemma3nE2B.ID}, []Node{mi8}, []PlanModel{gemma3nE2B})
+	a := p.Assignments[0]
+	want := PredictedTPS(7.2, gemma3nE2B.ResidentBytes)
+	if a.PredGenTPS != want {
+		t.Fatalf("PredGenTPS = %g, want %g (from resident bytes)", a.PredGenTPS, want)
+	}
+	if bySize := PredictedTPS(7.2, gemma3nE2B.SizeBytes); a.PredGenTPS == bySize {
+		t.Fatalf("PredGenTPS used SizeBytes (%g) instead of ResidentBytes", bySize)
+	}
+}
+
 // budgetNode is a node reporting a memory budget (RuntimeStatus.BudgetBytes,
 // ADR-012), the way a real agent's heartbeat does.
 func budgetNode(id string, ramGiB float64, budgetMiB int64) Node {

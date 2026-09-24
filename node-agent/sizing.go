@@ -15,6 +15,10 @@ type ModelShape = memplan.Shape
 // stays a pure, table-tested function.
 type SizingRequest struct {
 	FileSizeBytes int64
+	// ResidentBytes is DesiredRuntime.ResidentBytes (ADR-012 addendum): the
+	// weights actually kept resident, excluding sparsely-accessed tensors
+	// such as Gemma 3n's per-layer embeddings. 0 = unknown, use FileSizeBytes.
+	ResidentBytes int64
 	Shape         ModelShape
 	CtxSize       int    // requested context per slot; <=0 defaults to memplan.MinCtx
 	Slots         int    // requested parallel slots; <=0 defaults to 1
@@ -52,7 +56,7 @@ func MemoryBudget(availBytes, currentServerRssAnonBytes uint64, reserveBytes int
 // nothing fits, it returns an error naming the RAM the smallest configuration
 // still needs and the available budget.
 func PlanMemory(req SizingRequest) (SizingPlan, error) {
-	r := memplan.Plan(req.FileSizeBytes, req.Shape, req.CtxSize, req.Slots, req.KVType, req.BudgetBytes)
+	r := memplan.Plan(req.FileSizeBytes, req.ResidentBytes, req.Shape, req.CtxSize, req.Slots, req.KVType, req.BudgetBytes)
 	if !r.Fits {
 		return SizingPlan{}, fmt.Errorf("model needs %d MiB, budget %d MiB", r.Need/mib, req.BudgetBytes/mib)
 	}

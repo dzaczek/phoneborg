@@ -68,6 +68,37 @@ func TestNodePerfUpdateKeepsLastGood(t *testing.T) {
 	}
 }
 
+// TestNodePerfUpdateUsesResidentBytes covers ADR-012's addendum: bandwidth is
+// computed from RuntimeStatus.ResidentBytes when the agent reports one,
+// falling back to ModelBytes (the file size) when it does not (static mode,
+// or an older agent).
+func TestNodePerfUpdateUsesResidentBytes(t *testing.T) {
+	p := newNodePerf()
+
+	// Gemma 3n E2B-like numbers (docs/REAL_PHONES.md, ADR-012 addendum): a
+	// 2886 MiB file but only 1446 MiB resident.
+	const fileBytes, residentBytes = 2886 << 20, 1446 << 20
+	if !p.update("a", &proto.RuntimeStatus{GenTPS: 3.7, ModelBytes: fileBytes, ResidentBytes: residentBytes}) {
+		t.Fatal("update did not report a change")
+	}
+	want := models.Perf{GenGBps: models.Bandwidth(3.7, residentBytes)}
+	got := p.get("a")
+	if got != want {
+		t.Fatalf("get = %+v, want %+v (from resident bytes)", got, want)
+	}
+	if bySize := models.Bandwidth(3.7, fileBytes); got.GenGBps == bySize {
+		t.Fatalf("GenGBps used ModelBytes instead of ResidentBytes")
+	}
+
+	// No ResidentBytes reported (0): falls back to ModelBytes, like before.
+	if !p.update("b", &proto.RuntimeStatus{GenTPS: 3.7, ModelBytes: fileBytes}) {
+		t.Fatal("update did not report a change")
+	}
+	if want := (models.Perf{GenGBps: models.Bandwidth(3.7, fileBytes)}); p.get("b") != want {
+		t.Fatalf("get = %+v, want %+v (fall back to ModelBytes)", p.get("b"), want)
+	}
+}
+
 // TestNodePerfReportedAndPersisted covers the wiring between a real
 // heartbeat and the controller's node-perf store: /admin/nodes and
 // /admin/device-classes reflect the measured bandwidth (ADR-015), and it

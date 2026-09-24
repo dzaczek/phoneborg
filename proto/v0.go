@@ -79,12 +79,17 @@ type DesiredRuntime struct {
 	URL       string `json:"url"`      // path on the controller, e.g. "/v1/model-files/<model_id>"
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"size_bytes"`
-	CtxSize   int    `json:"ctx_size"` // requested context per slot; agent may lower it to fit RAM
-	Slots     int    `json:"slots"`    // requested parallel slots (llama-server -np)
-	KVType    string `json:"kv_type"`  // "f16" | "q8_0" | "auto" (auto: agent picks)
-	Layers    int    `json:"layers"`   // GGUF metadata for the RAM estimate
-	KVHeads   int    `json:"kv_heads"`
-	HeadDim   int    `json:"head_dim"`
+	// ResidentBytes is the weights actually kept resident, excluding tensors
+	// llama.cpp reads sparsely (e.g. Gemma 3n's per-layer embeddings), from
+	// the catalog's GGUF metadata (docs/DECISIONS.md ADR-012 addendum). 0 =
+	// unknown, the agent uses SizeBytes.
+	ResidentBytes int64  `json:"resident_bytes,omitempty"`
+	CtxSize       int    `json:"ctx_size"` // requested context per slot; agent may lower it to fit RAM
+	Slots         int    `json:"slots"`    // requested parallel slots (llama-server -np)
+	KVType        string `json:"kv_type"`  // "f16" | "q8_0" | "auto" (auto: agent picks)
+	Layers        int    `json:"layers"`   // GGUF metadata for the RAM estimate
+	KVHeads       int    `json:"kv_heads"`
+	HeadDim       int    `json:"head_dim"`
 }
 
 // RuntimeStatus describes the node's inference server. The controller reaches
@@ -129,6 +134,12 @@ type RuntimeStatus struct {
 	// measured memory bandwidth (ADR-015): gen_tok_s x model_file_bytes is
 	// roughly constant per phone.
 	ModelBytes int64 `json:"model_bytes,omitempty"`
+	// ResidentBytes is the served model's resident bytes (the last applied
+	// DesiredRuntime.ResidentBytes, ADR-012 addendum): ModelBytes minus any
+	// sparsely-accessed tensors. 0 = unknown (static mode, or an older
+	// controller), in which case the controller's bandwidth estimate falls
+	// back to ModelBytes.
+	ResidentBytes int64 `json:"resident_bytes,omitempty"`
 }
 
 type NodeState string

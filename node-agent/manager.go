@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,15 @@ import (
 // loadTimeout bounds how long a newly started llama-server has to answer
 // /health before a switch is considered failed.
 const loadTimeout = 2 * time.Minute
+
+// Retry backoff for a switch to the same desired state that just failed:
+// starts at minBackoff, doubles up to maxBackoff. Without this, a controller
+// that keeps assigning a model that does not fit makes the agent retry (and
+// re-run sizing) on every heartbeat.
+const (
+	minBackoff = 30 * time.Second
+	maxBackoff = 10 * time.Minute
+)
 
 // ManagerConfig holds what stays fixed across model switches: the server
 // binary, ports and thread count chosen at startup (ADR-009), plus the
@@ -46,12 +56,13 @@ type Manager struct {
 	log  *slog.Logger
 	http *http.Client
 
-	mu          sync.Mutex
-	runtime     *Runtime // nil when no llama-server is running
-	cancel      context.CancelFunc
-	done        chan struct{}
-	current     string // model_id actually running (matches runtime); "" if none
-	lastApplied *proto.DesiredRuntime
+	mu            sync.Mutex
+	runtime       *Runtime // nil when no llama-server is running
+	cancel        context.CancelFunc
+	done          chan struct{}
+	current       string // model_id actually running (matches runtime); "" if none
+	residentBytes int64  // resident bytes of the currently running model; 0 = unknown
+	lastApplied   *proto.DesiredRuntime
 
 	switching bool
 	subState  string // "downloading" | "loading", only meaningful while switching
@@ -59,6 +70,16 @@ type Manager struct {
 	progress  float64
 	lastErr   string
 	ramBytes  int64
+
+	// Retry backoff (see minBackoff/maxBackoff) for repeated failures of the
+	// same desired state, so the agent does not re-download, re-hash and
+	// re-size on every heartbeat while a switch keeps failing.
+	lastFailed       *proto.DesiredRuntime // desired state that most recently failed; nil once resolved
+	lastFailedBudget int64                 // budgetBytes() at that failure, for the "budget grew" retry override
+	backoff          time.Duration         // current backoff before retrying lastFailed
+	retryAt          time.Time             // do not retry lastFailed before this
+
+	verified shaCache // caches the on-disk model file's verified SHA-256
 
 	desiredCh chan *proto.DesiredRuntime // buffered 1; SetDesired keeps only the latest
 }
@@ -124,7 +145,7 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 	m.mu.Lock()
 	rt := m.runtime
 	switching, subState, target, progress := m.switching, m.subState, m.target, m.progress
-	errMsg, ramBytes := m.lastErr, m.ramBytes
+	errMsg, ramBytes, residentBytes := m.lastErr, m.ramBytes, m.residentBytes
 	m.mu.Unlock()
 
 	var st *proto.RuntimeStatus
@@ -134,6 +155,7 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 		st = &proto.RuntimeStatus{AdvertisePort: m.cfg.AdvertisePort}
 	}
 	st.RAMEstimateBytes = ramBytes
+	st.ResidentBytes = residentBytes
 	st.BudgetBytes = m.budgetBytes()
 	st.Error = errMsg
 	if switching {
@@ -158,13 +180,23 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 
 // reconcile brings the running model in line with d: download (unless
 // already cached), size, then load. Skips entirely if d matches the last
-// desired state this Manager successfully applied.
+// desired state this Manager successfully applied, or if d matches the last
+// desired state that failed and its retry backoff has not elapsed (see
+// shouldRetryNow).
 func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 	m.mu.Lock()
 	if m.lastApplied != nil && *m.lastApplied == *d {
 		m.mu.Unlock()
 		return
 	}
+	sameFailure := m.lastFailed != nil && *m.lastFailed == *d
+	retryAt, lastFailedBudget := m.retryAt, m.lastFailedBudget
+	m.mu.Unlock()
+	if sameFailure && !shouldRetryNow(time.Now(), retryAt, lastFailedBudget, m.budgetBytes()) {
+		return // still backing off; Status keeps reporting the existing error
+	}
+
+	m.mu.Lock()
 	m.switching, m.target, m.lastErr = true, d.ModelID, ""
 	m.mu.Unlock()
 	defer func() {
@@ -177,7 +209,12 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 	start := time.Now()
 	dest := filepath.Join(m.cfg.ModelsDir, d.ModelID+".gguf")
 
-	if fileHasSHA256(dest, d.SHA256) {
+	cached := d.SHA256 != ""
+	if cached {
+		sha, err := m.verified.verify(dest)
+		cached = err == nil && strings.EqualFold(sha, d.SHA256)
+	}
+	if cached {
 		log.Info("model already cached, skipping download")
 	} else {
 		m.setSubState("downloading")
@@ -203,6 +240,7 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 	budget := m.budgetBytes()
 	plan, err := PlanMemory(SizingRequest{
 		FileSizeBytes: fi.Size(),
+		ResidentBytes: d.ResidentBytes,
 		Shape:         ModelShape{Layers: d.Layers, KVHeads: d.KVHeads, HeadDim: d.HeadDim},
 		CtxSize:       d.CtxSize,
 		Slots:         d.Slots,
@@ -216,7 +254,8 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 			// reporting an error and retrying on every heartbeat.
 			log.Warn("requested runtime settings do not fit; keeping the running instance", "err", err)
 			m.mu.Lock()
-			m.lastApplied, m.lastErr = d, ""
+			m.lastApplied, m.lastErr, m.residentBytes = d, "", d.ResidentBytes
+			m.resetBackoffLocked()
 			m.mu.Unlock()
 			return
 		}
@@ -237,8 +276,28 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 
 	m.mu.Lock()
 	m.lastApplied, m.lastErr = d, ""
+	m.resetBackoffLocked()
 	m.mu.Unlock()
 	log.Info("model switch complete", "duration_ms", time.Since(start).Milliseconds())
+}
+
+// resetBackoffLocked clears the retry backoff for a failed desired state
+// (the switch it applied to just succeeded, or is no longer wanted). Call
+// with mu held.
+func (m *Manager) resetBackoffLocked() {
+	m.lastFailed, m.backoff, m.retryAt, m.lastFailedBudget = nil, 0, time.Time{}, 0
+}
+
+// shouldRetryNow reports whether a switch to the same desired state that
+// last failed with lastFailedBudget bytes of budget should be attempted
+// again: the backoff window (until retryAt) has elapsed, or budget has grown
+// by more than 10% since that failure (e.g. another switch freed RAM), which
+// is worth an early retry instead of waiting out a now-stale backoff.
+func shouldRetryNow(now, retryAt time.Time, lastFailedBudget, budget int64) bool {
+	if !now.Before(retryAt) {
+		return true
+	}
+	return lastFailedBudget > 0 && budget > lastFailedBudget+lastFailedBudget/10
 }
 
 // serving reports whether modelID is the model currently running.
@@ -261,10 +320,21 @@ func (m *Manager) setProgress(p float64) {
 	m.mu.Unlock()
 }
 
+// fail records d's failure and (re)arms the retry backoff: a repeat of the
+// same failed desired state doubles it (capped at maxBackoff), anything else
+// (a first failure, or a different desired state) starts it at minBackoff.
 func (m *Manager) fail(d *proto.DesiredRuntime, err error, log *slog.Logger) {
 	log.Error("model switch failed", "err", err)
+	budget := m.budgetBytes()
 	m.mu.Lock()
 	m.lastErr = fmt.Sprintf("%s: %s", d.ModelID, err)
+	if m.lastFailed != nil && *m.lastFailed == *d {
+		m.backoff = min(m.backoff*2, maxBackoff)
+	} else {
+		m.backoff = minBackoff
+	}
+	m.lastFailed, m.lastFailedBudget = d, budget
+	m.retryAt = time.Now().Add(m.backoff)
 	m.mu.Unlock()
 }
 
@@ -310,7 +380,7 @@ func (m *Manager) currentServerRssAnonBytes() uint64 {
 // its file still exists, so the node keeps serving.
 func (m *Manager) load(ctx context.Context, dest string, d *proto.DesiredRuntime, plan SizingPlan) error {
 	m.mu.Lock()
-	prevRuntime, prevCancel, prevDone, prevModelID := m.runtime, m.cancel, m.done, m.current
+	prevRuntime, prevCancel, prevDone, prevModelID, prevResidentBytes := m.runtime, m.cancel, m.done, m.current, m.residentBytes
 	m.mu.Unlock()
 
 	if prevCancel != nil {
@@ -329,21 +399,21 @@ func (m *Manager) load(ctx context.Context, dest string, d *proto.DesiredRuntime
 	if err := waitHealthy(rtCtx, rt, loadTimeout); err != nil {
 		cancel()
 		<-done
-		return m.fallback(ctx, prevRuntime, prevModelID, d, err)
+		return m.fallback(ctx, prevRuntime, prevModelID, prevResidentBytes, d, err)
 	}
 
 	now := time.Now()
 	_ = os.Chtimes(dest, now, now) // mark as just used, for the LRU eviction order
 
 	m.mu.Lock()
-	m.runtime, m.cancel, m.done, m.current = rt, cancel, done, d.ModelID
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes = rt, cancel, done, d.ModelID, d.ResidentBytes
 	m.mu.Unlock()
 	return nil
 }
 
 // fallback restarts the previous model after a failed switch, if its file is
 // still on disk, so the node keeps serving despite the error.
-func (m *Manager) fallback(ctx context.Context, prevRuntime *Runtime, prevModelID string, d *proto.DesiredRuntime, loadErr error) error {
+func (m *Manager) fallback(ctx context.Context, prevRuntime *Runtime, prevModelID string, prevResidentBytes int64, d *proto.DesiredRuntime, loadErr error) error {
 	if prevRuntime == nil {
 		m.clearRuntime()
 		return loadErr
@@ -357,7 +427,7 @@ func (m *Manager) fallback(ctx context.Context, prevRuntime *Runtime, prevModelI
 	fbDone := make(chan struct{})
 	go func() { fbRuntime.Run(fbCtx); close(fbDone) }()
 	m.mu.Lock()
-	m.runtime, m.cancel, m.done, m.current = fbRuntime, fbCancel, fbDone, prevModelID
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes = fbRuntime, fbCancel, fbDone, prevModelID, prevResidentBytes
 	m.mu.Unlock()
 	m.log.Warn("model switch failed, fell back to previous model",
 		"model_id", d.ModelID, "fallback_model_id", prevModelID, "err", loadErr)
@@ -366,7 +436,7 @@ func (m *Manager) fallback(ctx context.Context, prevRuntime *Runtime, prevModelI
 
 func (m *Manager) clearRuntime() {
 	m.mu.Lock()
-	m.runtime, m.cancel, m.done, m.current = nil, nil, nil, ""
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes = nil, nil, nil, "", 0
 	m.mu.Unlock()
 }
 

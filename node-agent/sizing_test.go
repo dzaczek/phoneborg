@@ -106,6 +106,25 @@ func TestPlanMemory(t *testing.T) {
 			},
 			want: SizingPlan{CtxSize: 4096, Slots: 1, KVType: "f16", RAMEstimateBytes: 699400192},
 		},
+		{
+			// Gemma 3n E2B it (docs/REAL_PHONES.md, ADR-012 addendum): 2886
+			// MiB file, but only 1446 MiB resident (1440 MiB is a
+			// per_layer_token_embd.weight table read sparsely through mmap,
+			// measured RSS on a Mi 8 was 1774 MiB). Without ResidentBytes the
+			// agent refused this model ("model needs 3164 MiB, budget 2853
+			// MiB"); with it, it fits at the requested 16k context.
+			name: "Gemma 3n E2B fits once resident bytes exclude the sparse table",
+			req: SizingRequest{
+				FileSizeBytes: 2886 * mib,
+				ResidentBytes: 1446 * mib,
+				Shape:         ModelShape{Layers: 35, KVHeads: 2, HeadDim: 256},
+				CtxSize:       16384,
+				Slots:         1,
+				KVType:        "auto",
+				BudgetBytes:   2853 * mib,
+			},
+			want: SizingPlan{CtxSize: 16384, Slots: 1, KVType: "q8_0", RAMEstimateBytes: 2448424960},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := PlanMemory(tc.req)

@@ -58,8 +58,11 @@ func KVCacheBytes(layers, kvHeads, headDim, ctx int) int64 {
 }
 
 // EstimateRAM is the RAM a model needs with an f16 KV cache for ctx tokens.
-func EstimateRAM(fileBytes int64, layers, kvHeads, headDim, ctx int) int64 {
-	return fileBytes + KVCacheBytes(layers, kvHeads, headDim, ctx) + RuntimeOverheadBytes
+// weightBytes is normally resident bytes (PlanModel.ResidentBytes, ADR-012
+// addendum): the file size, minus any sparsely-accessed tensors such as
+// Gemma 3n's per-layer embeddings that llama.cpp never reads in full.
+func EstimateRAM(weightBytes int64, layers, kvHeads, headDim, ctx int) int64 {
+	return weightBytes + KVCacheBytes(layers, kvHeads, headDim, ctx) + RuntimeOverheadBytes
 }
 
 // Fits reports whether a model needing est bytes fits on a node with

@@ -58,19 +58,21 @@ type Perf struct {
 }
 
 // Bandwidth computes GB/s from a measured tokens/s and the served model's
-// file size (ADR-015). 0 when either input is unknown.
-func Bandwidth(tokPerSec float64, fileBytes int64) float64 {
-	if tokPerSec <= 0 || fileBytes <= 0 {
+// resident bytes (ADR-015; ADR-012 addendum: callers pass resident bytes
+// when known, else the file size). 0 when either input is unknown.
+func Bandwidth(tokPerSec float64, residentBytes int64) float64 {
+	if tokPerSec <= 0 || residentBytes <= 0 {
 		return 0
 	}
-	return tokPerSec * float64(fileBytes) / 1e9
+	return tokPerSec * float64(residentBytes) / 1e9
 }
 
 // PredictedTPS predicts a model's tokens/s from a node's measured bandwidth
-// (gbps) and the model's file size. 0 when either is unknown.
-func PredictedTPS(gbps float64, sizeBytes int64) float64 {
-	if gbps <= 0 || sizeBytes <= 0 {
+// (gbps) and the target model's resident bytes (falling back to the file
+// size when unknown, ADR-012 addendum). 0 when either input is unknown.
+func PredictedTPS(gbps float64, residentBytes int64) float64 {
+	if gbps <= 0 || residentBytes <= 0 {
 		return 0
 	}
-	return gbps * 1e9 / float64(sizeBytes)
+	return gbps * 1e9 / float64(residentBytes)
 }

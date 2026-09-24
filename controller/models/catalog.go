@@ -35,11 +35,17 @@ var (
 // NodesServing are filled in by the controller, which owns placement and
 // node state.
 type Model struct {
-	ID                 string   `json:"id"`
-	Name               string   `json:"name"`
-	Source             string   `json:"source"`
-	File               string   `json:"file"`
-	SizeBytes          int64    `json:"size_bytes"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Source    string `json:"source"`
+	File      string `json:"file"`
+	SizeBytes int64  `json:"size_bytes"`
+	// SparseBytes and ResidentBytes split SizeBytes into tensors llama.cpp
+	// reads sparsely (embedding lookups, see isSparseTensor) and the rest
+	// (ADR-012 addendum). ResidentBytes = SizeBytes - SparseBytes; both are 0
+	// until the model's GGUF metadata has been read at least once.
+	SparseBytes        int64    `json:"sparse_bytes"`
+	ResidentBytes      int64    `json:"resident_bytes"`
 	SHA256             string   `json:"sha256"`
 	Status             string   `json:"status"`
 	Progress           float64  `json:"progress"`
@@ -63,7 +69,8 @@ type Model struct {
 
 // PlanModel returns m as the planner sees it.
 func (m Model) PlanModel() PlanModel {
-	return PlanModel{ID: m.ID, SizeBytes: m.SizeBytes, CtxTrain: m.CtxTrain, Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
+	return PlanModel{ID: m.ID, SizeBytes: m.SizeBytes, ResidentBytes: m.ResidentBytes, CtxTrain: m.CtxTrain,
+		Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
 }
 
 // AddRequest is the body of POST /admin/models.
@@ -184,6 +191,7 @@ func NewCatalog(opts CatalogOptions) (*Catalog, error) {
 	if c.dir == "" {
 		return nil, errors.New("a persisted catalog needs a models directory")
 	}
+	changed := false
 	for _, m := range f.Models {
 		e := &entry{m: m}
 		c.models[m.ID] = e
@@ -192,10 +200,24 @@ func NewCatalog(opts CatalogOptions) (*Catalog, error) {
 			if st, err := os.Stat(c.filePath(m.ID)); err != nil || st.Size() != m.SizeBytes {
 				e.m.Status, e.m.Error = StatusError, "model file is missing or changed; add the model again"
 				c.log.Warn("model file missing", "model_id", m.ID, "file", c.filePath(m.ID))
+			} else if m.ResidentBytes == 0 && m.SizeBytes > 0 {
+				// A catalog entry saved before sparse_bytes/resident_bytes
+				// existed: recompute them once so an upgraded controller does
+				// not treat a Gemma-3n-style model as needing its whole file
+				// resident (ADR-012 addendum).
+				if meta, err := ReadMeta(c.filePath(m.ID)); err == nil {
+					e.m.SparseBytes, e.m.ResidentBytes = meta.SparseBytes, m.SizeBytes-meta.SparseBytes
+					est := e.m.PlanModel().EstRAM()
+					e.m.EstRAMBytes16k, e.m.FitsClasses = est, FitsClasses(est)
+					changed = true
+				}
 			}
 		case StatusDownloading:
 			c.startLocked(e)
 		}
+	}
+	if changed {
+		_ = c.saveLocked()
 	}
 	return c, nil
 }

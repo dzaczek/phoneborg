@@ -271,7 +271,8 @@ func (s *Server) desired(nodeID string) *proto.DesiredRuntime {
 		return nil
 	}
 	return &proto.DesiredRuntime{ModelID: m.ID, URL: PathModelFiles + m.ID, SHA256: m.SHA256, SizeBytes: m.SizeBytes,
-		CtxSize: a.CtxSize, Slots: a.Slots, KVType: a.KVType, Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
+		ResidentBytes: m.ResidentBytes, CtxSize: a.CtxSize, Slots: a.Slots, KVType: a.KVType,
+		Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
 }
 
 // nodesServing counts ACTIVE nodes whose runtime is ready, by model.
