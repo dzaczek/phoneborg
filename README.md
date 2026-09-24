@@ -45,6 +45,10 @@ Prometheus and Grafana.
   heartbeats. Recovery is automatic.
 - **LLM serving.** The agent supervises `llama-server` (restart with backoff,
   readiness checks). Models are pushed over USB.
+- **Free phone RAM.** `pcprov slim`/`unslim` reversibly disable a
+  conservative, vendor-extensible allowlist of user-facing apps (camera,
+  gallery, browser, music, ...) on a phone dedicated to the cluster; see
+  docs/REAL_PHONES.md.
 - **OpenAI-compatible gateway.** `/v1/chat/completions`, `/v1/completions`,
   `/v1/models`, with streaming.
   - **Session affinity.** Requests that share a prompt prefix stay on the same
