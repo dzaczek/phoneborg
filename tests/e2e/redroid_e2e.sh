@@ -75,7 +75,14 @@ log "gateway: model ready on both phones, load spread across them"
 models_ready() { [ "$(nodes | awk '$5 == "True"' | wc -l | tr -d ' ')" -ge 2 ]; }
 wait_for 120 "model ready on 2 nodes" models_ready
 LOAD="python3 tests/load/chat_load.py --url $CTRL"
-$LOAD -n 20 -c 2 > $TMPD/load1.txt || { cat $TMPD/load1.txt; fail "requests failed"; }
+# Plain model routing prefers the fastest node (session affinity + measured
+# speed), so spreading is checked through a pool with "spread" routing that
+# contains exactly the emulated phones.
+ADMIN_TOKEN=$(grep -v '^#' deploy/dev-admin-token)
+POOL_NODES=$(printf '"%s",' $EMU_IDS); POOL_NODES="[${POOL_NODES%,}]"
+curl -fsS -X PUT "$CTRL/admin/pools/e2e" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d "{\"routing\":\"spread\",\"nodes\":$POOL_NODES,\"description\":\"e2e test pool\"}" >/dev/null || fail "create e2e pool"
+$LOAD -n 20 -c 2 --model pool/e2e > $TMPD/load1.txt || { cat $TMPD/load1.txt; fail "requests failed"; }
 tail -4 $TMPD/load1.txt
 for id in $EMU_IDS; do grep '^by node:' $TMPD/load1.txt | grep -q "$id" || fail "load did not reach node $id"; done
 
