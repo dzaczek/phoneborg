@@ -2,30 +2,32 @@
 
 **Turn a drawer full of old Android phones into an AI inference cluster.**
 
-> **Status: proof of concept.** It works end to end on emulated phones and has
-> run on a first real phone (Xiaomi Mi 8). APIs, metrics and file layout will
-> change. Do not expose it to untrusted networks.
+Plug phones into a Linux or macOS host over USB. PhoneBorg installs a small
+node agent on each phone over adb; the phone benchmarks itself, joins the
+cluster and serves a GGUF model with
+[llama.cpp](https://github.com/ggml-org/llama.cpp). Clients talk to **one
+OpenAI-compatible endpoint**. The controller decides which phone serves which
+model, routes each request to a phone, fails over when one freezes, and
+exports everything to Prometheus and Grafana.
 
-Plug phones into a Linux or macOS host over USB. PhoneBorg installs an agent on
-each phone over ADB. The phone benchmarks itself, joins the cluster and serves
-a GGUF model with [llama.cpp](https://github.com/ggml-org/llama.cpp). Clients
-talk to **one OpenAI-compatible endpoint**. The controller routes each request
-to a phone, retries it on another phone if one fails, and exports everything to
-Prometheus and Grafana.
+> **Status: proof of concept.** It runs end to end on a real Xiaomi Mi 8 and
+> on emulated phones. APIs, metrics and file layout will change. Parts of the
+> API are unauthenticated in v0: do not expose it to untrusted networks.
 
 ```text
- OpenAI client / opencode / curl
-            │  http://host:18080/v1
-            ▼
+ OpenAI client / opencode / curl          pbctl / web panel
+            │  http://host:18080/v1              │  /admin (token)
+            ▼                                    ▼
  ┌──────────────────────── host (runs adb) ─────────────────────────┐
  │  controller                                                      │
- │   ├─ registry     node inventory, heartbeats, state machine      │
- │   ├─ gateway      auth · session-affinity routing · failover     │
+ │   ├─ registry     node inventory, heartbeats, lifecycle          │
+ │   ├─ gateway      auth · affinity / pools · failover             │
+ │   ├─ catalog +    model downloads, placement plan                │
+ │   │  planner                                                     │
  │   └─ /metrics ──► Prometheus ──► Grafana                         │
- │                                                                  │
  │  pcprov           adb provisioning, USB hot-plug watch           │
  └──────┬──────────────────────┬──────────────────────┬─────────────┘
-        │ USB (adb forward / adb reverse)             │
+        │ USB (adb reverse / adb forward)             │
    ┌────▼─────┐           ┌────▼─────┐           ┌────▼─────┐
    │ phone 1  │           │ phone 2  │    ...    │ phone N  │
    │ node-    │           │ node-    │           │ node-    │
@@ -35,166 +37,102 @@ Prometheus and Grafana.
    └──────────┘           └──────────┘           └──────────┘
 ```
 
-## What works today
+## What it does
 
-- **Zero-touch provisioning.** `pcprov watch`: plug in a phone, accept the USB
-  debugging prompt, and it joins. Unplug and replug re-provisions it.
-- **Runtime-discovered inventory.** SoC, ABI, cores, RAM, storage, battery and
-  temperature. Nothing is hard-coded per phone model.
-- **Node lifecycle.** `BENCHMARKING → ACTIVE → SUSPECT → OFFLINE`, driven by
-  heartbeats. Recovery is automatic.
-- **LLM serving.** The agent supervises `llama-server` (restart with backoff,
-  readiness checks). Models are pushed over USB.
-- **Free phone RAM.** `pcprov slim`/`unslim` reversibly disable a
-  conservative, vendor-extensible allowlist of user-facing apps (camera,
-  gallery, browser, music, ...) on a phone dedicated to the cluster; see
-  docs/REAL_PHONES.md.
-- **OpenAI-compatible gateway.** `/v1/chat/completions`, `/v1/completions`,
-  `/v1/models`, with streaming.
-  - **Session affinity.** Requests that share a prompt prefix stay on the same
-    phone, so the prompt cache is reused. With opencode, follow-up turns take
-    3 s instead of ~2 min.
-  - **Failover.** Failed attempts are retried on another phone. Requests stuck
-    on a frozen phone are cancelled and re-routed.
-  - **Speed- and thermal-aware routing.** New sessions go to the phone with
-    the fastest *measured* llama.cpp generation speed (a self-test against its
-    own llama-server), not just a synthetic CPU benchmark. Phones at or above
-    a configurable temperature stop receiving new sessions until they cool
-    down.
-  - **Virtual models.** Besides a model id, clients can ask for `auto`,
-    `pool/<name>` (a named group of phones, spread across in parallel) or
-    `node/<alias>` (one phone), so each agent of an agent tool gets its
-    own phones. Pools can be prewarmed with an agent's system prompt.
-  - **API keys** (optional), with per-key usage metrics. Keys are stored as
-    SHA-256 hashes and can be created and revoked at runtime.
-- **Cluster management.** A token-protected admin API (`/admin/`) and the
-  `pbctl` CLI. Drain a phone for maintenance (running requests finish), remove
-  nodes, manage API keys, and change the routing policy and timeouts without a
-  restart. Usage per API key and per node (requests, errors, tokens, tok/s)
-  can be persisted across restarts.
-- **Model catalog and placement.** Add GGUF models from Hugging Face to the
-  controller (`pbctl models add hf://...`), see which phones they fit by RAM
-  class, and assign them by pin, replica count or percentage of the fleet.
-  Phones download their model from the controller over USB and switch.
-- **Web management panel** at `/ui/`: nodes, model catalog and placement
-  (with a preview before applying), gateway settings, API keys and usage in
-  one place. It is built into the controller, needs no internet access, and
-  signs in with the admin token.
-- **Observability.** Structured JSON logs, `phoneborg_*` Prometheus metrics and
-  a provisioned Grafana dashboard: cluster health, latency, tokens/s, cache hit
-  ratio, and token usage per API key (input/output).
-- **Test without phones.** Emulated Android phones (redroid) in Docker, with
-  per-phone RAM/CPU limits, driven through real adb.
-- **OpenCode agent bridge.** `pbctl opencode init/sync/watch/status/prewarm`
-  generates and keeps in sync an opencode provider entry and tool-less
-  `.opencode/agent/` subagents (`pool/fast`, one per aliased phone) targeting
-  the cluster's virtual models; see [docs/USAGE.md](docs/USAGE.md#opencode-agent-bridge).
+- **Zero-touch provisioning:** `pcprov watch` provisions phones as they are
+  plugged in, picks the fastest llama.cpp build each CPU supports and
+  restores dropped adb links.
+- **Runtime-discovered inventory:** SoC, cores, RAM, battery, temperature;
+  nothing hard-coded per phone model.
+- **Node lifecycle:** `BENCHMARKING → ACTIVE → SUSPECT → OFFLINE` from
+  heartbeats, with automatic recovery.
+- **One OpenAI-compatible gateway:** chat and completions with streaming,
+  session affinity for prompt-cache reuse, failover, thermal- and
+  speed-aware routing.
+- **Virtual models:** `auto`, `pool/<name>` and `node/<alias>` let each
+  agent of a tool like opencode get its own phones.
+- **Model catalog and placement:** add GGUFs from Hugging Face; phones
+  download over USB and switch, sized to their RAM.
+- **Performance tiers:** measured bandwidth per phone predicts each model's
+  speed and keeps too-slow placements away.
+- **Management:** `pbctl` CLI and a built-in web panel: drain, aliases,
+  pools, API keys (stored hashed), gateway settings, usage per key and node.
+- **OpenCode bridge:** `pbctl opencode` generates tool-less subagents that
+  run on the cluster.
+- **Observability:** JSON logs, `phoneborg_*` metrics, a Grafana dashboard.
+- **Test without phones:** emulated Android phones (redroid) driven through
+  real adb.
 
 ## Quick start
 
-Requirements: Go 1.25+, `adb`, and Docker for monitoring and emulation.
+Requirements: Go 1.25+, `adb`, and Docker (for the llama.cpp build,
+monitoring and emulation).
+
+**Real phones** (enable USB debugging first, see
+[docs/REAL_PHONES.md](docs/REAL_PHONES.md)):
 
 ```sh
-make test agent pcprov controller pbctl   # unit tests + binaries
-make llama-all                        # static arm64 llama.cpp, all CPU variants (built in Docker)
+make test agent pcprov controller pbctl       # unit tests + binaries in bin/
+make llama-all                                # static arm64 llama.cpp, all CPU variants (Docker)
 make models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
-bin/controller &                      # API + web panel on http://127.0.0.1:18080
+bin/controller &                              # API + web panel on http://127.0.0.1:18080
 bin/pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf
-# plug phones in (USB debugging enabled), then:
+# plug phones in and accept the USB debugging prompt, then:
 curl http://127.0.0.1:18080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello from a phone cluster!"}]}'
 ```
 
-Full stack with Prometheus (:9090) and Grafana (:3000), plus two emulated
-phones:
+**Emulated phones** with Prometheus (:9090) and Grafana (:3000), see
+[docs/DEV_EMULATION.md](docs/DEV_EMULATION.md):
 
 ```sh
-make cluster-up
-make e2e                              # provisioning, serving, failover, recovery
+make agent pcprov cluster-up
+make e2e                                      # provisioning, serving, failover, recovery
 ```
 
-Guides:
-- [docs/USAGE.md](docs/USAGE.md): using the cluster: curl, OpenAI SDK and
-  opencode, the web panel, API keys with `pbctl`, draining phones, usage
-  statistics, Grafana.
-- [docs/REAL_PHONES.md](docs/REAL_PHONES.md): preparing phones, adb checks,
-  provisioning, verification and troubleshooting.
-- [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md): emulator setup
-  (macOS/colima), load testing, API keys and opencode.
+## Measured highlights
 
-## Measured
+| What | Result |
+|---|---|
+| Qwen2.5-1.5B on a Xiaomi Mi 8 (Snapdragon 845) | 6.8 tok/s generation, best balance of 13 models tested |
+| Qwen2.5-0.5B, Mi 8 vs emulated 4-core phone | ~12–15 vs 132 tok/s |
+| Freezing a phone under load | 0 failed requests of 1138 |
+| opencode, new session vs follow-up turn | 115 s vs 3 s (prompt cache via session affinity) |
+| 3 parallel tool-less agents: `pool/fast` vs one phone | 9.9 s vs 23.8 s |
+| Mi 8 screen off on USB power | 40 min `ACTIVE`, 40/40 requests served |
 
-Qwen2.5-0.5B-Instruct Q4_K_M:
+Setups and all other numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-| | Xiaomi Mi 8 (real) | Emulated, 2 cores / 2 GB | Emulated, 4 cores / 3 GB |
-|---|---|---|---|
-| SoC | Snapdragon 845, LineageOS 22.2 | host (Apple M2) | host (Apple M2) |
-| Generation | ~15 tok/s | 74 tok/s | 132 tok/s |
-| Prompt processing | ~23–37 tok/s | 108 tok/s | 204 tok/s |
+## Documentation
 
-- Freezing a phone under load: 0 failed requests out of 1138.
-- opencode, new session: 115 s. Follow-up turns: 3 s (99.9% prompt cache hits).
-- OpenCode agent bridge: 3 parallel tool-less agent tasks took 9.9 s spread over
-  3 phones (`pool/fast`) vs 23.8 s queued on one phone (`node/mi8`). A
-  tool-less agent's prompt is ~180 tokens, so cold starts take seconds.
-- Eight models (0.5B–4B) measured on the Mi 8: Qwen2.5-1.5B gives the best
-  balance (6.8 tok/s); 4B models fit but are too slow. See
-  [docs/REAL_PHONES.md](docs/REAL_PHONES.md#choosing-a-model-for-a-phone).
-
-Emulated phones run on the host's CPU cores and are far faster than real
-phones. See the limitations table in `docs/DEV_EMULATION.md`.
-
-## Hardware target
-
-Any ARM64 Android phone with USB debugging. `make llama-all` builds llama.cpp
-for three CPU levels, and pcprov picks the fastest build each phone supports:
-dotprod (Snapdragon 855 and newer), FP16 only (e.g. Snapdragon 845), or plain
-ARMv8.
-
-Preferred first-generation node: Snapdragon 865-class SoC, 8–12 GB RAM, USB-C.
-Examples: OnePlus 8 / 8 Pro, Xiaomi Mi 10, Snapdragon Galaxy S20. Use a powered
-USB hub.
-
-Models: start with 0.5B–1.5B parameters, GGUF, Q4. A 2 GB phone has ~1.35 GB
-free after Android itself.
+| Document | For |
+|---|---|
+| [docs/README.md](docs/README.md) | index by audience and task |
+| [docs/REAL_PHONES.md](docs/REAL_PHONES.md) | choosing, preparing, provisioning and troubleshooting real phones |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | running the cluster: requests, web panel, `pbctl`, models, pools, keys, monitoring |
+| [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..015) |
 
 ## Repository layout
 
 ```text
-controller/        control plane: registry, HTTP API, admin API, usage stats, metrics, /status page
-controller/ui      web management panel (static files embedded in the controller)
-controller/gateway OpenAI-compatible proxy: auth, routing policies, failover
-controller/cmd/pbctl  admin CLI: nodes, drain, API keys, stats, gateway settings
-node-agent/        on-phone agent: inventory, benchmark, heartbeats, runtime supervisor
-provisioner/       pcprov: adb provisioning and USB hot-plug watch
-proto/             controller <-> node wire types (JSON v0, protobuf-ready)
-runtime/llama/     static arm64 llama.cpp build
-deploy/            docker compose: controller, Prometheus, Grafana, emulated phones
-tests/             end-to-end tests, LLM smoke test, load generator
-docs/              design decisions (ADRs), real-phone and emulation guides
+controller/            control plane: registry, HTTP API, admin API, usage, metrics, placement
+controller/gateway     OpenAI-compatible proxy: auth, targets, pickers, failover
+controller/models      model catalog, GGUF metadata, planner, performance tiers
+controller/ui          web panel (static files embedded in the controller)
+controller/cmd/pbctl   admin CLI
+node-agent/            on-phone agent: inventory, benchmark, heartbeats, runtime, model manager
+provisioner/           pcprov: adb provisioning, hot-plug watch, heal, slim
+internal/memplan       memory sizing shared by agent and planner
+proto/                 controller <-> node wire types (JSON v0)
+runtime/llama/         static arm64 llama.cpp build
+deploy/                docker compose: controller, Prometheus, Grafana, emulated phones
+tests/                 end-to-end test, LLM smoke test, load generator
+docs/                  guides, architecture, benchmarks, ADRs
 ```
-
-## Roadmap
-
-Done in this proof of concept:
-
-- [x] Registration, inventory, benchmarks, heartbeats, metrics, dashboard
-- [x] Single-phone LLM serving behind a cluster-wide gateway
-- [x] Failover, session affinity, per-key usage metrics
-- [x] Thermal-aware scheduling; routing by measured llama.cpp speed, not just
-      the synthetic benchmark
-- [x] Web management panel
-
-Next:
-
-- [x] First real phone: Xiaomi Mi 8 (LineageOS), 40 min with the screen off, no drops
-- [ ] Validate more phones and vendor ROMs; long thermal runs
-- [ ] Android foreground service (Kotlin), survives reboots
-- [ ] gRPC + mTLS transport; Wi-Fi nodes alongside USB
-- [ ] Distributed inference: split one model across phones
-
-Design decisions and trade-offs: [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## License
 
