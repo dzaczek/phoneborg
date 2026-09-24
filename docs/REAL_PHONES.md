@@ -312,3 +312,13 @@ Rules of thumb:
 - `llama-server` maps weights from the file. `MemAvailable` barely drops when a
   model loads, so judge fit by RSS or by the agent's budget, not by
   `MemAvailable`.
+
+The first rule of thumb above is now automated (ADR-015): the controller
+computes each phone's memory bandwidth from `gen_tok_s * model_file_bytes` of
+its own self-test, sorts it into a performance tier (`t1`..`t4`, `pbctl
+nodes`/`pbctl classes`), and predicts a candidate model's speed on it before
+ever placing it there. A phone that fits a model on paper but would only run
+it at, say, 2.4 tok/s like the Gemma 3 4B row above is excluded from
+placement by `-min-predicted-tok-s` (default 3) unless a policy pins it
+there explicitly. See ADR-015 and `docs/USAGE.md`'s "Performance tiers and
+predicted speed".
