@@ -180,6 +180,39 @@ adb -s $S shell rm -rf /data/local/tmp/phoneborg    # removes binaries and model
 adb -s $S shell settings put global stay_on_while_plugged_in 0
 ```
 
+## Model switching (ADR-012)
+
+When the controller assigns a node a model (`DesiredRuntime`, from the
+placement planner), the agent downloads and serves it without needing a
+replug or a new `pcprov provision`:
+
+- Files are cached in `models/*.gguf` under
+  `/data/local/tmp/phoneborg` (`models/<model_id>.gguf`), the same directory
+  `pcprov -model` already pushes into. A download in progress is
+  `models/<model_id>.gguf.part`; it resumes with an HTTP Range request if the
+  agent restarts mid-download, and a file already on disk with the right
+  SHA-256 is reused without downloading it again.
+- Before downloading, the agent checks free storage with `statfs`. If short,
+  it deletes other cached `.gguf` files, least-recently-used first, but never
+  the model currently being served. If that is still not enough, the switch
+  fails with a clear `error` instead of downloading a partial model.
+- Context size, slot count and KV cache type (f16 or q8_0) are chosen
+  automatically to fit available RAM: `-mem-reserve-mb` (default 600) is how
+  much RAM the agent leaves for Android and itself; lower it on a phone that
+  is otherwise idle, raise it if the node gets killed under memory pressure.
+- If a switch fails (bad download, out of RAM, llama-server crash-loops on
+  the new model) and the previous model file is still on disk, the agent
+  falls back to it, so the node keeps serving. `pbctl nodes` / `/v1/nodes`
+  shows the failure in `runtime.state`/`runtime.error` either way.
+- The static `-model` flag (pcprov) still works exactly as before: a node
+  serves it until the controller sends a `DesiredRuntime`, which then takes
+  over.
+
+```sh
+adb -s $S shell ls -la /data/local/tmp/phoneborg/models        # cached models
+curl -s http://127.0.0.1:18080/v1/nodes | python3 -m json.tool | grep -A8 '"runtime"'
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |

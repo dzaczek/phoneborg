@@ -302,3 +302,113 @@ heartbeat, so a node can still take one new session in the few seconds before
 its next heartbeat reports it as hot: a soft protection, not a hard cutoff.
 Nodes with no readable thermal zone (e.g. redroid) are never marked hot,
 matching the existing gap in `phoneborg_node_temperature_celsius`.
+
+## ADR-012: Agent-side model switching and memory sizing
+
+**Problem.** The controller is gaining a model catalog and a placement
+planner (parallel work) that assigns each node a model over heartbeats. The
+agent must switch `llama-server` to that model without a replug, choose a
+context size, slot count and KV cache type that actually fit the phone's RAM,
+and keep serving through a bad switch.
+
+**Decision.**
+
+- **Contract** (`proto/v0.go`). A heartbeat may still get a 204 (no desired
+  state, or an old controller); a 200 carries `HeartbeatResponse{Desired
+  *DesiredRuntime}`. `DesiredRuntime` names the model id (also the served
+  name, `llama-server -a`), a controller-relative download URL, its
+  SHA-256/size, the GGUF shape (`Layers`, `KVHeads`, `HeadDim`) needed for the
+  RAM estimate, and the requested `CtxSize` (per slot), `Slots` and `KVType`
+  ("f16" | "q8_0" | "auto"). `RuntimeStatus` gains `ModelID`, `State`
+  ("serving" | "downloading" | "loading" | "error" | "idle"), `Progress`,
+  `Error`, `Slots`, `KVType`, `RAMEstimateBytes`. `ModelID` equals `Model`
+  once serving, and is set to the switch's target as soon as a
+  download/load starts (State `downloading`/`loading`), so the placement
+  planner can tell a node is already claimed before it is ready; the gateway
+  skips a node in that state even though `Ready` (which keeps reflecting the
+  previous model, still actually serving) is true.
+- A `Manager` (`node-agent/manager.go`) owns the active `Runtime` (the
+  existing supervisor; its restart/backoff/pidfile logic is unchanged) and
+  reconciles one desired state at a time in its own goroutine: `SetDesired`
+  keeps only the latest value from each heartbeat (a channel of size 1), so a
+  slow switch is never queued twice, and reconciling a `DesiredRuntime` equal
+  to the last one applied is a no-op.
+- **Download** (`node-agent/download.go`): `models/<model_id>.gguf.part`,
+  resumed with an HTTP `Range` request if a partial file already exists,
+  verified against the full SHA-256 (not the controller's ETag) once
+  complete, then renamed into place. A file already on disk with the right
+  hash is never re-downloaded. Free storage is checked with `statfs` first;
+  if short, other cached `.gguf` files are deleted oldest-mtime-first (the
+  model being loaded touches its own mtime, making this a real LRU), never
+  the model currently served; if still short, the switch fails with `error`
+  before touching the network.
+- **Memory sizing** (`node-agent/sizing.go`, pure, table-tested): `budget =
+  MemAvailable + RssAnon(current llama-server) − reserve` (`-mem-reserve-mb`,
+  default 600 MiB). `need(ctx, slots, kv) = file size + slots·ctx·bytesPerToken(kv)
+  + 150 MiB`, `bytesPerToken = 2·Layers·KVHeads·HeadDim·bytesPerElement(kv)`
+  with `bytesPerElement` 2 for f16 and 1.0625 for q8_0 (32-element blocks
+  plus one f16 scale each). `KVType "auto"` tries f16 then q8_0 (q8_0 forces
+  `-fa on`, required for its V-cache); if nothing fits, ctx halves down to
+  4096, then slots drops to 1; if still nothing fits, the switch fails with
+  `"model needs X MiB, budget Y MiB"`.
+
+  *RssAnon, not total RSS.* llama-server `mmap`s the GGUF file, so most of
+  its RSS is the weights' file-backed pages, which the kernel already
+  reports as reclaimable in `MemAvailable`. Measured on a Mi 8,
+  `MemAvailable` barely moves when a model is loaded (no model: 3156 MiB;
+  Qwen2.5-0.5B: 2984 MiB; Qwen2.5-1.5B: 2970 MiB), confirming those pages are
+  already counted as available. Adding the server's full RSS on top would
+  double-count them; `RssAnon` (KV cache and compute buffers, not
+  file-backed) is the part that only becomes free once the process actually
+  exits. Measured RSS at `-c 8192 -np 1` (file size in parentheses):
+  Qwen2.5-0.5B 632 MiB (468), Gemma-3-1B 926 MiB (768), Llama-3.2-1B 1120 MiB
+  (770), Qwen2.5-1.5B 1375 MiB (1065) — an `RssAnon` of roughly 150–350 MiB
+  per model at that context, not the much larger number full RSS would
+  suggest.
+- **Loading**: the previous `llama-server` is stopped (its context is
+  cancelled, which sends `SIGTERM`; the existing `cmd.WaitDelay` still
+  backstops a hard kill) and a new one started with `-m models/<id>.gguf -a
+  <model_id> -t <threads> -c <ctx*slots> -np <slots>` (plus `-ctk q8_0 -ctv
+  q8_0 -fa on` when the chosen KV type is q8_0). **`-c`/`--ctx-size` is
+  llama-server's *total* context across every `-np` slot** (each slot gets
+  `ctx-size / n_parallel`), not a per-slot size, so the agent multiplies the
+  per-slot `CtxSize` by `Slots` when building `-c`. (This matches llama.cpp's
+  documented server semantics and the shared contract's own `-c <ctx*slots>
+  -np <slots>` wording; it was not re-verified against a running
+  `llama-server --help` in this environment, since no llama.cpp binary or
+  vendored source exists here outside the Docker build in `runtime/llama/`.
+  Verify on a real phone: two concurrent requests at a known `-c`/`-np`
+  should each see roughly `ctx-size/n_parallel` tokens of context, not the
+  full `-c` value.) The new server is `serving` once `/health` is 200, at
+  which point the existing self-test (ADR-010) reruns automatically,
+  unchanged.
+- **Failure and fallback**: a failed download or sizing failure never
+  touches the running server, so the node keeps serving the old model with
+  no extra logic. A failed *load* (the one step that must stop the old
+  server first) restarts the previous model from its still-cached file, if
+  any survived eviction — always true, since eviction never removes the
+  currently-served model. Either way, `State` is `error` with a message
+  naming the model and reason, and `RuntimeStatus.Model`/`ModelID` reflect
+  whatever is genuinely running (the old model on fallback, nothing if there
+  was none to fall back to).
+- **Static mode is unchanged**: a node started with pcprov's
+  `-model`/`-ctx-size` serves it immediately, exactly as before, until the
+  controller sends a `DesiredRuntime` — which then takes over permanently
+  (even naming the same model, since only the controller-driven path picks
+  slots/KV type and re-verifies the file's hash).
+
+**Trade-offs.** Halving context and dropping to one slot are coarse
+degradation steps; a controller that wants fine-grained control over context
+should ask for what it actually wants rather than relying on this per-node
+fallback. Eviction is LRU by file mtime (touched on load), not a true
+access-time log, so a model downloaded but never actually loaded (e.g. it
+lost a placement race) looks "recently used" until something else evicts it.
+The 2-minute timeout for a new `llama-server` to answer `/health` is a fixed
+constant, not configurable; slow phones with large models may need it
+revisited.
+
+**Not solved.** No cross-node coordination of which node evicts what cached
+model (each agent only ever protects its own currently-served model); no
+bandwidth limiting on downloads sharing the same USB link as request
+traffic; `-mem-reserve-mb` is a single flag, not learned from observed OOM
+kills.
