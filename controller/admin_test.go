@@ -158,7 +158,7 @@ func TestAdminDrainUndrainForget(t *testing.T) {
 	if m := e.do(http.MethodGet, "/metrics", "", "").Body.String(); !strings.Contains(m, `phoneborg_node_drained{node_id="a"} 1`) {
 		t.Fatal("drained metric missing")
 	}
-	if d := e.do(http.MethodGet, "/", "", "").Body.String(); !strings.Contains(d, "DRAINED") {
+	if d := e.do(http.MethodGet, "/status", "", "").Body.String(); !strings.Contains(d, "DRAINED") {
 		t.Fatal("dashboard does not show DRAINED")
 	}
 
