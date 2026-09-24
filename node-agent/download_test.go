@@ -43,6 +43,61 @@ func TestFileHasSHA256(t *testing.T) {
 	}
 }
 
+// TestShaCacheHashesOnlyWhenChanged covers the coordinator's observation on a
+// real Mi 8: reconcile re-hashed a 2.9 GB cached model file on every retry of
+// a failed switch. shaCache must hash a file only once per (path, size,
+// mtime), and only re-hash when one of those actually changes.
+func TestShaCacheHashesOnlyWhenChanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.gguf")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var c shaCache
+	sha1, err := c.verify(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := sha256Hex([]byte("v1")); sha1 != want {
+		t.Fatalf("sha1 = %s, want %s", sha1, want)
+	}
+
+	// Same size and mtime: verify must return the cached hash without
+	// re-reading the file, even though its content actually changed
+	// underneath it (this proves the cache, not the file, was consulted).
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("v2"), 0o644); err != nil { // same length as "v1"
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	sha2, err := c.verify(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha2 != sha1 {
+		t.Fatalf("verify re-hashed an unchanged (size, mtime) file: got %s, want cached %s", sha2, sha1)
+	}
+
+	// A real content change (different size, so a different mtime too) is
+	// always re-hashed.
+	if err := os.WriteFile(path, []byte("a longer, different content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sha3, err := c.verify(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := sha256Hex([]byte("a longer, different content")); sha3 != want {
+		t.Fatalf("sha3 = %s, want %s", sha3, want)
+	}
+}
+
 func TestDownloadModelFresh(t *testing.T) {
 	content := []byte("0123456789abcdefghij")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

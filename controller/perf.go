@@ -29,15 +29,21 @@ func (p *nodePerf) update(id string, rt *proto.RuntimeStatus) bool {
 	if rt == nil || rt.ModelBytes <= 0 {
 		return false
 	}
+	// ResidentBytes (ADR-012 addendum), falling back to the file size when
+	// the agent has not reported it (static mode, or an older agent).
+	bytes := rt.ResidentBytes
+	if bytes <= 0 {
+		bytes = rt.ModelBytes
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cur := p.perf[id]
 	next := cur
 	if rt.GenTPS > 0 {
-		next.GenGBps = models.Bandwidth(rt.GenTPS, rt.ModelBytes)
+		next.GenGBps = models.Bandwidth(rt.GenTPS, bytes)
 	}
 	if rt.PromptTPS > 0 {
-		next.PromptGBps = models.Bandwidth(rt.PromptTPS, rt.ModelBytes)
+		next.PromptGBps = models.Bandwidth(rt.PromptTPS, bytes)
 	}
 	if next == cur {
 		return false

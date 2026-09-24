@@ -531,6 +531,52 @@ bandwidth limiting on downloads sharing the same USB link as request
 traffic; `-mem-reserve-mb` is a single flag, not learned from observed OOM
 kills.
 
+### Addendum: resident bytes, not file bytes (Gemma 3n)
+
+**Problem.** Sizing assumed the whole GGUF file must be resident. Measured on
+a real Xiaomi Mi 8, Gemma 3n E2B it (Q4_K_M, file 2886 MiB) kept a huge
+per-layer embedding table (`per_layer_token_embd.weight`, 1440 MiB) that
+llama.cpp reads only a few rows of per token through mmap: measured
+llama-server RSS was 1774 MiB, not anywhere near the file size. The agent
+still refused the model ("model needs 3164 MiB, budget 2853 MiB") even though
+it ran fine, because both the agent's `PlanMemory` and the planner's fit
+check counted `SizeBytes` as fully resident.
+
+**Decision.** The catalog (`controller/models.ReadMeta`) computes
+`sparse_bytes`: the total on-disk bytes of tensors llama.cpp accesses
+sparsely by row. The rule (`isSparseTensor`, `controller/models/gguf.go`) is
+a tensor name ending in `token_embd.weight` and starting with `per_layer_`
+(i.e. `per_layer_token_embd.weight`), plus a short, explicit, extensible
+table for any other architecture measured later. Plain `token_embd.weight` is
+deliberately never matched: when a model ties its input and output
+embeddings (no separate `output.weight`), the output layer reads it in full
+on every forward pass, so treating it as sparse would undercount resident
+memory; for simplicity this addendum only covers the per-layer case, which is
+the one measured. `resident_bytes = size_bytes - sparse_bytes` is exposed on
+`Model` next to `sparse_bytes`, and both are computed once at download time
+and, for a catalog saved before this addendum existed, lazily recomputed from
+the file's already-downloaded GGUF header the next time the controller starts
+(no re-download).
+
+`DesiredRuntime` gains `ResidentBytes` (0 = unknown, agents fall back to the
+file size), filled from the catalog. `internal/memplan` (shared by the
+agent's `PlanMemory` and the planner's per-node fit check) uses resident
+bytes for the weights term instead of the file size, plus
+`SparseAllowanceFrac` (10%, a documented constant) of the sparse bytes, for
+the mmap pages a session actually touches — not zero, because some rows are
+read, and not the full size, which would recreate the original bug. The
+agent still reports `RuntimeStatus.ModelBytes` as the file size (ADR-015
+depends on this for nodes with no catalog entry), but also reports
+`ResidentBytes` for the currently served model, so the controller's bandwidth
+estimate (ADR-015) can use it too.
+
+**Trade-off.** 10% of sparse bytes is a deliberately simple approximation,
+not fit to the one Gemma 3n measurement; it is easy to revisit once more
+architectures with sparse tensors are measured. The catalog's older, simpler
+RAM heuristic (`EstimateRAM`, ADR-011) also switched to resident bytes, but
+without the 10% allowance, since it already ignores compute buffers and
+sliding-window attention and is only a placement guide.
+
 ## ADR-013: Web management panel
 
 **Problem.** Managing the cluster meant `pbctl`, curl, Grafana and the old
@@ -773,3 +819,27 @@ simplification for architectures with unusual attention or MoE patterns
 (the RAM heuristic has the same kind of gap, ADR-011). There is no
 UI/CLI warning when a policy's `min_tok_s` is set below what any connected
 node can ever reach.
+
+### Addendum: bandwidth from resident bytes, not file bytes
+
+**Problem.** `gen_gbps = GenTPS * ModelBytes` overstates bandwidth for a model
+like Gemma 3n E2B, whose file is much bigger than what llama.cpp actually
+keeps resident (ADR-012's addendum): the same generation speed divided by a
+too-large byte count understates the phone's real bandwidth, and dividing a
+*candidate* model's file size by that understated bandwidth then mispredicts
+its speed on other nodes.
+
+**Decision.** `gen_gbps`/`prompt_gbps` are computed from
+`RuntimeStatus.ResidentBytes` when the agent reports one (falling back to
+`ModelBytes`, the file size, when it does not — an older agent, or static
+mode). Predicting a candidate model's speed (`PredictedTPS`) likewise divides
+by that model's `resident_bytes` from the catalog, falling back to
+`size_bytes` when unknown. Both functions are otherwise unchanged: they take
+whatever byte count the caller passes, so this is purely a change in what
+`controller.nodePerf.update` and the planner pass in, not in `Bandwidth` or
+`PredictedTPS` themselves.
+
+**Trade-off.** None of this changes for models with no sparse tensors
+(`resident_bytes` equals `size_bytes` there), so every number in the table
+above is unaffected; it only corrects the Gemma-3n-shaped case ADR-012's
+addendum measured.

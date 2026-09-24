@@ -29,16 +29,31 @@ func LlamaLike(arch string, layers, heads, kvHeads, embd, ctxTrain uint32) []KV 
 	}
 }
 
-// GGUF encodes a GGUF v3 file with kvs and an F32 tensor of 8 elements,
-// followed by pad zero bytes (to make files of a chosen size).
+// Tensor is one 1-D F32 tensor written by GGUFTensors.
+type Tensor struct {
+	Name     string
+	Elements uint64
+}
+
+// GGUF encodes a GGUF v3 file with kvs and an F32 tensor of 8 elements named
+// "token_embd.weight", followed by pad zero bytes (to make files of a chosen
+// size).
 func GGUF(kvs []KV, pad int) []byte {
+	return GGUFTensors(kvs, []Tensor{{Name: "token_embd.weight", Elements: 8}}, pad)
+}
+
+// GGUFTensors is like GGUF but writes every tensor in tensors instead of the
+// single default one, for tests that need more than one tensor (e.g.
+// sparse-tensor accounting, which needs a "per_layer_token_embd.weight"
+// tensor alongside the usual "token_embd.weight").
+func GGUFTensors(kvs []KV, tensors []Tensor, pad int) []byte {
 	var b bytes.Buffer
 	le := func(v any) { _ = binary.Write(&b, binary.LittleEndian, v) }
 	str := func(s string) { le(uint64(len(s))); b.WriteString(s) }
 	b.WriteString("GGUF")
-	le(uint32(3))        // version
-	le(uint64(1))        // tensors
-	le(uint64(len(kvs))) // metadata entries
+	le(uint32(3))            // version
+	le(uint64(len(tensors))) // tensors
+	le(uint64(len(kvs)))     // metadata entries
 	for _, kv := range kvs {
 		str(kv.Key)
 		switch v := kv.Value.(type) {
@@ -55,14 +70,18 @@ func GGUF(kvs []KV, pad int) []byte {
 			panic("modeltest: unsupported value type")
 		}
 	}
-	str("token_embd.weight")
-	le(uint32(1)) // dims
-	le(uint64(8)) // elements
-	le(uint32(0)) // F32
-	le(uint64(0)) // offset in the data section
+	var offset uint64
+	for _, t := range tensors {
+		str(t.Name)
+		le(uint32(1))  // dims
+		le(t.Elements) // elements
+		le(uint32(0))  // F32
+		le(offset)     // offset in the data section
+		offset += t.Elements * 4
+	}
 	for b.Len()%32 != 0 {
 		b.WriteByte(0)
 	}
-	b.Write(make([]byte, 8*4+pad))
+	b.Write(make([]byte, offset+uint64(pad)))
 	return b.Bytes()
 }

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -223,6 +225,81 @@ func TestCatalogDownloadErrors(t *testing.T) {
 		t.Fatalf("retry after error: %v", err)
 	}
 	wait(t, c, m.ID)
+}
+
+// TestCatalogComputesSparseAndResidentBytes covers ADR-012's addendum: a
+// downloaded model's sparse (per_layer_token_embd.weight) tensor bytes are
+// split out of size_bytes into resident_bytes.
+func TestCatalogComputesSparseAndResidentBytes(t *testing.T) {
+	const sparseElements = 1024
+	data := modeltest.GGUFTensors(modeltest.LlamaLike("gemma3n", 4, 8, 2, 256, 32768), []modeltest.Tensor{
+		{Name: "token_embd.weight", Elements: 8},
+		{Name: "per_layer_token_embd.weight", Elements: sparseElements},
+	}, 1<<20)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "sparse.gguf")
+	os.WriteFile(src, data, 0o600)
+	c, _ := newCatalog(t, dir, nil)
+	m, err := c.Add(AddRequest{Source: "file://" + src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = wait(t, c, m.ID)
+	if m.Status != StatusReady || m.Error != "" {
+		t.Fatalf("model = %+v", m)
+	}
+	wantSparse := int64(sparseElements * 4)
+	if m.SparseBytes != wantSparse {
+		t.Fatalf("SparseBytes = %d, want %d", m.SparseBytes, wantSparse)
+	}
+	if want := m.SizeBytes - wantSparse; m.ResidentBytes != want {
+		t.Fatalf("ResidentBytes = %d, want %d", m.ResidentBytes, want)
+	}
+}
+
+// TestCatalogRecomputesSparseBytesOnLoad covers ADR-012's addendum
+// requirement that existing (already downloaded) catalog entries get
+// sparse_bytes/resident_bytes computed lazily, without re-downloading, so an
+// upgraded controller does not keep treating a Gemma-3n-style model as
+// needing its whole file resident.
+func TestCatalogRecomputesSparseBytesOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	data := modeltest.GGUFTensors(modeltest.LlamaLike("gemma3n", 4, 8, 2, 256, 32768), []modeltest.Tensor{
+		{Name: "token_embd.weight", Elements: 8},
+		{Name: "per_layer_token_embd.weight", Elements: 1024},
+	}, 0)
+	os.MkdirAll(filepath.Join(dir, "models"), 0o700)
+	os.WriteFile(filepath.Join(dir, "models", "old.gguf"), data, 0o600)
+	// A catalog file saved before sparse_bytes/resident_bytes existed: ready,
+	// with size_bytes set, but no sparse_bytes/resident_bytes fields.
+	state := fmt.Sprintf(`{"version":1,"models":[{"id":"old","name":"old","source":"file:///old.gguf","status":"ready","size_bytes":%d}]}`, len(data))
+	os.WriteFile(filepath.Join(dir, "models.json"), []byte(state), 0o600)
+
+	c, _ := newCatalog(t, dir, nil)
+	m, ok := c.Get("old")
+	if !ok {
+		t.Fatal("model not loaded")
+	}
+	if want := int64(1024 * 4); m.SparseBytes != want {
+		t.Fatalf("SparseBytes = %d, want %d (recomputed on load)", m.SparseBytes, want)
+	}
+	if want := m.SizeBytes - int64(1024*4); m.ResidentBytes != want {
+		t.Fatalf("ResidentBytes = %d, want %d", m.ResidentBytes, want)
+	}
+
+	// Persisted, so a second restart does not need to recompute again.
+	c.Close()
+	raw, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved catalogFile
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Models) != 1 || saved.Models[0].ResidentBytes != m.ResidentBytes || saved.Models[0].SparseBytes != m.SparseBytes {
+		t.Fatalf("saved models = %+v, want ResidentBytes %d SparseBytes %d", saved.Models, m.ResidentBytes, m.SparseBytes)
+	}
 }
 
 func TestCatalogFileSourceAndRemove(t *testing.T) {

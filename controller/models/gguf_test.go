@@ -22,6 +22,43 @@ func TestReadMeta(t *testing.T) {
 	}
 }
 
+// TestReadMetaComputesSparseBytes covers ADR-012's addendum: a
+// per_layer_token_embd.weight tensor (Gemma 3n's per-layer embedding table)
+// counts toward SparseBytes, but the plain token_embd.weight next to it does
+// not.
+func TestReadMetaComputesSparseBytes(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "m.gguf")
+	data := modeltest.GGUFTensors(modeltest.LlamaLike("gemma3n", 4, 8, 2, 256, 32768), []modeltest.Tensor{
+		{Name: "token_embd.weight", Elements: 8},
+		{Name: "per_layer_token_embd.weight", Elements: 1024},
+	}, 0)
+	os.WriteFile(p, data, 0o600)
+	m, err := ReadMeta(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(1024 * 4); m.SparseBytes != want {
+		t.Fatalf("SparseBytes = %d, want %d (token_embd.weight must not count)", m.SparseBytes, want)
+	}
+}
+
+func TestIsSparseTensor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"per_layer_token_embd.weight", true},
+		{"token_embd.weight", false}, // tied embeddings: read fully by the output layer
+		{"output.weight", false},
+		{"blk.0.attn_q.weight", false},
+		{"model.per_layer_token_embd.weight", false}, // must start with per_layer_, not just contain it
+	} {
+		if got := isSparseTensor(tc.name); got != tc.want {
+			t.Errorf("isSparseTensor(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestReadMetaRejectsGarbage(t *testing.T) {
 	dir := t.TempDir()
 	for name, data := range map[string][]byte{

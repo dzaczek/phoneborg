@@ -70,8 +70,10 @@ adb -s $S shell 'dumpsys battery | grep -E "powered|level|temperature|health"'
 
 Gemma 3n is built for phones. Some of its weights (per-layer embeddings) are
 read from the memory-mapped file only when needed, so llama.cpp keeps less
-than the file size resident. Its generation is also faster than its file
-size suggests, so predicted tok/s (ADR-015) underestimates it.
+than the file size resident. The controller's catalog detects this
+(`sparse_bytes`/`resident_bytes`, ADR-012 addendum) and sizes and predicts
+speed from resident bytes, not the file size, so this no longer causes the
+agent to refuse the model or the planner to warn it does not fit.
 
 Rules of thumb:
 - **RAM:** `MemAvailable` should be at least 1.5× the model file.
@@ -325,11 +327,18 @@ Rules of thumb:
   `MemAvailable`.
 
 The first rule of thumb above is now automated (ADR-015): the controller
-computes each phone's memory bandwidth from `gen_tok_s * model_file_bytes` of
-its own self-test, sorts it into a performance tier (`t1`..`t4`, `pbctl
+computes each phone's memory bandwidth from `gen_tok_s * model_resident_bytes`
+of its own self-test, sorts it into a performance tier (`t1`..`t4`, `pbctl
 nodes`/`pbctl classes`), and predicts a candidate model's speed on it before
 ever placing it there. A phone that fits a model on paper but would only run
 it at, say, 2.4 tok/s like the Gemma 3 4B row above is excluded from
 placement by `-min-predicted-tok-s` (default 3) unless a policy pins it
 there explicitly. See ADR-015 and `docs/USAGE.md`'s "Performance tiers and
 predicted speed".
+
+"Resident bytes" (ADR-012's addendum) is the file size minus tensors
+llama.cpp only reads a few rows of, such as Gemma 3n's per-layer embeddings
+(1440 MiB of the 2886 MiB E2B file above): sizing, fit checks and predicted
+speed all use it instead of the raw file size, which is why the Gemma 3n E2B
+row above fits and predicts correctly despite its file being nearly as big as
+Gemma 3 4B's.

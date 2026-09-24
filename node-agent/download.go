@@ -12,9 +12,24 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+// sha256File hashes path's content.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
 
 // fileHasSHA256 reports whether path exists and its content hashes to want
 // (case-insensitive). Used to skip a download when the target model is
@@ -23,16 +38,49 @@ func fileHasSHA256(path, want string) bool {
 	if want == "" {
 		return false
 	}
-	f, err := os.Open(path)
+	got, err := sha256File(path)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return false
+	return strings.EqualFold(got, want)
+}
+
+// shaCache remembers a file's last-computed SHA-256, keyed by its size and
+// mtime, so an unchanged multi-gigabyte model file is hashed once rather than
+// on every retry of a failed switch (ADR-012: the Manager reconciles the same
+// desired state again on every heartbeat until it succeeds or the desired
+// state changes).
+type shaCache struct {
+	mu    sync.Mutex
+	path  string
+	size  int64
+	mtime time.Time
+	sha   string
+}
+
+// verify returns path's SHA-256, hashing it only if path, its size or its
+// mtime differ from the last call.
+func (c *shaCache) verify(path string) (string, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
 	}
-	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), want)
+	c.mu.Lock()
+	if c.path == path && c.size == fi.Size() && c.mtime.Equal(fi.ModTime()) {
+		sha := c.sha
+		c.mu.Unlock()
+		return sha, nil
+	}
+	c.mu.Unlock()
+
+	sha, err := sha256File(path)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.path, c.size, c.mtime, c.sha = path, fi.Size(), fi.ModTime(), sha
+	c.mu.Unlock()
+	return sha, nil
 }
 
 // downloadModel fetches url into dest+".part" (resuming with an HTTP Range

@@ -92,10 +92,13 @@ type Node struct {
 type PlanModel struct {
 	ID        string
 	SizeBytes int64
-	CtxTrain  int
-	Layers    int
-	KVHeads   int
-	HeadDim   int
+	// ResidentBytes is SizeBytes minus any sparsely-accessed tensors
+	// (ADR-012 addendum); 0 = unknown, use SizeBytes (see residentBytes()).
+	ResidentBytes int64
+	CtxTrain      int
+	Layers        int
+	KVHeads       int
+	HeadDim       int
 }
 
 // CtxSize is the context requested for m: DefaultCtxSize capped by the
@@ -107,9 +110,19 @@ func (m PlanModel) CtxSize() int {
 	return DefaultCtxSize
 }
 
-// EstRAM is m's RAM estimate at CtxSize with an f16 KV cache.
+// residentBytes is m.ResidentBytes, falling back to the file size when it is
+// unknown (0): an older or not-yet-recomputed catalog entry.
+func (m PlanModel) residentBytes() int64 {
+	if m.ResidentBytes > 0 {
+		return m.ResidentBytes
+	}
+	return m.SizeBytes
+}
+
+// EstRAM is m's RAM estimate at CtxSize with an f16 KV cache, using resident
+// bytes (ADR-012 addendum) instead of the file size for the weights.
 func (m PlanModel) EstRAM() int64 {
-	return EstimateRAM(m.SizeBytes, m.Layers, m.KVHeads, m.HeadDim, m.CtxSize())
+	return EstimateRAM(m.residentBytes(), m.Layers, m.KVHeads, m.HeadDim, m.CtxSize())
 }
 
 // Assignment is one node's row in a plan.
@@ -240,7 +253,7 @@ func (d DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 	assign := func(n Node, m PlanModel, reason string) {
 		assigned[n.ID] = Assignment{NodeID: n.ID, ModelID: m.ID, Reason: reason, CtxSize: m.CtxSize(), Slots: 1,
 			KVType: "auto", EstRAMBytes: m.EstRAM(), Fits: fitsNode(m, n),
-			PredGenTPS: PredictedTPS(n.GenGBps, m.SizeBytes), PredPromptTPS: PredictedTPS(n.PromptGBps, m.SizeBytes)}
+			PredGenTPS: PredictedTPS(n.GenGBps, m.residentBytes()), PredPromptTPS: PredictedTPS(n.PromptGBps, m.residentBytes())}
 	}
 
 	// Policies for models that are not ready yet (or were removed) wait.
@@ -272,7 +285,7 @@ func (d DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 					warn("%s: pinned to %s (%s) but needs about %s with a %d-token context", p.ModelID, id, gib(n.RAMTotalBytes), gib(uint64(m.EstRAM())), m.CtxSize())
 				}
 				if threshold := effectiveMinTokS(p, d.MinTokS); !meetsSpeed(m, n, threshold) {
-					warn("%s", speedWarning(m.ID, n.ID, PredictedTPS(n.GenGBps, m.SizeBytes), threshold))
+					warn("%s", speedWarning(m.ID, n.ID, PredictedTPS(n.GenGBps, m.residentBytes()), threshold))
 				}
 			}
 		}
@@ -340,7 +353,7 @@ func (d DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 			case !fitsNode(dm, n):
 				tooSmall = append(tooSmall, n.ID)
 			case !meetsSpeed(dm, n, d.MinTokS):
-				warn("%s", speedWarning(dm.ID, n.ID, PredictedTPS(n.GenGBps, dm.SizeBytes), d.MinTokS))
+				warn("%s", speedWarning(dm.ID, n.ID, PredictedTPS(n.GenGBps, dm.residentBytes()), d.MinTokS))
 			default:
 				assign(n, dm, ReasonDefault)
 				a, ok = assigned[n.ID], true
@@ -417,7 +430,7 @@ func gib(b uint64) string { return fmt.Sprintf("%.1f GiB", float64(b)/GiB) }
 func fitsNode(m PlanModel, n Node) bool {
 	if n.BudgetBytes > 0 {
 		shape := memplan.Shape{Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
-		return memplan.Plan(m.SizeBytes, shape, m.CtxSize(), 1, "auto", n.BudgetBytes).Fits
+		return memplan.Plan(m.SizeBytes, m.ResidentBytes, shape, m.CtxSize(), 1, "auto", n.BudgetBytes).Fits
 	}
 	return Fits(m.EstRAM(), n.RAMTotalBytes)
 }
@@ -462,7 +475,7 @@ func meetsSpeed(m PlanModel, n Node, minTokS float64) bool {
 	if minTokS <= 0 {
 		return true
 	}
-	pred := PredictedTPS(n.GenGBps, m.SizeBytes)
+	pred := PredictedTPS(n.GenGBps, m.residentBytes())
 	return pred == 0 || pred >= minTokS
 }
 

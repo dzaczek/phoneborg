@@ -119,7 +119,7 @@ func TestModelLifecycleAndDesiredRuntime(t *testing.T) {
 	}
 	code, d := e.heartbeat(proto.Heartbeat{NodeID: "big", Runtime: &proto.RuntimeStatus{Model: "old", Ready: true, AdvertisePort: 1}})
 	want := proto.DesiredRuntime{ModelID: id, URL: "/v1/model-files/" + id, SHA256: m.SHA256, SizeBytes: m.SizeBytes,
-		CtxSize: 16384, Slots: 1, KVType: "auto", Layers: 24, KVHeads: 2, HeadDim: 64}
+		ResidentBytes: m.ResidentBytes, CtxSize: 16384, Slots: 1, KVType: "auto", Layers: 24, KVHeads: 2, HeadDim: 64}
 	if code != http.StatusOK || d == nil || *d != want {
 		t.Fatalf("heartbeat: %d %+v\nwant %+v", code, d, want)
 	}

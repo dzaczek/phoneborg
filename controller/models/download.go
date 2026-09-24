@@ -77,6 +77,7 @@ func (c *Catalog) run(ctx context.Context, e *entry) {
 		m.Status, m.Error, m.SizeBytes, m.SHA256 = StatusReady, "", size, sum
 		m.Arch, m.Params, m.Quant, m.License = meta.Arch, meta.Params, meta.Quant, meta.License
 		m.CtxTrain, m.Layers, m.KVHeads, m.HeadDim = meta.CtxTrain, meta.Layers, meta.KVHeads, meta.HeadDim
+		m.SparseBytes, m.ResidentBytes = meta.SparseBytes, size-meta.SparseBytes
 		est := m.PlanModel().EstRAM()
 		m.EstRAMBytes16k, m.FitsClasses = est, FitsClasses(est)
 	}
