@@ -1,8 +1,8 @@
 # Using the cluster
 
 This guide covers using a running PhoneBorg cluster: sending requests,
-managing API keys, draining phones for maintenance and reading usage
-statistics. To set up the cluster, see [REAL_PHONES.md](REAL_PHONES.md) or
+managing API keys, choosing which models phones serve, draining phones for
+maintenance and reading usage statistics. To set up the cluster, see [REAL_PHONES.md](REAL_PHONES.md) or
 [DEV_EMULATION.md](DEV_EMULATION.md).
 
 The controller listens on `http://127.0.0.1:18080` by default:
@@ -11,6 +11,7 @@ The controller listens on `http://127.0.0.1:18080` by default:
 |---|---|
 | `/v1/chat/completions`, `/v1/completions`, `/v1/models` | OpenAI-compatible gateway |
 | `/admin/...` | admin API (needs the admin token), used by `pbctl` |
+| `/v1/model-files/<model_id>` | model downloads for phones (see [Models](#models-and-placement)) |
 | `/` | HTML dashboard |
 | `/metrics` | Prometheus metrics (`phoneborg_*`) |
 
@@ -71,7 +72,7 @@ affinity), so follow-up turns reuse its prompt cache.
 |---|---|---|
 | `PHONEBORG_URL` | `http://127.0.0.1:18080` | controller URL (or `-url`) |
 | `PHONEBORG_ADMIN_TOKEN` | none | admin token (or `-token-file FILE`) |
-| `PHONEBORG_API_KEY` | none | only for `pbctl models` when keys are enforced |
+| `PHONEBORG_API_KEY` | none | only for `pbctl served` when keys are enforced |
 
 The admin API is off unless the controller runs with
 `-admin-token-file FILE`. The file holds one token of at least 16
@@ -99,16 +100,155 @@ pbctl nodes                         pbctl keys
 pbctl drain <id>                    pbctl keys create <name>
 pbctl undrain <id>                  pbctl keys revoke <name>
 pbctl forget <id>                   pbctl stats
-pbctl gateway                       pbctl models
+pbctl gateway                       pbctl served
 pbctl gateway set policy=affinity|least_inflight spill=<n> timeout=<duration> auth=keys
                                      thermal_limit=<celsius, 0 disables>
+pbctl models                        pbctl classes
+pbctl models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]
+pbctl models rm <id>                pbctl models tag <id> a,b
+pbctl models recommend <id> s,m     pbctl models default <id>|none
+pbctl placement                     pbctl placement unset <model>
+pbctl placement set <model> pin=<node,...>|replicas=<n>|percent=<p> [classes=s,m]
+pbctl placement preview [set|unset] [<model> ...]
 ```
+
+`pbctl served` lists the models that ready phones serve right now (the
+gateway's `/v1/models`). It was called `pbctl models` before the model
+catalog existed; `pbctl models` now manages the catalog (see
+[Models and placement](#models-and-placement)).
 
 `pbctl nodes` shows a `TOK/S` column: the phone's measured generation speed
 from its own self-test against llama-server (see
 [Gateway settings](#gateway-settings) below for how this drives routing). A
 node whose last heartbeat temperature is at or above the thermal limit shows
 `HOT` next to its state and gets no new sessions.
+
+## Models and placement
+
+Phones provisioned with `pcprov -model FILE` serve that file until you say
+otherwise. The controller can also keep a **catalog** of GGUF models and
+decide which phone serves which model. Phones then download the model from
+the controller over their USB link and switch to it; nobody pushes files by
+hand. See ADR-011 in [DECISIONS.md](DECISIONS.md).
+
+### Adding models
+
+```sh
+pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf -tag chat -recommend m,l
+pbctl models                  # progress, then size, quantization, fits, tags
+```
+
+A source is one of:
+
+- `hf://<owner>/<repo>/<file>.gguf`, fetched from
+  `https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf`;
+- any `https://` URL of a `.gguf` file;
+- `file:///absolute/path.gguf` on the controller's machine (in the compose
+  stack that is inside the container, so use `hf://` or `https://` there).
+
+The controller downloads the file into `-models-dir` (default
+`<state-dir>/models`; in the compose stack that is the `controller-state`
+volume). It resumes an interrupted download, computes the SHA-256, reads the
+GGUF metadata (architecture, parameter count, quantization, trained context,
+layers, KV heads) and only then marks the model `ready`. A file that is not
+a valid GGUF (for example an HTML login page) ends as `error` and is
+deleted. Adding the same id again retries a failed download. Split GGUF
+files (`-00001-of-0000N.gguf`) and gated repositories that need a token are
+not supported.
+
+The model id is the file name without `.gguf`, lowercased, so
+`Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` becomes
+`qwen2.5-0.5b-instruct-q4_k_m`, the same name the phones already serve when
+provisioned with that file. Use `-id` to choose another. The id is also the
+name clients put in `"model"`.
+
+Models that suit phones (Q4 quantizations of 1–4B models). These are real
+Hugging Face repositories, but file names change between uploads: **verify
+the file name on Hugging Face** before adding.
+
+| Model | Source |
+|---|---|
+| Qwen2.5 1.5B Instruct | `hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf` |
+| Gemma 3 1B it | `hf://bartowski/google_gemma-3-1b-it-GGUF/google_gemma-3-1b-it-Q4_K_M.gguf` |
+| Llama 3.2 1B Instruct | `hf://bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf` |
+| Llama 3.2 3B Instruct | `hf://bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf` |
+| DeepSeek-R1-Distill-Qwen 1.5B | `hf://bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf` |
+| Phi-4-mini Instruct (3.8B) | `hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf` |
+
+Check each model's license on its Hugging Face page (Gemma and Llama have
+their own terms). `pbctl models -json` shows the license recorded in the
+file, when there is one.
+
+### Device classes and fit
+
+Phones are grouped by total RAM:
+
+| Class | RAM |
+|---|---|
+| `xs` | < 3 GiB |
+| `s` | 3–5 GiB |
+| `m` | 5–7 GiB |
+| `l` | 7–10 GiB |
+| `xl` | 10 GiB+ |
+
+`pbctl classes` shows how many phones each class has and which models you
+recommended for it (`pbctl models recommend <id> s,m`; recommendations and
+tags are notes for operators and the web panel, the planner does not use
+them).
+
+For each model the controller estimates the RAM it needs with a 16k-token
+context: the file size, plus an f16 KV cache for 16384 tokens (or the
+model's trained context, if smaller), plus 150 MiB. A model **fits** a phone
+when that estimate is at most the phone's RAM minus 2 GiB for Android.
+`FITS (16k)` in `pbctl models` lists the classes where it fits on the
+smallest phone. The estimate is conservative: the phone's agent may lower
+the context or quantize the KV cache to make a model fit.
+
+### Placement
+
+Placement decides which model each phone serves. One phone serves one
+model. Policies are applied in this order:
+
+1. **pin**: these phones serve this model, even if it does not fit (you get
+   a warning).
+2. **replicas**: this many phones serve it.
+3. **percent**: this share of the phones where it fits serves it, rounded
+   half up, at least one.
+4. **default model**: every phone no policy claimed, where it fits.
+5. Otherwise a phone **keeps** what it serves (for example the model
+   `pcprov -model` pushed).
+
+`classes=s,m` limits replicas and percent policies to those device
+classes. Bigger models choose first and get the faster phones (measured
+tok/s). A phone that already serves a model stays on it rather than
+switching. Drained phones only follow pins.
+
+```sh
+pbctl placement set qwen2.5-1.5b-instruct-q4_k_m replicas=2 classes=m,l
+pbctl placement set llama-3.2-3b-instruct-q4_k_m pin=5f1e2d3c4b5a6978
+pbctl placement set google_gemma-3-1b-it-q4_k_m percent=50
+pbctl models default qwen2.5-0.5b-instruct-q4_k_m
+pbctl placement preview set google_gemma-3-1b-it-q4_k_m percent=100   # what would change; applies nothing
+pbctl placement                    # policies, the plan per phone, phone states, warnings
+pbctl placement unset google_gemma-3-1b-it-q4_k_m
+```
+
+The plan is recomputed when you change placement, when phones join, leave
+or are drained, when a model becomes ready, and every 10 seconds. Phones
+learn their assignment from the reply to their next heartbeat and download
+the model from `/v1/model-files/<id>`. While a phone downloads or loads a
+model it gets no requests; the others keep serving. Agents from before
+model management ignore the reply and keep their pushed model. A policy for a model
+that is still downloading waits (with a warning) until the model is ready.
+You cannot remove a model that a policy or the default uses.
+
+Policies and the default model are saved to `<state-dir>/placement.json`,
+the catalog to `<state-dir>/models.json`. Without `-state-dir` both live in
+memory and model files go to a temporary directory.
+
+`/v1/model-files/` needs no token, like the heartbeat, so anything that
+reaches the controller's port can download catalog models. Keep the
+controller on localhost or a trusted network (ADR-002, ADR-011).
 
 ## API keys
 
@@ -215,7 +355,9 @@ PhoneBorg dashboard. It shows cluster health, latency, tokens/s, cache hit
 ratio and token usage per API key over any time range. The Nodes row includes
 each phone's self-test tok/s and which phones are currently hot (routed
 around, ADR-010). The Administration row shows drained nodes and admin API
-calls (`phoneborg_admin_actions_total`). If `result="unauthorized"` goes up,
+calls (`phoneborg_admin_actions_total`). The Models row shows the catalog,
+controller downloads, planned versus serving phones per model and phones
+that are switching models. If `result="unauthorized"` goes up,
 someone is trying wrong admin tokens.
 Prometheus keeps its data only for its retention period. For totals over a
 longer time, use `pbctl stats` with `-state-dir`.
