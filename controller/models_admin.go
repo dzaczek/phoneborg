@@ -154,14 +154,15 @@ func (s *Server) adminDeleteModel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminDeviceClasses(w http.ResponseWriter, r *http.Request) {
 	nodes, _ := s.reg.View()
-	count := map[string]int{}
+	count, tierCount := map[string]int{}, map[string]int{}
 	for _, n := range nodes {
 		if n.State != proto.StateOffline {
 			count[models.ClassOf(n.Inventory.RAMTotalBytes)]++
+			tierCount[models.PerfTierOf(s.perf.get(n.ID).GenGBps)]++
 		}
 	}
 	ms := s.catalog.List()
-	out := DeviceClasses{Classes: make([]DeviceClass, 0, len(models.Classes))}
+	out := DeviceClasses{Classes: make([]DeviceClass, 0, len(models.Classes)), PerfTiers: make([]PerfTierCount, 0, len(models.PerfTiers))}
 	for _, c := range models.Classes {
 		dc := DeviceClass{Class: c, Nodes: count[c.ID], RecommendedModels: []string{}}
 		for _, m := range ms {
@@ -170,6 +171,15 @@ func (s *Server) adminDeviceClasses(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out.Classes = append(out.Classes, dc)
+	}
+	for _, t := range models.PerfTiers {
+		tc := PerfTierCount{PerfTier: t, Nodes: tierCount[t.ID], RecommendedModels: []string{}}
+		for _, m := range ms {
+			if slices.Contains(m.RecommendedTiers, t.ID) {
+				tc.RecommendedModels = append(tc.RecommendedModels, m.ID)
+			}
+		}
+		out.PerfTiers = append(out.PerfTiers, tc)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
