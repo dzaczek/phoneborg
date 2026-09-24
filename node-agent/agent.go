@@ -26,15 +26,15 @@ type Config struct {
 
 type Agent struct {
 	cfg     Config
-	runtime *Runtime // nil when the node serves no model
+	manager *Manager // nil when the node cannot serve models (no -llama-server)
 	http    *http.Client
 	log     *slog.Logger
 	started time.Time
 	bench   *proto.Benchmark // measured once per process, reused on re-registration
 }
 
-func New(cfg Config, runtime *Runtime, log *slog.Logger) *Agent {
-	return &Agent{cfg: cfg, runtime: runtime, http: &http.Client{Timeout: 10 * time.Second}, log: log, started: time.Now()}
+func New(cfg Config, manager *Manager, log *slog.Logger) *Agent {
+	return &Agent{cfg: cfg, manager: manager, http: &http.Client{Timeout: 10 * time.Second}, log: log, started: time.Now()}
 }
 
 // Run registers, benchmarks and heartbeats until ctx is cancelled. Any
@@ -77,8 +77,8 @@ func (a *Agent) session(ctx context.Context, props map[string]string) error {
 		b := RunBenchmark(a.cfg.BenchDuration, inv.CPUCores, buf)
 		a.bench = &b
 		a.log.Info("benchmark done", "kind", b.Kind, "cpu_gflops", b.CPUGFLOPS, "mem_gbps", b.MemBandwidthGBps)
-		if a.runtime != nil {
-			go a.runtime.Run(ctx)
+		if a.manager != nil {
+			go a.manager.Run(ctx)
 		}
 	}
 	if err := a.post(ctx, proto.PathBenchmark, proto.BenchmarkReport{NodeID: a.cfg.NodeID, Benchmark: *a.bench}, nil); err != nil {
@@ -99,10 +99,11 @@ func (a *Agent) session(ctx context.Context, props map[string]string) error {
 			BatteryLevel:  level,
 			UptimeSec:     int64(time.Since(a.started).Seconds()),
 		}
-		if a.runtime != nil {
-			hb.Runtime = a.runtime.Status(ctx)
+		if a.manager != nil {
+			hb.Runtime = a.manager.Status(ctx)
 		}
-		if err := a.post(ctx, proto.PathHeartbeat, hb, nil); err != nil {
+		var hbResp proto.HeartbeatResponse
+		if err := a.post(ctx, proto.PathHeartbeat, hb, &hbResp); err != nil {
 			if errors.Is(err, errUnknownNode) {
 				return err
 			}
@@ -113,6 +114,9 @@ func (a *Agent) session(ctx context.Context, props map[string]string) error {
 			}
 		} else {
 			failures = 0
+			if a.manager != nil {
+				a.manager.SetDesired(hbResp.Desired)
+			}
 		}
 		select {
 		case <-t.C:
@@ -144,7 +148,8 @@ func (a *Agent) post(ctx context.Context, path string, body, out any) error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("%s: HTTP %d: %s", path, resp.StatusCode, bytes.TrimSpace(msg))
 	}
-	if out != nil {
+	// A 204 (e.g. the heartbeat's "no desired state") has no body to decode.
+	if out != nil && resp.StatusCode != http.StatusNoContent {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil

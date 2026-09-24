@@ -29,7 +29,9 @@ type RuntimeConfig struct {
 	Port          int    // on-device listen port (127.0.0.1 only)
 	AdvertisePort int    // host-side port that reaches Port (adb forward)
 	Threads       int
-	CtxSize       int
+	CtxSize       int    // context per slot; llama-server's -c is CtxSize*Slots (see runOnce)
+	Slots         int    // parallel slots (-np); <=0 is treated as 1
+	KVType        string // "" or "f16" (default), or "q8_0" (adds -ctk/-ctv/-fa, see ADR-012)
 	Variant       string // llama.cpp build variant selected by pcprov (ADR-007); empty if unknown
 }
 
@@ -44,6 +46,7 @@ type Runtime struct {
 	log      *slog.Logger
 	restarts atomic.Int64
 	http     *http.Client
+	pid      atomic.Int32 // 0 when no llama-server process is running
 
 	mu         sync.Mutex // guards the self-test result below
 	genTPS     float64
@@ -82,10 +85,18 @@ func (r *Runtime) Run(ctx context.Context) {
 }
 
 func (r *Runtime) runOnce(ctx context.Context) error {
+	slots := max(r.cfg.Slots, 1)
+	// llama-server's -c/--ctx-size is the TOTAL context across all -np
+	// slots (each slot gets ctx-size/n_parallel), not the per-slot size, so
+	// the agent multiplies CtxSize (per slot) by the slot count here.
 	args := []string{
 		"-m", r.cfg.ModelPath, "-a", ModelName(r.cfg.ModelPath),
-		"-t", strconv.Itoa(r.cfg.Threads), "-c", strconv.Itoa(r.cfg.CtxSize), "-np", "1",
+		"-t", strconv.Itoa(r.cfg.Threads), "-c", strconv.Itoa(r.cfg.CtxSize * slots), "-np", strconv.Itoa(slots),
 		"--host", "127.0.0.1", "--port", strconv.Itoa(r.cfg.Port),
+	}
+	if r.cfg.KVType == "q8_0" {
+		// q8_0 V-cache quantization requires flash attention.
+		args = append(args, "-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on")
 	}
 	logf, err := os.OpenFile("runtime.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -99,9 +110,12 @@ func (r *Runtime) runOnce(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", r.cfg.ServerBin, err)
 	}
+	r.pid.Store(int32(cmd.Process.Pid))
+	defer r.pid.Store(0)
 	_ = os.WriteFile(runtimePidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
 	defer os.Remove(runtimePidFile)
-	r.log.Info("llama-server started", "pid", cmd.Process.Pid, "model", ModelName(r.cfg.ModelPath), "port", r.cfg.Port)
+	r.log.Info("llama-server started", "pid", cmd.Process.Pid, "model", ModelName(r.cfg.ModelPath),
+		"port", r.cfg.Port, "ctx_size", r.cfg.CtxSize, "slots", slots, "kv_type", r.cfg.KVType)
 	selfTestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go r.waitReadyThenSelfTest(selfTestCtx)
@@ -136,6 +150,9 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 	st := &proto.RuntimeStatus{
 		Engine:        engine,
 		Model:         ModelName(r.cfg.ModelPath),
+		ModelID:       ModelName(r.cfg.ModelPath),
+		Slots:         max(r.cfg.Slots, 1),
+		KVType:        r.cfg.KVType,
 		AdvertisePort: r.cfg.AdvertisePort,
 		Restarts:      r.restarts.Load(),
 		Threads:       r.cfg.Threads,
