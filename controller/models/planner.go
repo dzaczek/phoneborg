@@ -112,8 +112,9 @@ type Plan struct {
 	Warnings    []string     `json:"warnings"`
 }
 
-// Planner computes a plan. Implementations must be deterministic: the same
-// inputs give the same plan.
+// Planner computes a plan. models holds only the models that are ready to
+// be served; policies for other models wait, with a warning.
+// Implementations must be deterministic: the same inputs give the same plan.
 type Planner interface {
 	Plan(spec Spec, nodes []Node, models []PlanModel) Plan
 }
@@ -211,6 +212,16 @@ func (DefaultPlanner) Plan(spec Spec, nodes []Node, models []PlanModel) Plan {
 		est := m.EstRAM()
 		assigned[n.ID] = Assignment{NodeID: n.ID, ModelID: m.ID, Reason: reason, CtxSize: m.CtxSize(), Slots: 1,
 			KVType: "auto", EstRAMBytes: est, Fits: Fits(est, n.RAMTotalBytes)}
+	}
+
+	// Policies for models that are not ready yet (or were removed) wait.
+	for _, p := range spec.Policies {
+		if _, ok := byModel[p.ModelID]; !ok {
+			warn("%s: model is not ready; its %s policy waits", p.ModelID, p.Mode)
+		}
+	}
+	if _, ok := byModel[spec.DefaultModel]; spec.DefaultModel != "" && !ok {
+		warn("default model %s is not ready; nodes keep their current model", spec.DefaultModel)
 	}
 
 	// Pins.

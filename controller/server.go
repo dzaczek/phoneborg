@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/dzaczek/phoneborg/controller/gateway"
+	"github.com/dzaczek/phoneborg/controller/models"
 	"github.com/dzaczek/phoneborg/proto"
 )
 
@@ -45,9 +47,12 @@ type Server struct {
 	adminEnabled   bool
 	adminTokenHash [sha256.Size]byte
 	mAdmin         *prometheus.CounterVec
+
+	catalog *models.Catalog
+	place   *placement
 }
 
-// GatewayOptions configures the inference proxy.
+// GatewayOptions configures the inference proxy and model management.
 type GatewayOptions struct {
 	// Keys authenticates gateway requests. nil means an open, in-memory store:
 	// every request is served, known keys are attributed to their owner.
@@ -57,6 +62,7 @@ type GatewayOptions struct {
 	// ThermalLimitC marks a node hot when its last heartbeat temperature is
 	// at or above this; 0 disables thermal-aware routing (ADR-010).
 	ThermalLimitC float64
+	Models        ModelOptions // ADR-011
 	gateway.Config
 }
 
@@ -68,7 +74,16 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		gwOpts.Usage, _ = NewUsage("") // cannot fail without a state dir
 	}
 	gwOpts.Config.Usage = gwOpts.Usage
+	if gwOpts.Models.Catalog == nil {
+		gwOpts.Models.Catalog, _ = models.NewCatalog(models.CatalogOptions{Log: log}) // cannot fail without a state file
+	}
+	if gwOpts.Models.Planner == nil {
+		gwOpts.Models.Planner = models.DefaultPlanner{}
+	}
 	s := &Server{
+		catalog: gwOpts.Models.Catalog,
+		place: &placement{planner: gwOpts.Models.Planner, path: gwOpts.Models.PlacementFile,
+			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
 		keys:           gwOpts.Keys,
 		usage:          gwOpts.Usage,
 		least:          &gateway.LeastInflight{},
@@ -96,12 +111,14 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
 	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin,
-		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	s.affinity = gateway.NewAffinity(s.promReg)
 	s.gw = gateway.New(gwOpts.Keys, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()
 		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC())
 	}, gwOpts.Config, s.promReg, log)
+	s.catalog.SetOnChange(s.Replan)
+	s.Replan()
 	return s
 }
 
@@ -114,8 +131,9 @@ func (s *Server) ThermalLimitC() float64 { return math.Float64frombits(s.thermal
 func (s *Server) SetThermalLimitC(c float64) { s.thermalLimitC.Store(math.Float64bits(c)) }
 
 // Backends lists nodes that can take inference traffic: ACTIVE with a ready
-// runtime that advertises a port. Drained nodes are included but marked, so
-// their in-flight requests are not reaped.
+// runtime that advertises a port and is not switching models (ADR-011).
+// Drained nodes are included but marked, so their in-flight requests are not
+// reaped.
 //
 // Speed favors measured generation speed (RuntimeStatus.GenTPS, real
 // llama.cpp tokens/s from the node's self-test) over the synthetic startup
@@ -133,7 +151,8 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, t
 	anyMeasured := false
 	for _, n := range nodes {
 		hb := n.LastHeartbeat
-		if n.State != proto.StateActive || hb == nil || hb.Runtime == nil || !hb.Runtime.Ready || hb.Runtime.AdvertisePort == 0 {
+		if n.State != proto.StateActive || hb == nil || hb.Runtime == nil || !hb.Runtime.Ready || hb.Runtime.AdvertisePort == 0 ||
+			switching(hb.Runtime) {
 			continue
 		}
 		host := hb.Runtime.AdvertiseHost
@@ -168,6 +187,12 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, t
 	return out
 }
 
+// switching reports whether a node is downloading or loading a model. An
+// agent reports Ready=false then; this also holds if it does not.
+func switching(rt *proto.RuntimeStatus) bool {
+	return rt.State == "downloading" || rt.State == "loading"
+}
+
 // ReapGateway cancels requests stuck on nodes that left the ready set.
 func (s *Server) ReapGateway() { s.gw.Reap() }
 
@@ -179,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathNodes, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.reg.Snapshot())
 	})
+	mux.HandleFunc("GET "+PathModelFiles+"{model_id}", s.handleModelFile)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.promReg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("GET /{$}", s.handleDashboard)
@@ -198,6 +224,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	s.reg.Register(req, r.RemoteAddr)
 	s.registrations.Inc()
+	s.Replan()
 	s.log.Info("node registered", "node_id", req.NodeID, "model", req.Inventory.Model,
 		"abi", req.Inventory.ABI, "cores", req.Inventory.CPUCores, "ram_bytes", req.Inventory.RAMTotalBytes)
 	writeJSON(w, http.StatusOK, proto.RegisterResponse{
@@ -230,7 +257,38 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	s.heartbeats.Inc()
 	s.log.Debug("heartbeat", "node_id", hb.NodeID, "ram_avail", hb.RAMAvailBytes, "load1", hb.Load1)
-	w.WriteHeader(http.StatusNoContent)
+	d := s.desired(hb.NodeID)
+	if d == nil {
+		w.WriteHeader(http.StatusNoContent) // keep the current runtime
+		return
+	}
+	if hb.Runtime == nil || currentModel(hb.Runtime) != d.ModelID {
+		s.log.Debug("desired runtime sent", "node_id", hb.NodeID, "model_id", d.ModelID, "current_model", currentModel(hb.Runtime))
+	}
+	writeJSON(w, http.StatusOK, proto.HeartbeatResponse{Desired: d})
+}
+
+// handleModelFile serves a ready catalog model to agents, with Range
+// support so they can resume. Like the heartbeat, it needs no token
+// (ADR-011).
+func (s *Server) handleModelFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("model_id")
+	path, m, ok := s.catalog.File(id)
+	if !ok {
+		httpError(w, http.StatusNotFound, "no ready model "+id)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		s.log.Error("opening model file", "model_id", id, "err", err)
+		httpError(w, http.StatusNotFound, "model file unavailable")
+		return
+	}
+	defer f.Close()
+	s.log.Info("model file requested", "model_id", id, "range", r.Header.Get("Range"), "remote_addr", r.RemoteAddr)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("ETag", `"`+m.SHA256+`"`)
+	http.ServeContent(w, r, m.File, time.Time{}, f)
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

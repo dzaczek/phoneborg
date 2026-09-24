@@ -90,7 +90,7 @@ func (c *Catalog) run(ctx context.Context, e *entry) {
 		c.log.Info("model ready", "model_id", id, "size_bytes", m.SizeBytes, "sha256", m.SHA256, "arch", m.Arch,
 			"params", m.Params, "quant", m.Quant, "est_ram_bytes_16k", m.EstRAMBytes16k, "fits_classes", m.FitsClasses)
 	}
-	c.opts.OnChange()
+	c.changed()
 }
 
 // fetch runs one download attempt, appending to the partial file when the

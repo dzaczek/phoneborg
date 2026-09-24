@@ -197,6 +197,20 @@ func NewCatalog(opts CatalogOptions) (*Catalog, error) {
 	return c, nil
 }
 
+// SetOnChange replaces the OnChange callback.
+func (c *Catalog) SetOnChange(f func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.opts.OnChange = f
+}
+
+func (c *Catalog) changed() {
+	c.mu.Lock()
+	f := c.opts.OnChange
+	c.mu.Unlock()
+	f()
+}
+
 // Dir is the directory with the model files ("" until the first download
 // when no directory was configured).
 func (c *Catalog) Dir() string {
@@ -327,7 +341,7 @@ func (c *Catalog) Add(req AddRequest) (Model, error) {
 	err = c.saveLocked()
 	c.mu.Unlock()
 	c.log.Info("model download started", "model_id", id, "source", req.Source)
-	c.opts.OnChange()
+	c.changed()
 	return m, err
 }
 
@@ -389,7 +403,7 @@ func (c *Catalog) Remove(id string) error {
 		_ = os.Remove(filepath.Join(dir, id+".gguf.part"))
 	}
 	c.log.Info("model removed", "model_id", id)
-	c.opts.OnChange()
+	c.changed()
 	return err
 }
 
