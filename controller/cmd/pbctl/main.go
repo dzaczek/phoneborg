@@ -1,6 +1,6 @@
 // Command pbctl manages a PhoneBorg cluster through the controller's admin
 // API: nodes, draining, API keys, usage statistics, gateway settings, the
-// model catalog and model placement.
+// model catalog, model placement, node aliases and pools.
 package main
 
 import (
@@ -19,12 +19,14 @@ import (
 	"time"
 
 	"github.com/dzaczek/phoneborg/controller"
+	"github.com/dzaczek/phoneborg/controller/gateway"
 )
 
 const usageText = `usage: pbctl [-json] [-url URL] [-token-file FILE] <command> [args]
 
 commands:
   nodes                       list nodes (state, drain, runtime, load)
+  nodes alias <id> <alias>    name a node, addressed as model node/<alias> ("-" clears)
   drain <id>                  stop sending new requests to a node
   undrain <id>                put a drained node back into rotation
   forget <id>                 remove a node (it re-registers if alive)
@@ -36,7 +38,7 @@ commands:
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
-  served                      list models ready nodes serve (/v1/models)
+  served                      list models ready nodes serve, pools and nodes (/v1/models)
   models                      model catalog (size, status, fits, tags, serving)
   models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]
                               download a model: hf://<owner>/<repo>/<file>.gguf,
@@ -51,6 +53,11 @@ commands:
   placement unset <model>     remove the model's policy
   placement preview [set|unset] [<model> ...]
                               show the plan a change would give, apply nothing
+  pools                       pools (model pool/<name>) with member eligibility
+  pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5]
+            [routing=spread|affinity] [desc="..."]
+                              create a pool or change the given fields ("-" clears a list)
+  pools rm <name>             remove a pool
 
 environment:
   PHONEBORG_URL          controller URL (default http://127.0.0.1:18080)
@@ -121,6 +128,10 @@ func dispatch(c *client, o *out, args []string) error {
 	switch {
 	case cmd == "nodes" && len(rest) == 0:
 		return nodes(c, o)
+	case cmd == "nodes" && len(rest) == 3 && rest[0] == "alias":
+		return setAlias(c, o, rest[1], rest[2])
+	case cmd == "pools":
+		return poolsCmd(c, o, rest)
 	case cmd == "drain" || cmd == "undrain":
 		id, err := one()
 		if err != nil {
@@ -348,7 +359,11 @@ func nodes(c *client, o *out) error {
 		if n.Hot {
 			state += " HOT"
 		}
-		rows = append(rows, []string{n.ID, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
+		node := n.ID
+		if n.Alias != "" {
+			node = n.Alias + " (" + n.ID + ")"
+		}
+		rows = append(rows, []string{node, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
 			model, runtime, build, toks, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
 	}
 	o.table("NODE\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tTOK/S\tINFLIGHT\tPINNED\tLAST SEEN", rows)
@@ -505,23 +520,25 @@ func served(c *client, o *out) error {
 		return o.raw(raw)
 	}
 	var ms struct {
-		Data []struct {
-			ID    string `json:"id"`
-			Nodes int    `json:"nodes"`
-		} `json:"data"`
+		Data []gateway.ModelEntry `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &ms); err != nil {
 		return err
 	}
-	if len(ms.Data) == 0 {
-		fmt.Fprintln(o.w, "no models served (no ready nodes)")
-		return nil
-	}
 	var rows [][]string
+	served := 0
 	for _, m := range ms.Data {
-		rows = append(rows, []string{m.ID, strconv.Itoa(m.Nodes)})
+		if m.Kind == "" || m.Kind == gateway.KindModel { // controllers before ADR-014 send no kind
+			served++
+		}
+		rows = append(rows, []string{m.ID, dash(m.Kind), strconv.Itoa(m.Nodes)})
 	}
-	o.table("MODEL\tNODES", rows)
+	if served == 0 {
+		fmt.Fprintln(o.w, "no models served (no ready nodes)")
+	}
+	if len(rows) > 0 {
+		o.table("MODEL\tKIND\tNODES", rows)
+	}
 	return nil
 }
 

@@ -590,3 +590,93 @@ There are no per-operator accounts or audit identity beyond
 `principal=admin`. Browser tests are manual; the Go tests check only that
 the files are embedded, served with the right types, and reference no
 missing file.
+
+## ADR-014: Virtual models and pools for agent workloads
+
+**Problem.** Agent tools such as opencode run several subagents at once,
+and each subagent names one model. With only served model ids, every
+subagent competes for the same phones under session affinity: all requests
+for a model go to the phones serving it, and there is no way to give the
+reviewer agent the fast phones, keep a scratch agent on one spare phone,
+or send a group of small agents to "whichever phones are free". Node ids
+(`mi8-6f3a…`) are also too unfriendly to put in an agent's config.
+
+The workloads also differ. A tool-less custom agent sends about 180 prompt
+tokens per request, whereas opencode's default build agent sends about
+11.7k (system prompt plus tool definitions), measured with opencode 1.18.30.
+On a phone the first costs seconds of prompt processing cold, the second
+around 15 minutes. Session affinity (ADR-006) exists to protect the second
+kind; for the first it only serialises work that could run in parallel.
+
+**Alternatives.**
+1. Separate gateway ports or base URLs per group of phones.
+2. Use placement (ADR-011) to give each group its own model, and address
+   groups by model id.
+3. Virtual model names resolved by the gateway: `auto`, `pool/<name>` and
+   `node/<alias-or-id>`, next to plain model ids, with pools and aliases
+   managed through the admin API.
+
+**Trade-offs.** (1) needs a listener and a provider entry per group and
+cannot express a single phone without one port per phone. (2) ties routing
+to what phones serve: two groups serving the same small model would need
+two copies under different ids, and a phone cannot be addressed on its own.
+(3) keeps one endpoint and one provider entry, works with every OpenAI
+client (a model id is just a string; opencode accepts ids that contain
+`/`), and leaves placement alone. Its cost is a naming convention inside
+the model namespace: aliases may not start with `pool` or be `auto`, and
+catalog ids should not start with `pool/` or `node/`.
+
+**Decision.** (3).
+
+- **Resolution.** The gateway resolves the request's `model` before
+  choosing candidates: `auto` is any ready node, `pool/<name>` the pool's
+  eligible members, `node/<alias-or-id>` one node, anything else a served
+  model as before. The controller implements pools and nodes behind a
+  `Targets` interface; the gateway handles `auto` and model ids itself.
+  Unknown pools and nodes get 404 `model_not_found`. The upstream body is
+  unchanged (llama-server ignores `model`), the `model` metric label keeps
+  the real served model, and `phoneborg_gateway_target_requests_total
+  {target}` counts `auto`, `pool/<name>`, `node/<alias-or-id>` and `model`.
+- **Node targets** bypass the picker and are never retried on another node:
+  an agent that asks for one phone wants that phone's cache and behaviour,
+  not a silent substitute. A node that is not ready or drained gets 503
+  `node_unavailable`; a failed attempt ends in 502. The context-size check
+  still applies. A hot node is still served, consistent with ADR-010's rule
+  that a hot phone is used when it is the only candidate.
+- **Pools** filter by served model, node (alias or id), device class and
+  self-test tok/s (`min_gen_tps`, ADR-010). Hot, drained, not ready and
+  switching nodes are never eligible. Responses list every node with
+  `eligible` and a `reason`, so an empty pool explains itself.
+  `phoneborg_pool_members{pool}` exports the eligible count.
+- **Spread vs affinity.** A pool's `routing` is `spread` (default) or
+  `affinity`. `Spread` is a new `Picker`: least in-flight, then highest
+  speed, then rotation, with no session state; it never reads or updates
+  affinity pins. Pools are meant for small, tool-less agents whose prompts
+  are about 180 tokens: recomputing such a prompt costs a phone a few
+  seconds, so running N agents on N phones at once beats queueing them on
+  the phone that happens to hold their cache. Agents with long prompts
+  (the 11.7k-token build agent) should use `affinity`, which routes exactly
+  like a plain model name under the gateway's policy. The `Picker`
+  interface is unchanged; a target may override the gateway's picker.
+- **Aliases** are kept by node id in the registry, like drain flags, so they
+  survive re-registration and forget. They must match
+  `^[a-z0-9][a-z0-9-]{0,31}$`, be unique, and not equal another node's id.
+  `proto.Node` gains an additive `alias` field. Unlike drain flags, aliases
+  and pools are persisted, to `<state-dir>/routing.json` (atomic write, mode
+  0600), because agent configs refer to them by name.
+- **`/v1/models`** gives every entry a `kind` (`model`, `auto`, `pool`,
+  `node`) and lists `auto`, every pool and every aliased node after the
+  served models, so clients can discover targets. Unaliased nodes are not
+  listed; `node/<id>` still routes.
+- **Prewarm.** `POST /admin/prewarm` sends every eligible node of a target,
+  in parallel, the given messages and tools plus a final user "ok", with
+  `max_tokens: 1` and `cache_prompt: true`, so each phone caches the prefix
+  before an agent run. Each node gets up to 120 s. The request counts as
+  in flight on the node, so pickers treat it as busy meanwhile.
+
+**Not solved.** Pool membership is evaluated when a request arrives; a
+node that turns hot or starts switching mid-request finishes that request.
+There are no per-key restrictions on targets (any key may use any pool or
+node) and no quotas per pool. Renaming an alias silently removes the node
+from pools that list the old alias. Prewarm does not pin anything, so under
+`affinity` routing the first real request may still land on another node.

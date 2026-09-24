@@ -142,6 +142,13 @@ ts("Drained nodes", [('phoneborg_node_drained', "{{node_id}}")], 0, w=12, h=6,
    desc="1 = drained with pbctl drain: the node gets no new requests, in-flight ones finish")
 ts("Admin actions", [('sum by (action, result) (increase(phoneborg_admin_actions_total[5m]))', "{{action}} {{result}}")], 12, w=12, h=6,
    desc="Admin API calls per 5 minutes; result=unauthorized means a wrong or missing admin token")
+y[0] += 6
+
+row("Pools and virtual models")
+ts("Requests / s by target", [('sum by (target) (rate(phoneborg_gateway_target_requests_total[1m]))', "{{target}}")], 0, w=12, h=6,
+   unit="reqps", stack=True, desc="What clients asked for: model (a served model id), auto, pool/<name> or node/<alias> (ADR-014)")
+ts("Eligible nodes per pool", [('phoneborg_pool_members', "{{pool}}")], 12, w=12, h=6,
+   desc="Pool members that can take requests now: ready, not drained, not hot, matching the pool's filters (pbctl pools)")
 
 dash = {"uid": "phoneborg", "title": "PhoneBorg", "tags": ["phoneborg"], "timezone": "browser",
         "schemaVersion": 39, "version": 1, "refresh": "5s", "time": {"from": "now-30m", "to": "now"},

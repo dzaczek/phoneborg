@@ -181,7 +181,7 @@ func TestModelsList(t *testing.T) {
 		}
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &out)
-	if len(out.Data) != 2 || out.Data[0].ID != "m1" || out.Data[0].Nodes != 2 {
+	if len(out.Data) != 3 || out.Data[0].ID != "m1" || out.Data[0].Nodes != 2 || out.Data[2].ID != "auto" || out.Data[2].Nodes != 3 {
 		t.Fatalf("models: %s", w.Body)
 	}
 }

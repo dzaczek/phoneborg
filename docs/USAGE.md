@@ -2,7 +2,7 @@
 
 This guide covers using a running PhoneBorg cluster: sending requests,
 managing API keys, choosing which models phones serve, draining phones for
-maintenance and reading usage statistics. To set up the cluster, see [REAL_PHONES.md](REAL_PHONES.md) or
+maintenance, addressing pools of phones and reading usage statistics. To set up the cluster, see [REAL_PHONES.md](REAL_PHONES.md) or
 [DEV_EMULATION.md](DEV_EMULATION.md).
 
 The controller listens on `http://127.0.0.1:18080` by default:
@@ -139,6 +139,9 @@ pbctl models recommend <id> s,m     pbctl models default <id>|none
 pbctl placement                     pbctl placement unset <model>
 pbctl placement set <model> pin=<node,...>|replicas=<n>|percent=<p> [classes=s,m]
 pbctl placement preview [set|unset] [<model> ...]
+pbctl nodes alias <id> <alias>|-    pbctl pools
+pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread|affinity] [desc="..."]
+pbctl pools rm <name>
 ```
 
 `pbctl served` lists the models that ready phones serve right now (the
@@ -291,6 +294,118 @@ memory and model files go to a temporary directory.
 reaches the controller's port can download catalog models. Keep the
 controller on localhost or a trusted network (ADR-002, ADR-011).
 
+## Virtual models, pools and aliases
+
+Besides a served model id, the `model` field of a chat or completion request
+can name a routing target. One OpenAI client, for example several opencode
+subagents, can then address groups of phones or a single phone as if they
+were models:
+
+| `model` | Goes to |
+|---|---|
+| `<model id>` | ready phones serving that model, as before (session affinity) |
+| `auto` | any ready phone, whatever it serves (session affinity) |
+| `pool/<name>` | the eligible members of the pool, routed per the pool's `routing` |
+| `node/<alias-or-id>` | exactly that phone. It is never retried on another phone; if the phone is not ready the answer is 503 `node_unavailable` |
+
+An unknown pool or node gets 404 `model_not_found`, a pool with no eligible
+phone 503. Context-size checks, draining and the thermal limit apply to every
+target. A node target is still served when its phone is hot, since there is
+no other phone to use. The request body is passed on unchanged; llama-server
+ignores `model`. Metrics keep the real served model in the `model` label, and
+`phoneborg_gateway_target_requests_total{target}` counts requests per target
+(`model` for plain model ids).
+
+**Aliases.** Give phones short names that survive re-registration and
+restarts (saved with the pools to `<state-dir>/routing.json`). An alias
+matches `^[a-z0-9][a-z0-9-]{0,31}$`, is unique, is not another node's id,
+does not start with `pool` and is not `auto`.
+
+```sh
+pbctl nodes alias mi8-6f3a phone-01        # "-" removes the alias
+curl -X PATCH http://127.0.0.1:18080/admin/nodes/mi8-6f3a \
+  -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" -d '{"alias":"phone-01"}'
+```
+
+`pbctl nodes` then shows `phone-01 (mi8-6f3a)`, and `/admin/nodes` and
+`/v1/nodes` carry `"alias"`.
+
+**Pools.** A pool selects phones by served model, alias or id, device class
+and measured speed. Empty lists mean "any". Hot, drained, not ready and
+switching phones are never eligible.
+
+```sh
+pbctl pools set fast models=qwen2.5-0.5b-instruct-q4_k_m classes=s,m min_tps=5 desc="small agents"
+pbctl pools set pair nodes=phone-01,phone-02 routing=affinity
+pbctl pools                                  # pools, then every node's status per pool
+pbctl pools rm pair
+```
+
+`pbctl pools set` changes only the fields you give on an existing pool;
+`-` clears a list. The admin API replaces the whole pool:
+
+```sh
+curl -X PUT http://127.0.0.1:18080/admin/pools/fast \
+  -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" \
+  -d '{"description":"small agents","models":["qwen2.5-0.5b-instruct-q4_k_m"],
+       "classes":["s","m"],"min_gen_tps":5,"routing":"spread"}'
+curl http://127.0.0.1:18080/admin/pools -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN"
+curl -X DELETE http://127.0.0.1:18080/admin/pools/fast -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN"
+```
+
+Responses list `members`: every node with `eligible` and, if not, a
+`reason` (`not a member`, `class not allowed`, `drained`, `switching`,
+`not ready`, `hot`, `model not allowed`, `below min_gen_tps`).
+
+`routing` is `spread` (default) or `affinity`. `spread` sends each request
+to the member with the fewest requests in flight, then the fastest one, and
+never pins sessions. It suits pools of small agents without tools: their
+prompts are tiny and cheap to recompute, so running them in parallel is
+worth more than a warm cache. `affinity` routes like plain model names (the
+gateway's policy, see [Gateway settings](#gateway-settings)); use it for
+agents with long system prompts or tools.
+
+**Using targets.**
+
+```sh
+curl http://127.0.0.1:18080/v1/chat/completions \
+  -d '{"model":"pool/fast","messages":[{"role":"user","content":"Summarise: ..."}]}'
+curl http://127.0.0.1:18080/v1/chat/completions \
+  -d '{"model":"node/phone-01","messages":[{"role":"user","content":"ping"}]}'
+```
+
+`/v1/models` gives every entry a `kind` and lists the targets after the
+served models. Only phones with an alias get a `node/` entry; `node/<id>`
+still works when you send it.
+
+```json
+{"id":"qwen2.5-0.5b-instruct-q4_k_m","object":"model","owned_by":"phoneborg","kind":"model","nodes":3}
+{"id":"auto","object":"model","owned_by":"phoneborg","kind":"auto","nodes":3}
+{"id":"pool/fast","object":"model","owned_by":"phoneborg","kind":"pool","nodes":2,"description":"small agents"}
+{"id":"node/phone-01","object":"model","owned_by":"phoneborg","kind":"node","nodes":1,"model":"qwen2.5-0.5b-instruct-q4_k_m","ready":true}
+```
+
+In opencode, list these ids under the provider's `models` and reference them
+as `phoneborg/pool/fast` or `phoneborg/node/phone-01`.
+
+**Prewarming.** A cold system prompt costs a phone seconds to minutes.
+`POST /admin/prewarm` sends every eligible phone of a target, in parallel,
+the given messages (and tools) plus a final `{"role":"user","content":"ok"}`
+with `max_tokens: 1` and `cache_prompt: true`, so each phone has the prefix
+in its prompt cache before real requests arrive. Each phone gets up to
+120 s.
+
+```sh
+curl -X POST http://127.0.0.1:18080/admin/prewarm \
+  -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" \
+  -d '{"target":"pool/fast","messages":[{"role":"system","content":"You are a terse reviewer."}]}'
+# {"results":[{"node_id":"mi8-6f3a","alias":"phone-01","ok":true,"ms":4210,"error":""}, ...]}
+```
+
+The target is resolved like a request's `model` (`pool/<name>`,
+`node/<alias-or-id>`, `auto` or a model id); drained phones are skipped. A
+`node/` target whose phone is not ready gets 503.
+
 ## API keys
 
 Each API key has an owner name. Usage is counted per name in `pbctl stats`,
@@ -398,7 +513,8 @@ each phone's self-test tok/s and which phones are currently hot (routed
 around, ADR-010). The Administration row shows drained nodes and admin API
 calls (`phoneborg_admin_actions_total`). The Models row shows the catalog,
 controller downloads, planned versus serving phones per model and phones
-that are switching models. If `result="unauthorized"` goes up,
+that are switching models. The Pools row shows requests per target (model,
+`auto`, `pool/…`, `node/…`) and eligible phones per pool. If `result="unauthorized"` goes up,
 someone is trying wrong admin tokens.
 Prometheus keeps its data only for its retention period. For totals over a
 longer time, use `pbctl stats` with `-state-dir`.

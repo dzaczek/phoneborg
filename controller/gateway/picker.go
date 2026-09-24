@@ -23,6 +23,7 @@ type Backend struct {
 	// CtxSize is the node's context window in tokens; 0 = unknown (never
 	// excluded). Prompts estimated to be longer are routed elsewhere.
 	CtxSize int
+	Alias   string // the node's alias, "" = none (ADR-014)
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies

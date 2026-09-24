@@ -61,6 +61,10 @@ Prometheus and Grafana.
     own llama-server), not just a synthetic CPU benchmark. Phones at or above
     a configurable temperature stop receiving new sessions until they cool
     down.
+  - **Virtual models.** Besides a model id, clients can ask for `auto`,
+    `pool/<name>` (a named group of phones, spread across in parallel) or
+    `node/<alias>` (one phone), so each agent of an agent tool gets its
+    own phones. Pools can be prewarmed with an agent's system prompt.
   - **API keys** (optional), with per-key usage metrics. Keys are stored as
     SHA-256 hashes and can be created and revoked at runtime.
 - **Cluster management.** A token-protected admin API (`/admin/`) and the

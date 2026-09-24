@@ -138,6 +138,7 @@ var AllStates = []NodeState{StateBenchmarking, StateActive, StateSuspect, StateO
 // Node is the controller's view of a node.
 type Node struct {
 	ID            string     `json:"id"`
+	Alias         string     `json:"alias"` // operator-chosen name, "" = none; set by the controller (ADR-014)
 	State         NodeState  `json:"state"`
 	RemoteAddr    string     `json:"remote_addr"`
 	Inventory     Inventory  `json:"inventory"`
