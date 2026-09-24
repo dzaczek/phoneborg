@@ -1,6 +1,7 @@
 // Overview: cluster health, request and token rates, models, placement warnings.
-import { get, getOptional } from '../api.js';
-import { h, fill, table, int, duration, sum, sparkline } from '../dom.js';
+import { get, getOptional, gatewayModels } from '../api.js';
+import { h, fill, table, badge, int, duration, sum, sparkline } from '../dom.js';
+import { toast } from '../ui.js';
 
 const STATES = ['ACTIVE', 'BENCHMARKING', 'SUSPECT', 'OFFLINE'];
 
@@ -38,6 +39,39 @@ function tile(label, value, sub, extra) {
   return h('div.card.tile', null, h('div.label', null, label), h('div.value', null, value), h('div.sub', null, sub || ' '), extra);
 }
 
+async function copyRef(id) {
+  const text = 'phoneborg/' + id;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`Copied ${text}`);
+  } catch {
+    toast(`Copy manually: ${text}`);
+  }
+}
+
+// virtualModelsCard shows the routing targets OpenCode (or any client) can
+// use as "model": auto, pool/<name> and node/<alias>. list is the parsed
+// GET /v1/models response, or null when it could not be fetched (e.g. API
+// keys are enforced and the admin token is not a valid key).
+function virtualModelsCard(list) {
+  if (list === null) {
+    return h('div.card.section', null, h('h2', null, 'Virtual models'),
+      h('p.muted', null, '/v1/models is not reachable with the admin token (API keys may be enforced, or the controller is unreachable).'));
+  }
+  const entries = (list.data || []).filter((m) => m.kind && m.kind !== 'model');
+  const rows = entries.map((m) => {
+    let details;
+    if (m.kind === 'pool') details = m.description || h('span.muted', null, '–');
+    else if (m.kind === 'node') details = [m.model ? `serves ${m.model}` : h('span.muted', null, 'no model'), ' ', m.ready ? badge('ready', 'ok') : badge('not ready', 'bad')];
+    else details = h('span.muted', null, 'any ready node');
+    return [h('span.mono', null, m.id), badge(m.kind, m.kind === 'auto' ? 'idle' : 'info'), { v: int(m.nodes), num: true }, details,
+      h('td.actions', null, h('button.small', { type: 'button', onclick: () => copyRef(m.id) }, 'Copy ref'))];
+  });
+  return h('div.card.section', null, h('h2', null, 'Virtual models'),
+    h('p.muted.small', null, 'Use as "model" in requests, or as phoneborg/<id> in OpenCode.'),
+    table(['Reference', 'Kind', { label: 'Nodes', num: true }, 'Details', { label: 'Actions', num: true }], rows, 'No virtual models yet.'));
+}
+
 export default function overview() {
   const body = h('div', null, h('p.muted', null, 'Loading…'));
   const head = h('span.muted');
@@ -45,10 +79,11 @@ export default function overview() {
 
   async function refresh() {
     const recheck = Date.now() - placementCheckedAt > 60000;
-    const [stats, nodes, placement] = await Promise.all([
+    const [stats, nodes, placement, vModels] = await Promise.all([
       get('/admin/stats'),
       get('/admin/nodes'),
       placementMissing && !recheck ? null : getOptional('/admin/placement'),
+      gatewayModels(),
     ]);
     if (!placementMissing || recheck) {
       placementMissing = placement === null;
@@ -105,7 +140,7 @@ export default function overview() {
       warnCard = h('div.card.section', null, h('h2', null, 'Placement'), h('p.muted', null, 'Checking…'));
     }
 
-    fill(body, tiles, health, h('div.two', null, modelsCard, warnCard));
+    fill(body, tiles, health, h('div.two', null, modelsCard, warnCard), virtualModelsCard(vModels));
   }
 
   return { title: 'Overview', el, live: true, refresh };
