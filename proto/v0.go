@@ -66,6 +66,27 @@ type Heartbeat struct {
 	Runtime *RuntimeStatus `json:"runtime,omitempty"`
 }
 
+// HeartbeatResponse is the body of a 200 reply to POST /v1/heartbeat. A
+// controller may still answer 204 (no desired state); agents must accept
+// both (see ADR-012).
+type HeartbeatResponse struct {
+	Desired *DesiredRuntime `json:"desired,omitempty"` // nil = keep current runtime
+}
+
+// DesiredRuntime is what the controller wants the node to serve.
+type DesiredRuntime struct {
+	ModelID   string `json:"model_id"` // catalog id; also the served model name (llama-server -a)
+	URL       string `json:"url"`      // path on the controller, e.g. "/v1/model-files/<model_id>"
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+	CtxSize   int    `json:"ctx_size"` // requested context per slot; agent may lower it to fit RAM
+	Slots     int    `json:"slots"`    // requested parallel slots (llama-server -np)
+	KVType    string `json:"kv_type"`  // "f16" | "q8_0" | "auto" (auto: agent picks)
+	Layers    int    `json:"layers"`   // GGUF metadata for the RAM estimate
+	KVHeads   int    `json:"kv_heads"`
+	HeadDim   int    `json:"head_dim"`
+}
+
 // RuntimeStatus describes the node's inference server. The controller reaches
 // it at AdvertiseHost:AdvertisePort; an empty host means "the controller's
 // configured backend host" (the machine running adb, see ADR-003/ADR-006).
@@ -87,6 +108,15 @@ type RuntimeStatus struct {
 	GenTPS     float64   `json:"gen_tps,omitempty"`
 	PromptTPS  float64   `json:"prompt_tps,omitempty"`
 	SelfTestAt time.Time `json:"self_test_at,omitempty"`
+	// ModelID, State etc. describe agent-side model switching (ADR-012).
+	// Model (served name) must equal ModelID when running a desired model.
+	ModelID          string  `json:"model_id,omitempty"`
+	State            string  `json:"state,omitempty"`    // "serving" | "downloading" | "loading" | "error" | "idle"
+	Progress         float64 `json:"progress,omitempty"` // 0..1 while downloading
+	Error            string  `json:"error,omitempty"`
+	Slots            int     `json:"slots,omitempty"`
+	KVType           string  `json:"kv_type,omitempty"`
+	RAMEstimateBytes int64   `json:"ram_estimate_bytes,omitempty"`
 }
 
 type NodeState string
