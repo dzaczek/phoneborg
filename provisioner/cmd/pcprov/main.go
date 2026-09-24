@@ -5,6 +5,8 @@
 //	pcprov watch                 # auto-provision phones as they are plugged in
 //	pcprov status -serial <serial>
 //	pcprov stop   -serial <serial>
+//	pcprov slim   -serial <serial> | -all    # disable non-essential apps to free RAM
+//	pcprov unslim -serial <serial> | -all    # restore what slim disabled
 package main
 
 import (
@@ -26,7 +28,7 @@ func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pcprov <devices|provision|watch|status|stop> [flags]\n  run 'pcprov <cmd> -h' for flags")
+	fmt.Fprintln(os.Stderr, "usage: pcprov <devices|provision|watch|status|stop|slim|unslim> [flags]\n  run 'pcprov <cmd> -h' for flags")
 	os.Exit(2)
 }
 
@@ -45,6 +47,8 @@ func main() {
 	llamaDir := fs.String("llama-dir", "bin/llama", "directory of llama.cpp ARM_ARCH variant builds (make llama-all); the best one for each phone's CPU is picked automatically")
 	servePort := fs.Int("serve-port", 18090, "on-device llama-server port")
 	all := fs.Bool("all", false, "provision all ready devices")
+	slimFlag := fs.Bool("slim", false, "run slim after a successful provision (provision, watch)")
+	slimTelephony := fs.Bool("slim-telephony", false, "slim/unslim: also disable dialer/contacts (off by default)")
 	var serials, connects multi
 	fs.Var(&serials, "serial", "device serial (repeatable); for watch, restricts to these serials")
 	fs.Var(&connects, "connect", "adb connect host:port first (repeatable), e.g. emulated phones")
@@ -96,23 +100,19 @@ func main() {
 			fmt.Printf("%-24s %-14s %s\n", d.Serial, d.State, d.Model)
 		}
 	case "provision":
-		if *all {
-			devs, err := adb.Devices(ctx)
-			fail(log, err)
-			for _, d := range devs {
-				if d.State == "device" {
-					serials = append(serials, d.Serial)
-				}
-			}
-		}
-		if len(serials) == 0 {
-			fail(log, fmt.Errorf("no target: pass -serial, -connect or -all"))
-		}
+		targets := resolveTargets(ctx, log, adb, *all, serials)
 		failed := 0
-		for _, s := range dedupe(serials) {
+		for _, s := range targets {
 			if err := p.Provision(ctx, s); err != nil {
 				log.Error("provision failed", "serial", s, "err", err)
 				failed++
+				continue
+			}
+			if *slimFlag {
+				if err := p.Slim(ctx, s, *slimTelephony); err != nil {
+					log.Error("slim failed", "serial", s, "err", err)
+					failed++
+				}
 			}
 		}
 		if failed > 0 {
@@ -123,8 +123,33 @@ func main() {
 		for _, s := range serials {
 			allowed[s] = true
 		}
+		var afterProvision func(serial string)
+		if *slimFlag {
+			afterProvision = func(serial string) {
+				if err := p.Slim(ctx, serial, *slimTelephony); err != nil {
+					log.Error("slim failed", "serial", serial, "err", err)
+				}
+			}
+		}
 		log.Info("watching for devices", "only", serials)
-		_ = p.Watch(ctx, 3*time.Second, func(s string) bool { return len(allowed) == 0 || allowed[s] })
+		_ = p.Watch(ctx, 3*time.Second, func(s string) bool { return len(allowed) == 0 || allowed[s] }, afterProvision)
+	case "slim", "unslim":
+		failed := 0
+		for _, s := range resolveTargets(ctx, log, adb, *all, serials) {
+			var err error
+			if cmd == "slim" {
+				err = p.Slim(ctx, s, *slimTelephony)
+			} else {
+				err = p.Unslim(ctx, s)
+			}
+			if err != nil {
+				log.Error(cmd+" failed", "serial", s, "err", err)
+				failed++
+			}
+		}
+		if failed > 0 {
+			os.Exit(1)
+		}
 	case "status", "stop":
 		if len(serials) == 0 {
 			fail(log, fmt.Errorf("-serial required"))
@@ -142,6 +167,24 @@ func main() {
 	default:
 		usage()
 	}
+}
+
+// resolveTargets returns the serials a one-shot subcommand should act on:
+// -serial/-connect as given, plus every ready device when all is set.
+func resolveTargets(ctx context.Context, log *slog.Logger, adb provisioner.ADB, all bool, serials multi) []string {
+	if all {
+		devs, err := adb.Devices(ctx)
+		fail(log, err)
+		for _, d := range devs {
+			if d.State == "device" {
+				serials = append(serials, d.Serial)
+			}
+		}
+	}
+	if len(serials) == 0 {
+		fail(log, fmt.Errorf("no target: pass -serial, -connect or -all"))
+	}
+	return dedupe(serials)
 }
 
 func dedupe(in []string) []string {
