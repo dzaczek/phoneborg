@@ -142,8 +142,9 @@ may differ. Reproduce: turn the screen off and watch `pbctl nodes`.
 
 **Result.**
 
-- 0 failed requests out of 1138 while a phone was frozen (the load
-  parameters of that run were not recorded).
+- 0 failed requests out of 1138 while a phone was frozen. Load: 5 minutes of
+  `tests/load/chat_load.py -d 300 -c 3 --stream 0.4` (3 concurrent clients,
+  40% streaming); phone-low was paused for 30 s about 90 s into the run.
 - In the e2e test (2 concurrent clients) the one request in flight on the
   frozen phone was cancelled when the node turned `SUSPECT` and retried on
   the other phone: 14 s instead of the 120 s upstream timeout.

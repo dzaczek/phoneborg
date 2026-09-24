@@ -131,7 +131,7 @@ func TestPlanAssignmentDetails(t *testing.T) {
 	}
 }
 
-// gemma3nE2B mirrors docs/REAL_PHONES.md's Gemma 3n E2B it row (ADR-012
+// gemma3nE2B mirrors the Gemma 3n E2B it row in docs/BENCHMARKS.md (ADR-012
 // addendum): a 2886 MiB file of which 1440 MiB is a per_layer_token_embd.weight
 // table read sparsely, so resident bytes are 1446 MiB. The architecture shape
 // (block_count 35, kv_heads 2, key_length 256) is an approximation: the real

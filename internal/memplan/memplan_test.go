@@ -49,7 +49,7 @@ func TestPlan(t *testing.T) {
 			want: Result{Ctx: 4096, Slots: 1, KV: "q8_0", Need: 675807232, Fits: false},
 		},
 		{
-			// Gemma 3n E2B it (docs/REAL_PHONES.md, ADR-012 addendum): 2886
+			// Gemma 3n E2B it (docs/BENCHMARKS.md, ADR-012 addendum): 2886
 			// MiB file, 1440 MiB of it a per_layer_token_embd.weight table
 			// read sparsely, so resident bytes are 1446 MiB. Before resident-
 			// bytes accounting this needed the whole 2886 MiB file plus KV

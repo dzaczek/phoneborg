@@ -1,5 +1,7 @@
 # PhoneBorg
 
+[![CI](https://github.com/dzaczek/phoneborg/actions/workflows/ci.yml/badge.svg)](https://github.com/dzaczek/phoneborg/actions/workflows/ci.yml)
+
 **Turn a drawer full of old Android phones into an AI inference cluster.**
 
 Plug phones into a Linux or macOS host over USB. PhoneBorg installs a small

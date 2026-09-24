@@ -75,7 +75,7 @@ func TestNodePerfUpdateKeepsLastGood(t *testing.T) {
 func TestNodePerfUpdateUsesResidentBytes(t *testing.T) {
 	p := newNodePerf()
 
-	// Gemma 3n E2B-like numbers (docs/REAL_PHONES.md, ADR-012 addendum): a
+	// Gemma 3n E2B-like numbers (docs/BENCHMARKS.md, ADR-012 addendum): a
 	// 2886 MiB file but only 1446 MiB resident.
 	const fileBytes, residentBytes = 2886 << 20, 1446 << 20
 	if !p.update("a", &proto.RuntimeStatus{GenTPS: 3.7, ModelBytes: fileBytes, ResidentBytes: residentBytes}) {
