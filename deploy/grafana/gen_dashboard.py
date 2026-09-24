@@ -119,6 +119,24 @@ ts("Hot nodes", [('phoneborg_node_hot', "{{node_id}}")], 12, w=12, h=6,
    desc="1 = temperature at or above -thermal-limit-c: gets no new sessions unless every candidate node is hot (ADR-010; pbctl gateway set thermal_limit=<c>)")
 y[0] += 6
 
+row("Models")
+stat("Models in catalog", 'count(phoneborg_model_info) or vector(0)', 0, desc="Models the controller keeps for nodes (pbctl models)")
+stat("Models ready", 'count(phoneborg_model_download_progress == 1) or vector(0)', 4, desc="Catalog models downloaded, checked and servable to nodes")
+stat("Nodes switching", 'count(phoneborg_node_model{state=~"downloading|loading"}) or vector(0)', 8,
+     desc="Nodes downloading or loading a model; they get no requests until they serve it (ADR-011)")
+stat("Nodes with model errors", 'count(phoneborg_node_model{state="error"}) or vector(0)', 12, thresholds=red)
+stat("Planned nodes", 'sum(phoneborg_placement_plan_nodes) or vector(0)', 16, w=8, desc="Nodes the current placement plan gives a model (pbctl placement)")
+y[0] += 4
+ts("Planned vs serving nodes per model", [('phoneborg_placement_plan_nodes', "{{model_id}} planned"),
+                                         ('count by (model_id) (phoneborg_node_model{state="serving"})', "{{model_id}} serving")], 0,
+   desc="planned: nodes the placement plan gives the model; serving: nodes that report serving it")
+ts("Node model states", [('count by (state) (phoneborg_node_model)', "{{state}}")], 12, stack=True,
+   desc="serving, downloading, loading, error or idle, from node heartbeats")
+y[0] += 8
+ts("Controller model downloads", [('phoneborg_model_download_progress', "{{model_id}}")], 0, w=24, h=6, unit="percentunit",
+   desc="Progress of catalog downloads on the controller (pbctl models add); 1 = ready")
+y[0] += 6
+
 row("Administration")
 ts("Drained nodes", [('phoneborg_node_drained', "{{node_id}}")], 0, w=12, h=6,
    desc="1 = drained with pbctl drain: the node gets no new requests, in-flight ones finish")
