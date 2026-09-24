@@ -128,7 +128,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
-	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "backends_failed"} {
+	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "backends_failed", "context_too_large"} {
 		g.mRejected.WithLabelValues(reason)
 	}
 	return g
@@ -203,6 +203,27 @@ func (m requestMeta) affinityKey() string {
 	}
 	h.Write([]byte(m.Model))
 	return hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// errContextTooSmall marks a node that rejected the prompt as longer than its
+// context window. The request is retried elsewhere without a cooldown.
+var errContextTooSmall = fmt.Errorf("%w: prompt exceeds node context", errRetryable)
+
+// estimateTokens approximates prompt tokens from the JSON body size. English
+// text and JSON average roughly 4 bytes per token for common tokenizers; the
+// estimate only steers routing, llama-server still enforces the real limit.
+func estimateTokens(body []byte) int { return len(body) / 4 }
+
+// maxContext is the largest known context among nodes serving model, or 0 if
+// no node reports one.
+func maxContext(all []Backend, model string) int {
+	m := 0
+	for _, b := range all {
+		if (model == "" || b.Model == model) && b.CtxSize > m {
+			m = b.CtxSize
+		}
+	}
+	return m
 }
 
 // errNodeLost cancels attempts on a node that left the backend set.
@@ -290,11 +311,20 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	est := estimateTokens(body)
+	if max := maxContext(all, meta.Model); max > 0 && est > max {
+		g.mRejected.WithLabelValues("context_too_large").Inc()
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusBadRequest)})
+		openAIError(w, http.StatusBadRequest, "invalid_request_error", "context_length_exceeded",
+			fmt.Sprintf("request is about %d tokens, larger than the biggest node context (%d tokens); raise the nodes' -ctx-size", est, max))
+		return
+	}
+
 	tried := map[string]bool{}
 	for attempt := 1; attempt <= g.cfg.MaxAttempts; attempt++ {
 		// Re-read backends each attempt: nodes may have joined or left
 		// (e.g. reaped as SUSPECT) since the request arrived.
-		cands := g.candidates(g.routable(), meta.Model, tried)
+		cands := g.candidates(g.routable(), meta.Model, tried, est)
 		if len(cands) == 0 {
 			break
 		}
@@ -305,7 +335,9 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.mUpstream.WithLabelValues(b.NodeID).Inc()
-		g.markDown(b.NodeID)
+		if !errors.Is(err, errContextTooSmall) { // the node is healthy, the prompt just did not fit
+			g.markDown(b.NodeID)
+		}
 		if errors.Is(err, errRetryable) { // otherwise forward already recorded the outcome
 			g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, NodeID: b.NodeID, Model: b.Model, Code: CodeUpstreamError})
 		}
@@ -351,6 +383,16 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 		return fmt.Errorf("%w: HTTP %d: %s", errRetryable, resp.StatusCode, bytes.TrimSpace(msg))
 	}
+	var src io.Reader = resp.Body
+	if resp.StatusCode == http.StatusBadRequest {
+		// llama-server answers 400 when the prompt exceeds its context; that
+		// node is fine, another one with a larger context may serve it.
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		if bytes.Contains(peek, []byte("exceeds the available context size")) {
+			return fmt.Errorf("%w: %s", errContextTooSmall, bytes.TrimSpace(peek))
+		}
+		src = io.MultiReader(bytes.NewReader(peek), resp.Body)
+	}
 
 	for k, vs := range resp.Header {
 		switch http.CanonicalHeaderKey(k) {
@@ -373,7 +415,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	first := true
 	var copyErr error
 	for {
-		n, rerr := resp.Body.Read(buf)
+		n, rerr := src.Read(buf)
 		if n > 0 {
 			if first {
 				g.mTTFB.WithLabelValues(b.Model).Observe(g.now().Sub(start).Seconds())
@@ -453,13 +495,13 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 
 // candidates returns untried backends for the model, preferring ones not in
 // cooldown; if every one is cooling down, they are tried anyway.
-func (g *Gateway) candidates(all []Backend, model string, tried map[string]bool) []Backend {
+func (g *Gateway) candidates(all []Backend, model string, tried map[string]bool, estTokens int) []Backend {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
 	var healthy, cooling []Backend
 	for _, b := range all {
-		if tried[b.NodeID] || (model != "" && b.Model != model) {
+		if tried[b.NodeID] || (model != "" && b.Model != model) || (b.CtxSize > 0 && estTokens > b.CtxSize) {
 			continue
 		}
 		if now.Before(g.cooldown[b.NodeID]) {

@@ -77,6 +77,7 @@ type RuntimeStatus struct {
 	AdvertisePort int    `json:"advertise_port"`
 	Restarts      int64  `json:"restarts"`
 	Threads       int    `json:"threads"`
+	CtxSize       int    `json:"ctx_size,omitempty"` // llama-server context window in tokens
 	// GenTPS and PromptTPS come from a self-test the agent runs against its
 	// own llama-server once it becomes ready (and again after each restart):
 	// a fixed prompt, read from the response's `timings`. Zero means the

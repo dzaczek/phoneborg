@@ -139,6 +139,7 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 		AdvertisePort: r.cfg.AdvertisePort,
 		Restarts:      r.restarts.Load(),
 		Threads:       r.cfg.Threads,
+		CtxSize:       r.cfg.CtxSize,
 		Ready:         r.healthy(ctx),
 	}
 	r.mu.Lock()

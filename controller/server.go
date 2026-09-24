@@ -146,6 +146,7 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, t
 			Drained: drained[n.ID],
 			URL:     fmt.Sprintf("http://%s:%d", host, hb.Runtime.AdvertisePort),
 			Hot:     thermalLimitC > 0 && hb.TemperatureC != nil && *hb.TemperatureC >= thermalLimitC,
+			CtxSize: hb.Runtime.CtxSize,
 		}
 		gotMeasured := hb.Runtime.GenTPS > 0
 		if gotMeasured {

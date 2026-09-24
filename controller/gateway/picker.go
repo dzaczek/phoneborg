@@ -20,6 +20,9 @@ type Backend struct {
 	// Hot nodes (last heartbeat temperature at/above -thermal-limit-c) get no
 	// new sessions unless every candidate is hot (ADR-010).
 	Hot bool
+	// CtxSize is the node's context window in tokens; 0 = unknown (never
+	// excluded). Prompts estimated to be longer are routed elsewhere.
+	CtxSize int
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies

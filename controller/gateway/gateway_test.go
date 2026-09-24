@@ -226,3 +226,56 @@ func TestReapRetriesRequestStuckOnLostNode(t *testing.T) {
 		t.Fatal("request still stuck on lost node")
 	}
 }
+
+func TestContextAwareRouting(t *testing.T) {
+	small := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("prompt larger than the context was sent to the small node")
+	}))
+	defer small.Close()
+	big := fakeLlama(t, "big")
+	_, h := newGW(t, AllowAll{},
+		Backend{NodeID: "small", Model: "m", URL: small.URL, CtxSize: 2048, Speed: 100},
+		Backend{NodeID: "big", Model: "m", URL: big.URL, CtxSize: 16384, Speed: 10})
+	long := `{"model":"m","messages":[{"role":"system","content":"` + strings.Repeat("x", 40000) + `"}]}`
+	if w := post(h, long); w.Code != 200 || !strings.Contains(w.Body.String(), "hi from big") {
+		t.Fatalf("long prompt: %d %s", w.Code, w.Body)
+	}
+	huge := `{"model":"m","messages":[{"role":"system","content":"` + strings.Repeat("x", 100000) + `"}]}`
+	if w := post(h, huge); w.Code != 400 || !strings.Contains(w.Body.String(), "context_length_exceeded") {
+		t.Fatalf("huge prompt: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestRetryWhenNodeRejectsContext(t *testing.T) {
+	// The size estimate can be wrong; a node that answers "exceeds the
+	// available context size" must not fail the request or be cooled down.
+	tight := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"code":400,"message":"request (10264 tokens) exceeds the available context size (2048 tokens), try increasing it"}}`)
+	}))
+	defer tight.Close()
+	roomy := fakeLlama(t, "roomy")
+	g, h := newGW(t, AllowAll{},
+		Backend{NodeID: "tight", Model: "m", URL: tight.URL, Speed: 100},
+		Backend{NodeID: "roomy", Model: "m", URL: roomy.URL, Speed: 10})
+	for i := 0; i < 3; i++ {
+		if w := post(h, chat); w.Code != 200 || !strings.Contains(w.Body.String(), "hi from roomy") {
+			t.Fatalf("attempt %d: %d %s", i, w.Code, w.Body)
+		}
+	}
+	if g.cooldown["tight"].After(g.now()) {
+		t.Fatal("node that rejected the context was put in cooldown")
+	}
+}
+
+func TestPlain400PassesThrough(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"invalid tool schema"}}`)
+	}))
+	defer bad.Close()
+	_, h := newGW(t, AllowAll{}, Backend{NodeID: "a", Model: "m", URL: bad.URL})
+	if w := post(h, chat); w.Code != 400 || !strings.Contains(w.Body.String(), "invalid tool schema") {
+		t.Fatalf("got %d %s", w.Code, w.Body)
+	}
+}

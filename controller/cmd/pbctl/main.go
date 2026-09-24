@@ -312,6 +312,9 @@ func nodes(c *client, o *out) error {
 			if rt.Threads > 0 {
 				build += fmt.Sprintf(" %dt", rt.Threads)
 			}
+			if rt.CtxSize > 0 {
+				build += fmt.Sprintf(" %dk", rt.CtxSize/1024)
+			}
 			if rt.GenTPS > 0 {
 				toks = fmt.Sprintf("%.1f", rt.GenTPS)
 			}
