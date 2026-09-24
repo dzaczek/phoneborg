@@ -127,6 +127,9 @@ Qwen2.5-0.5B-Instruct Q4_K_M:
 
 - Freezing a phone under load: 0 failed requests out of 1138.
 - opencode, new session: 115 s. Follow-up turns: 3 s (99.9% prompt cache hits).
+- Eight models (0.5B–4B) measured on the Mi 8: Qwen2.5-1.5B gives the best
+  balance (6.8 tok/s); 4B models fit but are too slow. See
+  [docs/REAL_PHONES.md](docs/REAL_PHONES.md#choosing-a-model-for-a-phone).
 
 Emulated phones run on the host's CPU cores and are far faster than real
 phones. See the limitations table in `docs/DEV_EMULATION.md`.

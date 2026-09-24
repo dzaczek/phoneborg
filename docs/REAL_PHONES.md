@@ -281,3 +281,34 @@ curl -s http://127.0.0.1:18080/v1/nodes | python3 -m json.tool | grep -A8 '"runt
 Not supported yet. The phone must stay on the USB cable, because the
 controller reaches it through `adb reverse` and `adb forward`, and the cable
 also powers it. Wi-Fi nodes are on the roadmap.
+
+## Choosing a model for a phone
+
+Measured on a Xiaomi Mi 8 (Snapdragon 845, 5.5 GiB RAM, LineageOS 22.2,
+`armv8.2-a+fp16` build, 6 threads). llama-server ran with an 8k context, a
+~300-token prompt and 64 generated tokens. With no model loaded, 3.1 GiB was
+available.
+
+| Model (Q4_K_M) | File | llama-server RSS | Prompt tok/s | Generation tok/s | Verdict |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B-Instruct | 468 MiB | 632 MiB | 36.2 | 14.8 | fast, weak answers |
+| Gemma 3 1B it | 768 MiB | 926 MiB | 16.7 | 7.3 | good |
+| Llama 3.2 1B Instruct | 770 MiB | 1120 MiB | 15.8 | 8.4 | good |
+| Qwen2.5-1.5B-Instruct | 1065 MiB | 1375 MiB | 11.4 | 6.8 | **best balance on this phone** |
+| DeepSeek-R1-Distill-Qwen-1.5B | 1065 MiB | 1373 MiB | 9.3 | 6.0 | reasons step by step, so answers take long |
+| Qwen3-1.7B | 1056 MiB | 2029 MiB | 8.8 | 4.5 | large KV cache per token |
+| Gemma 3 4B it | 2374 MiB | 2839 MiB | 3.8 | 2.4 | fits, too slow for chat |
+| Qwen3-4B | 2381 MiB | 3248 MiB | 3.3 | 0.3 | memory pressure; unusable |
+
+Rules of thumb:
+- Generation speed on phones is bound by memory bandwidth. Tokens/s drop
+  roughly in proportion to model size.
+- Leave at least ~1 GiB of the phone's free memory unused. Qwen3-4B fit on
+  paper, but Android started evicting its pages and speed collapsed
+  (0.3 tok/s).
+- KV cache size differs a lot between architectures. Qwen3-1.7B needs ~4× more
+  memory per context token than Qwen2.5-1.5B, so it needs a smaller context or
+  q8_0 KV (the agent chooses this automatically, see ADR-012).
+- `llama-server` maps weights from the file. `MemAvailable` barely drops when a
+  model loads, so judge fit by RSS or by the agent's budget, not by
+  `MemAvailable`.
