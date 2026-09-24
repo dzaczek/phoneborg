@@ -53,7 +53,7 @@ for p in "${PHONES[@]}"; do wait_for 180 "$p boot" connect_booted "$p"; echo "$p
 
 log "provision"
 args=(); for p in "${PHONES[@]}"; do args+=(-connect "$p"); done
-bin/pcprov provision -controller-port "${CONTROLLER_PORT:-18080}" "${args[@]}" -agent-args "-bench-duration 1s" -model "$MODEL"
+bin/pcprov provision -controller-port "${CONTROLLER_PORT:-18080}" "${args[@]}" -agent-args "-bench-duration 1s -ctx-size 16384" -model "$MODEL"
 
 EMU_IDS=$(for p in "${PHONES[@]}"; do node_id "$p"; done | xargs)
 echo "emulated node ids: $EMU_IDS"
