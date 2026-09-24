@@ -10,15 +10,18 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/dzaczek/phoneborg/controller"
 	"github.com/dzaczek/phoneborg/controller/gateway"
+	"github.com/dzaczek/phoneborg/controller/models"
 )
 
 const (
 	usageFlushInterval = 30 * time.Second
+	replanInterval     = 10 * time.Second // placement is also re-planned on every change (ADR-011)
 	shutdownGrace      = 10 * time.Second // in-flight requests get this long on SIGINT/SIGTERM
 )
 
@@ -31,7 +34,8 @@ func main() {
 	backendHost := flag.String("backend-host", "127.0.0.1", "host where nodes' advertised ports (adb forwards) are reachable")
 	keysFile := flag.String("api-keys-file", "", "API keys file (\"<name> sha256:<hex>\" or legacy \"<name> <key>\" lines), reloaded on SIGHUP; empty = no auth (dev only)")
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token; empty = admin API disabled")
-	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json); empty = keep usage in memory only")
+	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json); empty = keep it in memory only")
+	modelsDir := flag.String("models-dir", "", "directory for model files served to nodes; default <state-dir>/models, or a temporary directory without -state-dir")
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
 	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
 	flag.Parse()
@@ -77,12 +81,19 @@ func main() {
 		fatal("loading usage state", "err", err)
 	}
 
+	modelOpts, err := loadModels(*stateDir, *modelsDir, log)
+	if err != nil {
+		fatal("loading model catalog", "err", err)
+	}
+	defer modelOpts.Catalog.Close()
+
 	reg := controller.NewRegistry(time.Duration(*suspect)**hb, time.Duration(*offline)**hb, log)
 	srv := controller.NewServer(reg, *hb, controller.GatewayOptions{
 		Keys:          keys,
 		Usage:         usage,
 		BackendHost:   *backendHost,
 		ThermalLimitC: *thermalLimit,
+		Models:        modelOpts,
 		Config:        gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
 	}, admin, log)
 
@@ -90,6 +101,11 @@ func main() {
 		for range time.Tick(time.Second) {
 			reg.Sweep()
 			srv.ReapGateway()
+		}
+	}()
+	go func() {
+		for range time.Tick(replanInterval) {
+			srv.Replan()
 		}
 	}()
 	go func() {
@@ -117,7 +133,7 @@ func main() {
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
 	log.Info("controller listening", "addr", *addr, "heartbeat_interval", hb.String(),
-		"admin_api", admin.Token != "", "state_dir", *stateDir)
+		"admin_api", admin.Token != "", "state_dir", *stateDir, "models_dir", modelOpts.Catalog.Dir())
 
 	select {
 	case err := <-errc:
@@ -135,6 +151,31 @@ func main() {
 		log.Error("saving usage", "err", err)
 	}
 	log.Info("stopped")
+}
+
+// loadModels opens the model catalog and placement (ADR-011). Without a
+// state directory both live in memory, and model files go to -models-dir or
+// a temporary directory created on the first download.
+func loadModels(stateDir, modelsDir string, log *slog.Logger) (controller.ModelOptions, error) {
+	opts := models.CatalogOptions{Dir: modelsDir, Log: log}
+	var o controller.ModelOptions
+	if stateDir != "" {
+		if opts.Dir == "" {
+			opts.Dir = filepath.Join(stateDir, "models")
+		}
+		opts.StateFile = filepath.Join(stateDir, "models.json")
+		o.PlacementFile = filepath.Join(stateDir, "placement.json")
+		spec, err := controller.LoadPlacement(o.PlacementFile)
+		if err != nil {
+			return o, err
+		}
+		o.Placement = spec
+	} else {
+		log.Warn("no -state-dir: the model catalog and placement are kept in memory only")
+	}
+	c, err := models.NewCatalog(opts)
+	o.Catalog = c
+	return o, err
 }
 
 // warnIfShared warns when a secrets file is readable by group or others.

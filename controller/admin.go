@@ -157,6 +157,9 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	} {
 		mux.Handle(rt.pattern, s.adminAuth(rt.action, rt.fn))
 	}
+	s.registerModelAdmin(func(pattern, action string, fn http.HandlerFunc) {
+		mux.Handle(pattern, s.adminAuth(action, fn))
+	})
 	// Unknown admin paths also need the token, so they reveal nothing.
 	mux.Handle("/admin/", s.adminAuth("unknown", http.NotFound))
 }
@@ -227,6 +230,9 @@ func (s *Server) adminDrain(drain bool) http.HandlerFunc {
 		if err == nil && drain {
 			moved = s.affinity.Unpin(id) // pinned sessions move on their next request
 		}
+		if err == nil {
+			s.Replan() // drained nodes only follow pins (ADR-011)
+		}
 		s.audit(r, action, err, "node_id", id, "moved_sessions", moved)
 		if err != nil {
 			notFoundOr500(w, err)
@@ -241,6 +247,7 @@ func (s *Server) adminForget(w http.ResponseWriter, r *http.Request) {
 	err := s.reg.Forget(id)
 	if err == nil {
 		s.affinity.Unpin(id)
+		s.Replan()
 	}
 	s.audit(r, "node_forget", err, "node_id", id)
 	if err != nil {

@@ -303,6 +303,106 @@ its next heartbeat reports it as hot: a soft protection, not a hard cutoff.
 Nodes with no readable thermal zone (e.g. redroid) are never marked hot,
 matching the existing gap in `phoneborg_node_temperature_celsius`.
 
+## ADR-011: Model catalog and placement
+
+**Problem.** Every phone served the one GGUF file `pcprov -model` pushed at
+provisioning. Serving a different model meant re-provisioning phones one by
+one, and nothing matched models to phones: a 3B model on a 3 GB phone gets
+killed, a 0.5B model on a 12 GB phone wastes it. The gateway already routes
+by model name, so the missing part is deciding and delivering which model
+each phone serves.
+
+**Alternatives.**
+1. Keep pushing models with pcprov; operators pick per phone.
+2. Phones download from Hugging Face themselves.
+3. The controller keeps a catalog, plans placement from policies, and phones
+   download the file from the controller over their existing link.
+
+**Trade-offs.** (1) needs a person at the adb host for every change. (2)
+needs Wi-Fi and working TLS on every phone, downloads each file once per
+phone and gives no central view. (3) downloads each model once, keeps
+phones on the USB link (ADR-003) and makes placement visible and
+auditable, at the cost of disk space on the controller and a new
+controller-to-node message.
+
+**Decision.** (3).
+
+- **Catalog** (`controller/models`). Sources are `https://` URLs,
+  `hf://<owner>/<repo>/<file>.gguf` (mapped to
+  `https://huggingface.co/<owner>/<repo>/resolve/main/<file>`) and
+  `file:///abs/path.gguf`. Files are downloaded to `<id>.gguf.part` in
+  `-models-dir` (default `<state-dir>/models`), resumed with a `Range`
+  request after a dropped connection or a restart, retried three times on
+  network errors and 5xx (not on 4xx), aborted after 2 minutes without
+  data, hashed (SHA-256) and renamed into place only once the GGUF header
+  parses. The metadata is read with
+  [gguf-parser-go](https://github.com/gpustack/gguf-parser-go) (MIT): we do
+  not maintain our own GGUF parser. Ids are the lowercased file name
+  without `.gguf`, so the file pcprov pushes today keeps its name. The
+  catalog is `<state-dir>/models.json`; without a state dir it lives in
+  memory and files go to a temporary directory.
+- **Device classes** by `Inventory.RAMTotalBytes`: `xs` < 3 GiB, `s` 3–5,
+  `m` 5–7, `l` 7–10, `xl` 10+ GiB. `max_ram_bytes` is 0 for the open-ended
+  `xl`.
+- **RAM heuristic.** `est = file size + f16 KV cache + 150 MiB`, with
+  `KV = 2 (K and V) × layers × ctx × kv_heads × head_dim × 2 bytes` and
+  `ctx = min(16384, ctx_train)`. A model fits a node when
+  `est ≤ RAM − 2 GiB` (Android and its resident apps). `fits_classes` uses
+  each class's minimum RAM, so `xs` never fits. The estimate ignores
+  sliding-window attention (Gemma 3) and compute buffers; it is a
+  placement guide, and the agent may lower the context or quantize the KV
+  cache (`kv_type: "auto"`) to fit.
+- **Planner** (`models.Planner`, default `DefaultPlanner`): a pure,
+  deterministic function of policies, the default model, nodes (id,
+  class, RAM, measured tok/s, current model, previous assignment,
+  drained) and ready models. One model per node; pins, then replicas, then
+  percent (of nodes eligible by class filter and fit, rounded half up, at
+  least 1), then the default model where it fits, otherwise the node
+  keeps what it serves. Bigger models choose first; candidates are ordered
+  by "already serves it", "was assigned it by the last plan" (so a node
+  whose tok/s drops to 0 while switching is not replaced), measured tok/s,
+  RAM, id. Drained nodes only follow pins; OFFLINE nodes are not planned.
+  Policies for models that are not ready wait, with a warning. Validation
+  (unknown model or node, one policy per model, a node pinned twice,
+  percentages over 100 for any class) rejects a `PUT` with 400. The plan
+  is recomputed on placement changes, node register/forget/drain, model
+  ready/removed, and every 10 s. Policies and the default model persist
+  in `<state-dir>/placement.json`.
+- **Delivery.** `POST /v1/heartbeat` answers 200 with
+  `HeartbeatResponse{desired}` when the plan assigns the node a ready model
+  (reason pin, replicas, percent or default), and 204 otherwise, so a node
+  provisioned with `pcprov -model` and no policy keeps serving as before.
+  `DesiredRuntime` carries the file URL (`/v1/model-files/<id>`), SHA-256,
+  size, `ctx_size` (16384 capped by `ctx_train`), `slots` 1, `kv_type`
+  `auto` and the layer/KV-head/head-dim metadata for the agent's own RAM
+  check. `/v1/model-files/` uses `http.ServeContent`: `Range`,
+  `Content-Length`, and `ETag` = the SHA-256 in quotes.
+- **Routing.** `Backends()` still requires `Ready`, and additionally skips
+  nodes whose `RuntimeStatus.State` is `downloading` or `loading`, so a
+  switching node gets no requests even if it reports `Ready`. The served
+  name (`RuntimeStatus.Model`) equals the model id, so the gateway's
+  routing by model name is unchanged.
+- **Admin API** `/admin/models` (GET, POST, PATCH, DELETE; DELETE is 409
+  while a policy or the default uses the model), `/admin/device-classes`,
+  `/admin/placement` (GET, PUT) and `/admin/placement/preview` (POST,
+  nothing applied), audited and counted like the other admin actions
+  (ADR-008). pbctl: `models`, `classes`, `placement`; the old `pbctl
+  models` (list of served models) became `pbctl served`.
+- **Metrics.** `phoneborg_model_info{model_id,arch,params,quant}`,
+  `phoneborg_model_download_progress{model_id}`,
+  `phoneborg_node_model{node_id,model_id,state}` and
+  `phoneborg_placement_plan_nodes{model_id}`; a Models row in Grafana.
+
+**Not solved.** `/v1/model-files/` needs no token (the same trust as the
+heartbeat, ADR-002): anything that reaches the controller's port can
+download catalog models, and a `file://` source makes a controller-side
+GGUF file downloadable. Keep the controller on localhost or a trusted
+network until mTLS. Hugging Face tokens (gated repositories) and split GGUF
+files are not supported. The expected SHA-256 of a download is not
+checked against the source (Hugging Face publishes it); the hash only
+lets agents verify their copy. Context size, slots and KV type are not
+yet configurable per policy.
+
 ## ADR-013: Web management panel
 
 **Problem.** Managing the cluster meant `pbctl`, curl, Grafana and the old

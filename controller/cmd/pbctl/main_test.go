@@ -115,9 +115,9 @@ func TestTokenFileAndModels(t *testing.T) {
 	if _, stderr, code := pbctl(t, map[string]string{"PHONEBORG_URL": ts.URL}, "-token-file", tf, "gateway"); code != 0 {
 		t.Fatalf("token file: %s", stderr)
 	}
-	// models needs no admin token; with no ready nodes it lists nothing.
-	if stdout, stderr, code := pbctl(t, nil, "-url", ts.URL, "models"); code != 0 || !strings.Contains(stdout, "no models") {
-		t.Fatalf("models: %d %s %s", code, stdout, stderr)
+	// served needs no admin token; with no ready nodes it lists nothing.
+	if stdout, stderr, code := pbctl(t, nil, "-url", ts.URL, "served"); code != 0 || !strings.Contains(stdout, "no models") {
+		t.Fatalf("served: %d %s %s", code, stdout, stderr)
 	}
 }
 
