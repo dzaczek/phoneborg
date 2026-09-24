@@ -351,7 +351,25 @@ controller-to-node message.
   each class's minimum RAM, so `xs` never fits. The estimate ignores
   sliding-window attention (Gemma 3) and compute buffers; it is a
   placement guide, and the agent may lower the context or quantize the KV
-  cache (`kv_type: "auto"`) to fit.
+  cache (`kv_type: "auto"`) to fit. `fits_classes` on the catalog stays this
+  heuristic (it describes a whole class, not a connected node), but the
+  planner's actual per-node fit check (below) does better once a node has
+  reported one heartbeat: the fixed 2 GiB baseline is only an approximation
+  of what Android leaves free, and is wrong in both directions (ADR-012's
+  agent-side `MemoryBudget`, measured from `/proc`, found 0.65 GiB used on
+  emulated 2–3 GiB phones and 2.4 GiB used on a real Mi 8, against the
+  heuristic's flat 2 GiB either way).
+- **Node-level fit.** Once a node's heartbeat reports `RuntimeStatus.
+  BudgetBytes` (ADR-012), the planner checks fit against that real budget
+  instead of the class heuristic: a model fits if its estimate at the
+  requested context and an f16 KV cache is within budget, or, mirroring the
+  agent's own degradation order, with a q8_0 KV cache, or with the context
+  halved down to 4096 (`internal/memplan`, shared with the agent's
+  `PlanMemory` so the plan and the agent's own sizing never disagree).
+  Nodes that have not yet reported a budget (`BudgetBytes` 0: an older
+  agent, or no heartbeat yet) still use the RAM heuristic above. The
+  per-node budget is shown in `Placement.nodes[].budget_bytes`, the `pbctl
+  placement` `BUDGET` column and the web panel's Placement view.
 - **Planner** (`models.Planner`, default `DefaultPlanner`): a pure,
   deterministic function of policies, the default model, nodes (id,
   class, RAM, measured tok/s, current model, previous assignment,
