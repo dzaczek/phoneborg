@@ -4,6 +4,9 @@ VERSION ?= $(shell date +%Y%m%d%H%M)
 
 # Kept in sync with .github/workflows/ci.yml.
 STATICCHECK_VERSION ?= v0.7.0
+# staticcheck is built for the module's Go version; run it with that toolchain
+# so a newer local Go (whose stdlib export data it cannot read) still works.
+GO_MOD_VERSION := $(shell awk '/^go /{print $$2}' go.mod)
 
 all: test agent pcprov controller pbctl
 
@@ -66,7 +69,7 @@ fmt:
 lint:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needs to be run on:"; echo "$$out"; exit 1; fi
 	go vet ./...
-	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
+	GOTOOLCHAIN=go$(GO_MOD_VERSION) go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
 
 clean:
 	rm -rf bin/
