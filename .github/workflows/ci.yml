@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Pinned so `make lint`-equivalent runs the same staticcheck the Makefile
+# uses locally; bump both together when the module's Go version moves.
+env:
+  STATICCHECK_VERSION: v0.7.0
+
+jobs:
+  go:
+    name: Go build, vet, test, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION} ./...
+
+      - name: build controller
+        run: go build -o bin/controller ./controller/cmd/controller
+
+      - name: build pcprov
+        run: go build -o bin/pcprov ./provisioner/cmd/pcprov
+
+      - name: build pbctl
+        run: go build -o bin/pbctl ./controller/cmd/pbctl
+
+      - name: build node-agent (android/arm64)
+        env:
+          CGO_ENABLED: 0
+          GOOS: android
+          GOARCH: arm64
+        run: go build -o bin/node-agent-android-arm64 ./node-agent/cmd/node-agent
+
+  ui:
+    name: Controller UI JS syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: node --check
+        run: find controller/ui/static -name '*.js' -print0 | xargs -0 -n1 node --check
+
+  scripts:
+    name: Shell and Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n
+        run: find tests deploy -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: python3 -m py_compile
+        run: python3 -m py_compile tests/load/chat_load.py deploy/grafana/gen_dashboard.py
+
+      - name: Grafana dashboard matches generator
+        run: |
+          python3 deploy/grafana/gen_dashboard.py
+          git diff --exit-code deploy/grafana/dashboards

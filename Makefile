@@ -1,6 +1,9 @@
-.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llama-all llm-smoke
+.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llama-all llm-smoke fmt lint clean help
 
 VERSION ?= $(shell date +%Y%m%d%H%M)
+
+# Kept in sync with .github/workflows/ci.yml.
+STATICCHECK_VERSION ?= v0.7.0
 
 all: test agent pcprov controller pbctl
 
@@ -56,3 +59,33 @@ models/qwen2.5-0.5b-instruct-q4_k_m.gguf:
 
 llm-smoke: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 	bash tests/e2e/llm_smoke.sh
+
+fmt:
+	gofmt -w .
+
+lint:
+	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needs to be run on:"; echo "$$out"; exit 1; fi
+	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
+
+clean:
+	rm -rf bin/
+
+help:
+	@echo "Targets:"
+	@echo "  all          build test, agent, pcprov, controller, pbctl"
+	@echo "  test         go vet and go test ./..."
+	@echo "  agent        cross-compile node-agent for Android arm64"
+	@echo "  pcprov       build the pcprov provisioner CLI"
+	@echo "  controller   build the controller server"
+	@echo "  pbctl        build the pbctl admin CLI"
+	@echo "  cluster-up   load the binder module and start the dev cluster"
+	@echo "  cluster-down stop the dev cluster"
+	@echo "  e2e          run the redroid end-to-end test"
+	@echo "  llama        build one llama.cpp variant (see ARM_ARCH/LLAMA_TAG)"
+	@echo "  llama-all    build all llama.cpp ARM variants"
+	@echo "  llm-smoke    download the smoke-test model and run tests/e2e/llm_smoke.sh"
+	@echo "  fmt          format Go source with gofmt"
+	@echo "  lint         gofmt check, go vet, and staticcheck"
+	@echo "  clean        remove bin/ (never touches models/)"
+	@echo "  help         list these targets"
