@@ -33,6 +33,9 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.5.0
+    # Cap local storage so a full disk loses old samples instead of stopping ingestion.
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus",
+              "--storage.tsdb.retention.time=15d", "--storage.tsdb.retention.size=1GB"]
     volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
     ports: ["9090:9090"]
     depends_on: [controller]
