@@ -92,7 +92,8 @@ function details(n) {
       ['Device', `${inv.manufacturer || ''} ${inv.model || ''}`.trim()],
       ['SoC / ABI', `${inv.soc || '?'} / ${inv.abi || '?'}`],
       ['Android', inv.android_release ? `${inv.android_release} (SDK ${inv.sdk})` : ''],
-      ['Class', classOf(inv.ram_total_bytes)],
+      ['Class', `${classOf(inv.ram_total_bytes) || '–'} / ${n.perf_tier || '?'}`],
+      ['Gen / prompt bandwidth', n.gen_gbps ? `${n.gen_gbps.toFixed(1)} / ${(n.prompt_gbps || 0).toFixed(1)} GB/s` : ''],
       ['Remote address', n.remote_addr],
       ['Registered', ago(n.registered_at)],
       ['Last seen', ago(n.last_seen)],
@@ -106,7 +107,7 @@ function details(n) {
   ]);
 }
 
-const COLS = [{ label: 'Node', title: 'Select a node for details' }, 'Device', { label: 'Class', title: 'Device class by total RAM' }, 'State', { label: 'Model', title: 'Served model, runtime state and llama.cpp build' },
+const COLS = [{ label: 'Node', title: 'Select a node for details' }, 'Device', { label: 'Class', title: 'Device class by total RAM / performance tier by measured generation bandwidth (ADR-015)' }, 'State', { label: 'Model', title: 'Served model, runtime state and llama.cpp build' },
   { label: 'Threads', num: true }, { label: 'Ctx', num: true }, { label: 'Tok/s', num: true, title: 'Measured generation speed (self-test)' },
   { label: 'RAM avail / total', num: true }, { label: 'Temp', num: true }, { label: 'Battery', num: true },
   { label: 'In flight / pinned', num: true, title: 'Requests in flight / sessions pinned by affinity' }, 'Last seen', { label: 'Actions', num: true }];
@@ -134,7 +135,7 @@ export default function nodesView() {
           h('button.link' + (n.alias ? '' : '.mono'), { type: 'button', onclick: () => details(n), title: 'Show details', 'data-focus-key': n.id + ':details' }, n.alias || n.id),
           n.alias ? h('span.cell-sub.mono', null, n.id) : null),
         h('td', null, `${inv.manufacturer || ''} ${inv.model || ''}`.trim() || '–', h('span.cell-sub', null, inv.soc || '')),
-        h('td', null, classOf(inv.ram_total_bytes) || '–'),
+        h('td', null, `${classOf(inv.ram_total_bytes) || '–'}/${n.perf_tier || '?'}`),
         h('td', null, stateCell(n)),
         h('td', null, modelCell(rt)),
         h('td.num', null, rt && rt.threads ? rt.threads : '–'),

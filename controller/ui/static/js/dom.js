@@ -100,6 +100,15 @@ export const CLASSES = [
 ];
 export const classOf = (ramBytes) => (ramBytes > 0 ? CLASSES.find((c) => ramBytes < c.max).id : '');
 
+// Performance tiers by measured generation bandwidth (ADR-015), as the
+// controller computes them (model management API).
+export const TIERS = [
+  { id: 't1', label: '< 4 GB/s' },
+  { id: 't2', label: '4–10 GB/s' },
+  { id: 't3', label: '10–25 GB/s' },
+  { id: 't4', label: '25 GB/s+' },
+];
+
 export function sparkline(values) {
   const NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
