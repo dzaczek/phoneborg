@@ -68,6 +68,10 @@ Prometheus and Grafana.
   nodes, manage API keys, and change the routing policy and timeouts without a
   restart. Usage per API key and per node (requests, errors, tokens, tok/s)
   can be persisted across restarts.
+- **Web management panel** at `/ui/`: nodes, model catalog and placement
+  (with a preview before applying), gateway settings, API keys and usage in
+  one place. It is built into the controller, needs no internet access, and
+  signs in with the admin token.
 - **Observability.** Structured JSON logs, `phoneborg_*` Prometheus metrics and
   a provisioned Grafana dashboard: cluster health, latency, tokens/s, cache hit
   ratio, and token usage per API key (input/output).
@@ -83,7 +87,7 @@ make test agent pcprov controller pbctl   # unit tests + binaries
 make llama-all                        # static arm64 llama.cpp, all CPU variants (built in Docker)
 make models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
-bin/controller &                      # API + dashboard on http://127.0.0.1:18080
+bin/controller &                      # API + web panel on http://127.0.0.1:18080
 bin/pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 # plug phones in (USB debugging enabled), then:
 curl http://127.0.0.1:18080/v1/chat/completions \
@@ -100,7 +104,8 @@ make e2e                              # provisioning, serving, failover, recover
 
 Guides:
 - [docs/USAGE.md](docs/USAGE.md): using the cluster: curl, OpenAI SDK and
-  opencode, API keys with `pbctl`, draining phones, usage statistics, Grafana.
+  opencode, the web panel, API keys with `pbctl`, draining phones, usage
+  statistics, Grafana.
 - [docs/REAL_PHONES.md](docs/REAL_PHONES.md): preparing phones, adb checks,
   provisioning, verification and troubleshooting.
 - [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md): emulator setup
@@ -139,7 +144,8 @@ free after Android itself.
 ## Repository layout
 
 ```text
-controller/        control plane: registry, HTTP API, admin API, usage stats, metrics, dashboard
+controller/        control plane: registry, HTTP API, admin API, usage stats, metrics, /status page
+controller/ui      web management panel (static files embedded in the controller)
 controller/gateway OpenAI-compatible proxy: auth, routing policies, failover
 controller/cmd/pbctl  admin CLI: nodes, drain, API keys, stats, gateway settings
 node-agent/        on-phone agent: inventory, benchmark, heartbeats, runtime supervisor
@@ -160,6 +166,7 @@ Done in this proof of concept:
 - [x] Failover, session affinity, per-key usage metrics
 - [x] Thermal-aware scheduling; routing by measured llama.cpp speed, not just
       the synthetic benchmark
+- [x] Web management panel
 
 Next:
 

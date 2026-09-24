@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/dzaczek/phoneborg/controller/gateway"
+	"github.com/dzaczek/phoneborg/controller/ui"
 	"github.com/dzaczek/phoneborg/proto"
 )
 
@@ -181,7 +182,11 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.promReg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
-	mux.HandleFunc("GET /{$}", s.handleDashboard)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
+	mux.Handle("GET /ui/", ui.Handler())
+	mux.HandleFunc("GET /status", s.handleDashboard) // the plain read-only table, no login
 	s.gw.Register(mux)
 	s.registerAdmin(mux)
 	return mux
@@ -382,7 +387,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1p
 <td>{{with .LastHeartbeat}}{{with .Runtime}}{{.Model}} {{if .Ready}}<span class="ACTIVE">ready</span>{{else}}<span class="SUSPECT">loading</span>{{end}}{{end}}{{end}}</td>
 <td>{{ago .LastSeen}} ago</td></tr>
 {{else}}<tr><td colspan="12">No nodes yet. Connect a phone and run <code>pcprov watch</code>.</td></tr>{{end}}
-</table><p><a href="/metrics">/metrics</a> · <a href="/v1/nodes">/v1/nodes</a> · <a href="/v1/models">/v1/models</a></p></body></html>`))
+</table><p><a href="/ui/">management panel</a> · <a href="/metrics">/metrics</a> · <a href="/v1/nodes">/v1/nodes</a> · <a href="/v1/models">/v1/models</a></p></body></html>`))
 
 type dashboardRow struct {
 	proto.Node
