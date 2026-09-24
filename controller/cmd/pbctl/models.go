@@ -40,9 +40,13 @@ func modelsCmd(c *client, o *out, rest []string) error {
 	case sub == "tag" && len(args) == 2:
 		raw, err := c.do(http.MethodPatch, "/admin/models/"+pathEscape(args[0]), models.Patch{Tags: list(args[1])})
 		return o.done(raw, err, fmt.Sprintf("model %s tagged %s", args[0], args[1]))
-	case sub == "recommend" && len(args) == 2:
-		raw, err := c.do(http.MethodPatch, "/admin/models/"+pathEscape(args[0]), models.Patch{RecommendedClasses: list(args[1])})
-		return o.done(raw, err, fmt.Sprintf("model %s recommended for classes %s", args[0], args[1]))
+	case sub == "recommend" && len(args) >= 2:
+		p, err := parseRecommend(args[1:])
+		if err != nil {
+			return err
+		}
+		raw, err := c.do(http.MethodPatch, "/admin/models/"+pathEscape(args[0]), p)
+		return o.done(raw, err, fmt.Sprintf("model %s recommended", args[0]))
 	case sub == "default" && len(args) == 1 && args[0] == "none":
 		pl, err := getPlacement(c)
 		if err != nil {
@@ -91,6 +95,31 @@ func parseModelAdd(args []string) (models.AddRequest, error) {
 		}
 	}
 	return req, nil
+}
+
+// parseRecommend parses "classes=s,m tiers=t2,t3", or the older positional
+// "s,m" (classes only, kept working).
+func parseRecommend(args []string) (models.Patch, error) {
+	var p models.Patch
+	if len(args) == 1 && !strings.Contains(args[0], "=") {
+		p.RecommendedClasses = list(args[0])
+		return p, nil
+	}
+	for _, kv := range args {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return p, fmt.Errorf("want key=value, got %q", kv)
+		}
+		switch k {
+		case "classes":
+			p.RecommendedClasses = list(v)
+		case "tiers":
+			p.RecommendedTiers = list(v)
+		default:
+			return p, fmt.Errorf("unknown setting %q (classes, tiers)", k)
+		}
+	}
+	return p, nil
 }
 
 func listModels(c *client, o *out) error {
@@ -152,6 +181,12 @@ func classes(c *client, o *out) error {
 		rows = append(rows, []string{cl.ID, cl.Label, strconv.Itoa(cl.Nodes), dash(strings.Join(cl.RecommendedModels, ","))})
 	}
 	o.table("CLASS\tRAM\tNODES\tRECOMMENDED MODELS", rows)
+	var tierRows [][]string
+	for _, t := range dc.PerfTiers {
+		tierRows = append(tierRows, []string{t.ID, t.Label, strconv.Itoa(t.Nodes), dash(strings.Join(t.RecommendedModels, ","))})
+	}
+	fmt.Fprintln(o.w)
+	o.table("TIER\tGB/S\tNODES\tRECOMMENDED MODELS", tierRows)
 	return nil
 }
 
@@ -241,8 +276,10 @@ func parsePolicy(model string, kvs []string) (models.Policy, error) {
 			p.Percent, err = strconv.ParseFloat(strings.TrimSuffix(v, "%"), 64)
 		case "classes":
 			p.Classes = list(v)
+		case "min_tok_s":
+			p.MinTokS, err = strconv.ParseFloat(v, 64)
 		default:
-			return p, fmt.Errorf("unknown setting %q (pin, replicas, percent, classes)", k)
+			return p, fmt.Errorf("unknown setting %q (pin, replicas, percent, classes, min_tok_s)", k)
 		}
 		if err != nil {
 			return p, fmt.Errorf("%s: %w", k, err)
@@ -287,9 +324,13 @@ func showPlacement(o *out, raw []byte, err error, title string) error {
 			case models.ModePercent:
 				target = strconv.FormatFloat(p.Percent, 'f', -1, 64) + "%"
 			}
-			rows = append(rows, []string{p.ModelID, p.Mode, target, dash(strings.Join(p.Classes, ","))})
+			minTokS := "-"
+			if p.MinTokS > 0 {
+				minTokS = strconv.FormatFloat(p.MinTokS, 'f', -1, 64)
+			}
+			rows = append(rows, []string{p.ModelID, p.Mode, target, dash(strings.Join(p.Classes, ",")), minTokS})
 		}
-		o.table("MODEL\tMODE\tTARGET\tCLASSES", rows)
+		o.table("MODEL\tMODE\tTARGET\tCLASSES\tMIN TOK/S", rows)
 	}
 	fmt.Fprintln(o.w)
 	state := map[string]controller.PlacementNode{}
@@ -320,10 +361,14 @@ func showPlacement(o *out, raw []byte, err error, title string) error {
 			if n.BudgetBytes > 0 {
 				budget = gib(n.BudgetBytes)
 			}
-			rows = append(rows, []string{a.NodeID, n.Class, gib(int64(n.RAMTotalBytes)), budget, dash(n.CurrentModel), st,
-				dash(a.ModelID), a.Reason, est, fits})
+			pred := "-"
+			if a.PredGenTPS > 0 {
+				pred = fmt.Sprintf("%.1f", a.PredGenTPS)
+			}
+			rows = append(rows, []string{a.NodeID, n.Class + "/" + dash(n.PerfTier), gib(int64(n.RAMTotalBytes)), budget, dash(n.CurrentModel), st,
+				dash(a.ModelID), a.Reason, est, fits, pred})
 		}
-		o.table("NODE\tCLASS\tRAM\tBUDGET\tCURRENT\tSTATE\tPLANNED\tREASON\tEST RAM\tFITS", rows)
+		o.table("NODE\tCLASS\tRAM\tBUDGET\tCURRENT\tSTATE\tPLANNED\tREASON\tEST RAM\tFITS\tPRED TOK/S", rows)
 	}
 	for _, n := range pl.Nodes {
 		if n.Error != "" {
