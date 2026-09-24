@@ -4,7 +4,9 @@ package controller
 import (
 	"errors"
 	"log/slog"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +20,8 @@ var ErrUnknownNode = errors.New("unknown node")
 type Registry struct {
 	mu           sync.Mutex
 	nodes        map[string]*proto.Node
-	drained      map[string]bool // by node id; survives re-registration and Forget
+	drained      map[string]bool   // by node id; survives re-registration and Forget
+	aliases      map[string]string // node id -> alias; survives re-registration and Forget
 	now          func() time.Time
 	suspectAfter time.Duration
 	offlineAfter time.Duration
@@ -30,6 +33,7 @@ func NewRegistry(suspectAfter, offlineAfter time.Duration, log *slog.Logger) *Re
 	return &Registry{
 		nodes:        map[string]*proto.Node{},
 		drained:      map[string]bool{},
+		aliases:      map[string]string{},
 		now:          time.Now,
 		suspectAfter: suspectAfter,
 		offlineAfter: offlineAfter,
@@ -130,7 +134,9 @@ func (r *Registry) Snapshot() []proto.Node {
 func (r *Registry) snapshot() []proto.Node {
 	out := make([]proto.Node, 0, len(r.nodes))
 	for _, n := range r.nodes {
-		out = append(out, *n)
+		c := *n
+		c.Alias = r.aliases[n.ID]
+		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -176,4 +182,84 @@ func (r *Registry) Forget(id string) error {
 	}
 	delete(r.nodes, id)
 	return nil
+}
+
+var (
+	ErrAliasInvalid = errors.New(`alias must match ^[a-z0-9][a-z0-9-]{0,31}$, must not start with "pool" and must not be "auto"`)
+	ErrAliasTaken   = errors.New("alias is used by another node (as its alias or id)")
+)
+
+// nameRE is the syntax of node aliases and pool names (ADR-014).
+var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// validAlias reports whether a is a usable node alias.
+func validAlias(a string) bool {
+	return nameRE.MatchString(a) && !strings.HasPrefix(a, "pool") && a != "auto"
+}
+
+// SetAlias names a node; "" clears the alias. Aliases are unique and never
+// equal another node's id. Like drain flags they are kept by node id, so
+// they survive re-registration and Forget. Setting needs a known node;
+// clearing also accepts an id that is only remembered by its alias.
+func (r *Registry) SetAlias(id, alias string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, known := r.nodes[id]; !known && (alias != "" || r.aliases[id] == "") {
+		return ErrUnknownNode
+	}
+	if alias == "" {
+		delete(r.aliases, id)
+		return nil
+	}
+	if !validAlias(alias) {
+		return ErrAliasInvalid
+	}
+	if _, isNode := r.nodes[alias]; isNode && alias != id {
+		return ErrAliasTaken
+	}
+	for other, a := range r.aliases {
+		if a == alias && other != id {
+			return ErrAliasTaken
+		}
+	}
+	r.aliases[id] = alias
+	return nil
+}
+
+// Aliases returns a copy of the aliases by node id.
+func (r *Registry) Aliases() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]string, len(r.aliases))
+	for id, a := range r.aliases {
+		out[id] = a
+	}
+	return out
+}
+
+// LoadAliases replaces the aliases, e.g. with the persisted ones at startup.
+// Entries that are not valid aliases are dropped.
+func (r *Registry) LoadAliases(aliases map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.aliases = map[string]string{}
+	for id, a := range aliases {
+		if validAlias(a) {
+			r.aliases[id] = a
+		}
+	}
+}
+
+// Lookup finds a node id by alias, then by id. A forgotten node that still
+// has an alias is found too.
+func (r *Registry) Lookup(name string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, a := range r.aliases {
+		if a == name {
+			return id, true
+		}
+	}
+	_, ok := r.nodes[name]
+	return name, ok
 }

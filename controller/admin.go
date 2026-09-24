@@ -160,6 +160,9 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	s.registerModelAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
+	s.registerPoolAdmin(func(pattern, action string, fn http.HandlerFunc) {
+		mux.Handle(pattern, s.adminAuth(action, fn))
+	})
 	// Unknown admin paths also need the token, so they reveal nothing.
 	mux.Handle("/admin/", s.adminAuth("unknown", http.NotFound))
 }
@@ -210,6 +213,10 @@ func (s *Server) audit(r *http.Request, action string, err error, attrs ...any) 
 }
 
 func (s *Server) adminNodes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.adminNodeList())
+}
+
+func (s *Server) adminNodeList() []AdminNode {
 	nodes, drained := s.reg.View()
 	inflight, pins := s.gw.Inflight(), s.affinity.Pins()
 	limit := s.ThermalLimitC()
@@ -218,7 +225,7 @@ func (s *Server) adminNodes(w http.ResponseWriter, r *http.Request) {
 		hot := limit > 0 && n.LastHeartbeat != nil && n.LastHeartbeat.TemperatureC != nil && *n.LastHeartbeat.TemperatureC >= limit
 		out = append(out, AdminNode{Node: n, Drained: drained[n.ID], Inflight: inflight[n.ID], PinnedSessions: pins[n.ID], Hot: hot})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 func (s *Server) adminDrain(drain bool) http.HandlerFunc {

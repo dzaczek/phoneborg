@@ -37,6 +37,8 @@ type Server struct {
 	usage             *Usage
 	affinity          *gateway.Affinity
 	least             *gateway.LeastInflight
+	spread            *gateway.Spread // pools with routing "spread" (ADR-014)
+	pools             *pools
 
 	settingsMu sync.Mutex // serialises gateway settings changes
 	policy     string
@@ -63,7 +65,8 @@ type GatewayOptions struct {
 	// ThermalLimitC marks a node hot when its last heartbeat temperature is
 	// at or above this; 0 disables thermal-aware routing (ADR-010).
 	ThermalLimitC float64
-	Models        ModelOptions // ADR-011
+	Models        ModelOptions   // ADR-011
+	Routing       RoutingOptions // node aliases and pools, ADR-014
 	gateway.Config
 }
 
@@ -88,6 +91,8 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		keys:           gwOpts.Keys,
 		usage:          gwOpts.Usage,
 		least:          &gateway.LeastInflight{},
+		spread:         &gateway.Spread{},
+		pools:          &pools{path: gwOpts.Routing.File, byName: map[string]Pool{}},
 		policy:         PolicyAffinity,
 		adminEnabled:   admin.Token != "",
 		adminTokenHash: sha256.Sum256([]byte(admin.Token)),
@@ -108,16 +113,23 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		promReg: prometheus.NewRegistry(),
 	}
 	s.thermalLimitC.Store(math.Float64bits(gwOpts.ThermalLimitC))
+	if len(gwOpts.Routing.State.Aliases) > 0 {
+		reg.LoadAliases(gwOpts.Routing.State.Aliases)
+	}
+	for _, p := range gwOpts.Routing.State.Pools {
+		s.pools.byName[p.Name] = p
+	}
 	reg.onTransition = func(_ string, from, to proto.NodeState) {
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
 	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin,
-		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, &poolCollector{s: s}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	s.affinity = gateway.NewAffinity(s.promReg)
 	s.gw = gateway.New(gwOpts.Keys, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()
 		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC())
 	}, gwOpts.Config, s.promReg, log)
+	s.gw.SetTargets(serverTargets{s})
 	s.catalog.SetOnChange(s.Replan)
 	s.Replan()
 	return s
@@ -167,6 +179,7 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, t
 			URL:     fmt.Sprintf("http://%s:%d", host, hb.Runtime.AdvertisePort),
 			Hot:     thermalLimitC > 0 && hb.TemperatureC != nil && *hb.TemperatureC >= thermalLimitC,
 			CtxSize: hb.Runtime.CtxSize,
+			Alias:   n.Alias,
 		}
 		gotMeasured := hb.Runtime.GenTPS > 0
 		if gotMeasured {

@@ -61,12 +61,15 @@ func (noUsage) Record(UsageEvent) {}
 type Gateway struct {
 	auth     Authenticator
 	picker   atomic.Pointer[Picker]
+	targets  atomic.Pointer[Targets]
 	timeout  atomic.Int64 // upstream timeout, ns
 	backends BackendSource
 	cfg      Config
 	log      *slog.Logger
 	client   *http.Client
 	now      func() time.Time
+
+	prewarmTimeout time.Duration
 
 	mu       sync.Mutex
 	inflight map[string]int
@@ -82,6 +85,7 @@ type Gateway struct {
 	mTokens    *prometheus.CounterVec
 	mGenTPS    *prometheus.GaugeVec
 	mPromptTPS *prometheus.GaugeVec
+	mTargets   *prometheus.CounterVec
 }
 
 func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, reg prometheus.Registerer, log *slog.Logger) *Gateway {
@@ -120,16 +124,23 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 			Name: "phoneborg_node_generation_tokens_per_second", Help: "Generation speed of the node's last request."}, []string{"node_id"}),
 		mPromptTPS: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "phoneborg_node_prompt_tokens_per_second", Help: "Prompt processing speed of the node's last request."}, []string{"node_id"}),
+		mTargets: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "phoneborg_gateway_target_requests_total", Help: "Inference requests by resolved target: auto, pool/<name>, node/<alias-or-id> or model (ADR-014)."},
+			[]string{"target"}),
 	}
 	if g.cfg.Usage == nil {
 		g.cfg.Usage = noUsage{}
 	}
 	g.SetPicker(picker)
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
-	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS)
+	g.prewarmTimeout = PrewarmTimeout
+	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
-	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "backends_failed", "context_too_large"} {
+	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large"} {
 		g.mRejected.WithLabelValues(reason)
+	}
+	for _, target := range []string{KindAuto, KindModel} {
+		g.mTargets.WithLabelValues(target)
 	}
 	return g
 }
@@ -214,12 +225,12 @@ var errContextTooSmall = fmt.Errorf("%w: prompt exceeds node context", errRetrya
 // estimate only steers routing, llama-server still enforces the real limit.
 func estimateTokens(body []byte) int { return len(body) / 4 }
 
-// maxContext is the largest known context among nodes serving model, or 0 if
-// no node reports one.
-func maxContext(all []Backend, model string) int {
+// maxContext is the largest known context among the backends, or 0 if no
+// backend reports one.
+func maxContext(all []Backend) int {
 	m := 0
 	for _, b := range all {
-		if (model == "" || b.Model == model) && b.CtxSize > m {
+		if b.CtxSize > m {
 			m = b.CtxSize
 		}
 	}
@@ -299,11 +310,30 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	all := g.routable()
-	if !hasModel(all, meta.Model) {
+	tgt, err := g.Resolve(meta.Model)
+	if err != nil {
+		g.mRejected.WithLabelValues("model_not_found").Inc()
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusNotFound)})
+		openAIError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", fmt.Sprintf("no pool or node %q", meta.Model))
+		return
+	}
+	g.mTargets.WithLabelValues(tgt.Label).Inc()
+
+	all := tgt.filter(g.routable())
+	if tgt.Node != "" && len(all) == 0 {
+		g.mRejected.WithLabelValues("node_unavailable").Inc()
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusServiceUnavailable)})
+		openAIError(w, http.StatusServiceUnavailable, "server_error", "node_unavailable",
+			fmt.Sprintf("%s is not ready (offline, drained, loading or switching models)", meta.Model))
+		return
+	}
+	if len(all) == 0 {
 		g.mRejected.WithLabelValues("model_not_found").Inc()
 		code, msg := http.StatusNotFound, fmt.Sprintf("model %q is not served by any ready node", meta.Model)
-		if len(all) == 0 {
+		switch {
+		case tgt.Nodes != nil: // a pool without eligible members
+			code, msg = http.StatusServiceUnavailable, fmt.Sprintf("%s has no eligible ready node", meta.Model)
+		case len(g.routable()) == 0:
 			code, msg = http.StatusServiceUnavailable, "no ready nodes"
 		}
 		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(code)})
@@ -312,7 +342,7 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	est := estimateTokens(body)
-	if max := maxContext(all, meta.Model); max > 0 && est > max {
+	if max := maxContext(all); max > 0 && est > max {
 		g.mRejected.WithLabelValues("context_too_large").Inc()
 		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusBadRequest)})
 		openAIError(w, http.StatusBadRequest, "invalid_request_error", "context_length_exceeded",
@@ -320,15 +350,26 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	picker := tgt.Picker
+	if picker == nil {
+		picker = g.Picker()
+	}
+	maxAttempts := g.cfg.MaxAttempts
+	if tgt.Node != "" {
+		maxAttempts = 1 // node targets never fail over
+	}
 	tried := map[string]bool{}
-	for attempt := 1; attempt <= g.cfg.MaxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// Re-read backends each attempt: nodes may have joined or left
 		// (e.g. reaped as SUSPECT) since the request arrived.
-		cands := g.candidates(g.routable(), meta.Model, tried, est)
+		cands := g.candidates(tgt.filter(g.routable()), tried, est)
 		if len(cands) == 0 {
 			break
 		}
-		b := g.Picker().Pick(Request{Model: meta.Model, AffinityKey: meta.affinityKey(), PromptBytes: len(body)}, cands, g.inflightOf)
+		b := cands[0] // node targets bypass the picker
+		if tgt.Node == "" {
+			b = picker.Pick(Request{Model: meta.Model, AffinityKey: meta.affinityKey(), PromptBytes: len(body)}, cands, g.inflightOf)
+		}
 		tried[b.NodeID] = true
 		err := g.forward(w, r, b, body, meta.Stream, principal, reqID)
 		if err == nil {
@@ -472,36 +513,36 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	seen := map[string]int{}
-	for _, b := range g.routable() {
+	routable := g.routable()
+	for _, b := range routable {
 		seen[b.Model]++
 	}
-	type model struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-		Nodes   int    `json:"nodes"`
-	}
 	out := struct {
-		Object string  `json:"object"`
-		Data   []model `json:"data"`
-	}{Object: "list", Data: []model{}}
+		Object string       `json:"object"`
+		Data   []ModelEntry `json:"data"`
+	}{Object: "list", Data: []ModelEntry{}}
 	for m, n := range seen {
-		out.Data = append(out.Data, model{ID: m, Object: "model", OwnedBy: "phoneborg", Nodes: n})
+		out.Data = append(out.Data, ModelEntry{ID: m, Object: "model", OwnedBy: "phoneborg", Kind: KindModel, Nodes: n})
 	}
 	sort.Slice(out.Data, func(i, j int) bool { return out.Data[i].ID < out.Data[j].ID })
+	// Virtual models (ADR-014) follow the served models.
+	out.Data = append(out.Data, ModelEntry{ID: KindAuto, Object: "model", OwnedBy: "phoneborg", Kind: KindAuto, Nodes: len(routable)})
+	if t := g.targets.Load(); t != nil && *t != nil {
+		out.Data = append(out.Data, (*t).Models()...)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// candidates returns untried backends for the model, preferring ones not in
+// candidates returns untried backends whose context fits, preferring ones not in
 // cooldown; if every one is cooling down, they are tried anyway.
-func (g *Gateway) candidates(all []Backend, model string, tried map[string]bool, estTokens int) []Backend {
+func (g *Gateway) candidates(all []Backend, tried map[string]bool, estTokens int) []Backend {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
 	var healthy, cooling []Backend
 	for _, b := range all {
-		if tried[b.NodeID] || (model != "" && b.Model != model) || (b.CtxSize > 0 && estTokens > b.CtxSize) {
+		if tried[b.NodeID] || (b.CtxSize > 0 && estTokens > b.CtxSize) {
 			continue
 		}
 		if now.Before(g.cooldown[b.NodeID]) {
@@ -514,15 +555,6 @@ func (g *Gateway) candidates(all []Backend, model string, tried map[string]bool,
 		return healthy
 	}
 	return cooling
-}
-
-func hasModel(all []Backend, model string) bool {
-	for _, b := range all {
-		if model == "" || b.Model == model {
-			return true
-		}
-	}
-	return false
 }
 
 func (g *Gateway) markDown(nodeID string) {
