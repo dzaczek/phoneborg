@@ -122,6 +122,13 @@ type RuntimeStatus struct {
 	// planner can check fit against a node's real headroom instead of the
 	// class heuristic.
 	BudgetBytes int64 `json:"budget_bytes,omitempty"`
+	// ModelBytes is the size of the file currently served, reported by the
+	// agent from the file itself (not the catalog), so static-provisioned
+	// nodes (pcprov -model, no controller catalog entry) also report it.
+	// Combined with GenTPS/PromptTPS this gives the controller a node's
+	// measured memory bandwidth (ADR-015): gen_tok_s x model_file_bytes is
+	// roughly constant per phone.
+	ModelBytes int64 `json:"model_bytes,omitempty"`
 }
 
 type NodeState string

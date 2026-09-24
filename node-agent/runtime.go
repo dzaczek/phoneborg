@@ -159,6 +159,9 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 		CtxSize:       r.cfg.CtxSize,
 		Ready:         r.healthy(ctx),
 	}
+	if fi, err := os.Stat(r.cfg.ModelPath); err == nil {
+		st.ModelBytes = fi.Size()
+	}
 	r.mu.Lock()
 	st.GenTPS, st.PromptTPS, st.SelfTestAt = r.genTPS, r.promptTPS, r.selfTestAt
 	r.mu.Unlock()
