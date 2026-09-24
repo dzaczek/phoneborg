@@ -6,13 +6,14 @@ import overview from './views/overview.js';
 import nodes from './views/nodes.js';
 import models from './views/models.js';
 import placement from './views/placement.js';
+import pools from './views/pools.js';
 import proxy from './views/proxy.js';
 import keys from './views/keys.js';
 import usage from './views/usage.js';
 
 // Each view factory returns {title, el, live, refresh()}; live views are
 // refreshed every REFRESH_MS while the tab is visible and no dialog is open.
-const VIEWS = { overview, nodes, models, placement, proxy, keys, usage };
+const VIEWS = { overview, nodes, models, placement, pools, proxy, keys, usage };
 const REFRESH_MS = 5000;
 
 const $ = (id) => document.getElementById(id);

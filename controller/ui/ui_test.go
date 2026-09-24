@@ -56,7 +56,7 @@ func TestAssetsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"index.html", "app.css", "icon.svg", "js/app.js", "js/api.js", "js/views/placement.js"} {
+	for _, want := range []string{"index.html", "app.css", "icon.svg", "js/app.js", "js/api.js", "js/views/placement.js", "js/views/pools.js"} {
 		if _, err := fs.Stat(Files, want); err != nil {
 			t.Errorf("%s not embedded", want)
 		}
