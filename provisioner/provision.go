@@ -178,7 +178,9 @@ func (p *Provisioner) Status(ctx context.Context, serial string) (string, error)
 
 // Watch provisions every device that reaches the "device" state. A device
 // that disappears (USB unplugged) is forgotten, so re-plugging re-provisions.
-func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include func(serial string) bool) error {
+// after, if non-nil, runs once right after each successful provision (used to
+// chain slim).
+func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include func(serial string) bool, after func(serial string)) error {
 	done := map[string]bool{}
 	warned := map[string]string{}
 	t := time.NewTicker(interval)
@@ -211,6 +213,9 @@ func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include
 				continue // retried next tick
 			}
 			done[d.Serial] = true
+			if after != nil {
+				after(d.Serial)
+			}
 		}
 		for s := range done {
 			if !seen[s] {

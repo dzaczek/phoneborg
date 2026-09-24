@@ -180,6 +180,54 @@ adb -s $S shell rm -rf /data/local/tmp/phoneborg    # removes binaries and model
 adb -s $S shell settings put global stay_on_while_plugged_in 0
 ```
 
+## Free RAM on a dedicated phone (slim)
+
+A phone that only serves the cluster does not need its camera, gallery,
+browser or other apps sitting in memory. `pcprov slim` disables a
+conservative, vendor-extensible allowlist of user-facing apps to free that
+RAM for `llama-server`. `pcprov unslim` reverses it exactly.
+
+```sh
+bin/pcprov slim   -serial $S                        # disable non-essential apps
+bin/pcprov slim   -serial $S -slim-telephony        # also disable dialer/contacts (off by default)
+bin/pcprov slim   -all                              # every ready device
+bin/pcprov unslim -serial $S                        # restore everything slim disabled
+
+# Or slim right after provisioning:
+bin/pcprov provision -serial $S -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -slim
+bin/pcprov watch      -serial $S -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -slim
+```
+
+What `slim` disables, if installed (`pm disable-user --user 0`): camera
+(org.lineageos.aperture, com.android.camera2, org.codeaurora.snapcam),
+gallery (org.lineageos.glimpse, com.android.gallery3d), music
+(org.lineageos.twelve, com.android.music), browser (org.lineageos.jelly,
+com.android.browser), calendar (org.lineageos.etar, com.android.calendar),
+clock (com.android.deskclock), recorder (org.lineageos.recorder), messaging
+(com.android.messaging), email (com.android.email); with `-slim-telephony`,
+also dialer/contacts (com.android.dialer, com.android.contacts). It also
+finishes a pending setup wizard (`settings put secure user_setup_complete 1`,
+`settings put global device_provisioned 1`, then `am force-stop` on the setup
+wizard package — never disabled) and `am force-stop`s `com.android.settings`
+(it restarts on demand, so this only frees memory, it does not remove it).
+
+`slim` never disables system UI, the launcher, Settings, telephony services,
+input methods, or anything with "provider", "permissioncontroller",
+"packageinstaller", "shell", "networkstack", "bluetooth", "wifi", "nfc" or
+"setupwizard" in its package name, even if the allowlist above is extended
+for a new vendor.
+
+It records exactly what it disabled in
+`/data/local/tmp/phoneborg/slim.state` on the device (one package per line)
+and logs `MemAvailable` (from `/proc/meminfo`) before and after, and the
+freed MiB. Running it again is a no-op beyond newly-installed apps: it never
+re-disables what is already off, and it merges into the same state file so
+`unslim` still restores everything.
+
+**Caution:** a slimmed phone becomes cluster-only — no camera, gallery,
+browser, music, calendar, clock, recorder, messaging or email app until
+`unslim` is run. Do not slim a phone still used for anything else.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
