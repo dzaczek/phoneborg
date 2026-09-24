@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/dzaczek/phoneborg/controller/gateway"
@@ -128,7 +129,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
 	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin,
-		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, &poolCollector{s: s}, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, &poolCollector{s: s}, collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	s.affinity = gateway.NewAffinity(s.promReg)
 	s.gw = gateway.New(gwOpts.Keys, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()

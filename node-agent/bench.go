@@ -27,6 +27,10 @@ func RunBenchmark(d time.Duration, cores int, bufBytes int) proto.Benchmark {
 	}
 }
 
+// sink absorbs the loop's result so the compiler can't prove it's dead and
+// eliminate the FP work cpuGFLOPS is trying to measure.
+//
+//lint:ignore U1000 written-only by design, see comment above
 var sink float32
 
 func cpuGFLOPS(d time.Duration, cores int) float64 {
