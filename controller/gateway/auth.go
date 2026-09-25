@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,8 +36,15 @@ type Authenticator interface {
 	Authenticate(r *http.Request) (Principal, error)
 }
 
-// Anonymous is the principal of unauthenticated callers.
+// Anonymous is the principal of unauthenticated callers (open access, or a
+// known-invalid/missing key while keys are not enforced).
 const Anonymous = "anonymous"
+
+// Local is the principal of a request served without an API key because its
+// peer is in a trusted CIDR ("local" access mode, ADR-017); distinct from
+// Anonymous so usage and logs can tell trusted-local traffic apart from an
+// open gateway's anonymous traffic.
+const Local = "local"
 
 // AllowAll is for development on a trusted network only.
 type AllowAll struct{}
@@ -181,17 +189,30 @@ func (s *StaticKeys) set(entries []KeyEntry) {
 	s.mu.Unlock()
 }
 
-func (s *StaticKeys) Authenticate(r *http.Request) (Principal, error) {
+// Lookup returns the principal owning the request's API key, regardless of
+// whether the store is enforced. ok is false when the request carries no key
+// or an unknown one.
+func (s *StaticKeys) Lookup(r *http.Request) (Principal, bool) {
 	key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		key = r.Header.Get("x-api-key")
 	}
 	key = strings.TrimSpace(key)
+	if key == "" {
+		return Principal{}, false
+	}
 	s.mu.RLock()
 	name, found := s.byHash[hashKey(key)]
 	s.mu.RUnlock()
-	if found && key != "" {
-		return Principal{Name: name}, nil
+	if !found {
+		return Principal{}, false
+	}
+	return Principal{Name: name}, true
+}
+
+func (s *StaticKeys) Authenticate(r *http.Request) (Principal, error) {
+	if p, ok := s.Lookup(r); ok {
+		return p, nil
 	}
 	if !s.enforced.Load() {
 		return Principal{Name: Anonymous}, nil
@@ -337,4 +358,120 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// Access modes for -gateway-access (ADR-017, "local by default").
+const (
+	AccessLocal = "local" // trusted peers need no key; everyone else needs a valid one
+	AccessKeys  = "keys"  // every request needs a valid key
+	AccessOpen  = "open"  // any request is served, unauthenticated
+)
+
+// ErrRemoteRequiresKey is returned by AccessControl in "local" mode when the
+// caller's peer is outside the trusted CIDRs and carries no valid API key.
+var ErrRemoteRequiresKey = errors.New("PhoneBorg accepts requests from other machines only with an API key (see -gateway-access)")
+
+// ParseCIDRList parses a comma-separated list of CIDRs (e.g.
+// "127.0.0.0/8,::1/128"); a blank string yields an empty, matches-nothing list.
+func ParseCIDRList(csv string) ([]*net.IPNet, error) {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil, nil
+	}
+	var out []*net.IPNet
+	for _, part := range strings.Split(csv, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", part, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// AccessControl gates inference and listing endpoints by the caller's
+// network origin, on top of key authentication (ADR-017, "local by
+// default"):
+//
+//	local (default)  peers in Trusted need no key; everyone else needs a valid one
+//	keys             every request needs a valid key
+//	open             any request is served, unauthenticated (today's behaviour)
+//
+// A request that carries a valid key is always authenticated as its owner,
+// in every mode. The runtime switch `PUT /admin/gateway {"auth_mode":"keys"}`
+// (StaticKeys.Enforce) is honoured too: once keys are enforced, "keys"
+// applies regardless of Mode, so the two controls cannot disagree.
+//
+// X-Forwarded-For is trusted only when the direct peer (r.RemoteAddr) is
+// itself in TrustedProxies; otherwise only the direct peer is considered.
+type AccessControl struct {
+	Keys           *StaticKeys
+	Mode           string
+	Trusted        []*net.IPNet // peers served without a key in "local" mode
+	TrustedProxies []*net.IPNet // peers allowed to set X-Forwarded-For
+}
+
+func (a AccessControl) Authenticate(r *http.Request) (Principal, error) {
+	if p, ok := a.Keys.Lookup(r); ok {
+		return p, nil
+	}
+	mode := a.Mode
+	if a.Keys.Enforced() {
+		mode = AccessKeys
+	}
+	switch mode {
+	case AccessKeys:
+		return Principal{}, ErrUnauthorized
+	case AccessOpen:
+		return Principal{Name: Anonymous}, nil
+	default: // AccessLocal
+		if a.isTrusted(r) {
+			return Principal{Name: Local}, nil
+		}
+		return Principal{}, ErrRemoteRequiresKey
+	}
+}
+
+func (a AccessControl) isTrusted(r *http.Request) bool {
+	ip := remoteIP(r, a.TrustedProxies)
+	if ip == nil {
+		return false
+	}
+	for _, n := range a.Trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteIP returns the caller's address: the direct TCP peer, or, when that
+// peer's address is in trustedProxies, the first address in
+// X-Forwarded-For (the original client, by convention).
+func remoteIP(r *http.Request, trustedProxies []*net.IPNet) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr // no port, e.g. in tests
+	}
+	peer := net.ParseIP(host)
+	if peer == nil {
+		return nil
+	}
+	for _, n := range trustedProxies {
+		if !n.Contains(peer) {
+			continue
+		}
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			first := strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
+			if ip := net.ParseIP(first); ip != nil {
+				return ip
+			}
+		}
+		break
+	}
+	return peer
 }

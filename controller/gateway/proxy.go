@@ -59,15 +59,16 @@ type noUsage struct{}
 func (noUsage) Record(UsageEvent) {}
 
 type Gateway struct {
-	auth     Authenticator
-	picker   atomic.Pointer[Picker]
-	targets  atomic.Pointer[Targets]
-	timeout  atomic.Int64 // upstream timeout, ns
-	backends BackendSource
-	cfg      Config
-	log      *slog.Logger
-	client   *http.Client
-	now      func() time.Time
+	auth      Authenticator
+	picker    atomic.Pointer[Picker]
+	targets   atomic.Pointer[Targets]
+	modelInfo atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
+	timeout   atomic.Int64                  // upstream timeout, ns
+	backends  BackendSource
+	cfg       Config
+	log       *slog.Logger
+	client    *http.Client
+	now       func() time.Time
 
 	prewarmTimeout time.Duration
 
@@ -136,7 +137,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.prewarmTimeout = PrewarmTimeout
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
-	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy"} {
+	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy", "remote_requires_api_key"} {
 		g.mRejected.WithLabelValues(reason)
 	}
 	for _, target := range []string{KindAuto, KindModel} {
@@ -292,8 +293,7 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	principal, err := g.auth.Authenticate(r)
 	if err != nil {
-		g.mRejected.WithLabelValues("unauthorized").Inc()
-		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
+		g.rejectUnauthorized(w, err)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
@@ -396,6 +396,19 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	g.mRejected.WithLabelValues("backends_failed").Inc()
 	g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusBadGateway)})
 	openAIError(w, http.StatusBadGateway, "server_error", "backends_failed", "all attempted nodes failed")
+}
+
+// rejectUnauthorized writes the OpenAI-shaped error for a failed
+// Authenticate call and counts it, distinguishing ADR-017's "local" access
+// mode (403, a distinct reason) from an invalid or missing API key (401).
+func (g *Gateway) rejectUnauthorized(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrRemoteRequiresKey) {
+		g.mRejected.WithLabelValues("remote_requires_api_key").Inc()
+		openAIError(w, http.StatusForbidden, "access_denied", "remote_requires_api_key", err.Error())
+		return
+	}
+	g.mRejected.WithLabelValues("unauthorized").Inc()
+	openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
 }
 
 func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, body []byte, stream bool, p Principal, reqID string) error {
@@ -546,29 +559,37 @@ func setUpstreamAuth(up *http.Request, b Backend) {
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	if _, err := g.auth.Authenticate(r); err != nil {
-		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
+		g.rejectUnauthorized(w, err)
 		return
 	}
+	out := struct {
+		Object string       `json:"object"`
+		Data   []ModelEntry `json:"data"`
+	}{Object: "list", Data: g.modelEntries()}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// modelEntries lists served models, then virtual models (ADR-014): "auto",
+// then pools and aliased nodes from the Targets resolver. Shared by
+// GET /v1/models and the Ollama-compatible GET /api/tags (ADR-017), so both
+// see the same routing state.
+func (g *Gateway) modelEntries() []ModelEntry {
 	seen := map[string]int{}
 	routable := g.routable()
 	for _, b := range routable {
 		seen[b.Model]++
 	}
-	out := struct {
-		Object string       `json:"object"`
-		Data   []ModelEntry `json:"data"`
-	}{Object: "list", Data: []ModelEntry{}}
+	out := []ModelEntry{}
 	for m, n := range seen {
-		out.Data = append(out.Data, ModelEntry{ID: m, Object: "model", OwnedBy: "phoneborg", Kind: KindModel, Nodes: n})
+		out = append(out, ModelEntry{ID: m, Object: "model", OwnedBy: "phoneborg", Kind: KindModel, Nodes: n})
 	}
-	sort.Slice(out.Data, func(i, j int) bool { return out.Data[i].ID < out.Data[j].ID })
-	// Virtual models (ADR-014) follow the served models.
-	out.Data = append(out.Data, ModelEntry{ID: KindAuto, Object: "model", OwnedBy: "phoneborg", Kind: KindAuto, Nodes: len(routable)})
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	out = append(out, ModelEntry{ID: KindAuto, Object: "model", OwnedBy: "phoneborg", Kind: KindAuto, Nodes: len(routable)})
 	if t := g.targets.Load(); t != nil && *t != nil {
-		out.Data = append(out.Data, (*t).Models()...)
+		out = append(out, (*t).Models()...)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	return out
 }
 
 // candidates returns untried backends whose context fits, preferring ones not in

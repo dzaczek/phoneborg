@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -49,6 +50,11 @@ type Server struct {
 	// decision; 0 disables thermal-aware routing (ADR-010).
 	thermalLimitC atomic.Uint64
 
+	// accessModeCfg is the configured -gateway-access mode ("local", "keys"
+	// or "open"); accessMode() reports the effective mode, which is "keys"
+	// whenever s.keys.Enforced() (ADR-017).
+	accessModeCfg string
+
 	adminEnabled   bool
 	adminTokenHash [sha256.Size]byte
 	mAdmin         *prometheus.CounterVec
@@ -72,6 +78,17 @@ type GatewayOptions struct {
 	Models        ModelOptions    // ADR-011
 	Routing       RoutingOptions  // node aliases and pools, ADR-014
 	External      ExternalOptions // external engine nodes, ADR-016
+	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
+	// "local by default" (ADR-017); the empty value behaves like "open", so
+	// callers that do not set it (e.g. existing tests) are unaffected.
+	AccessMode string
+	// TrustedCIDRs are the peers "local" mode serves without an API key.
+	// Ignored unless AccessMode is "local".
+	TrustedCIDRs []*net.IPNet
+	// TrustedProxies are peers whose X-Forwarded-For is trusted to name the
+	// real client address for the TrustedCIDRs check.
+	TrustedProxies []*net.IPNet
+
 	gateway.Config
 }
 
@@ -89,8 +106,13 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	if gwOpts.Models.Planner == nil {
 		gwOpts.Models.Planner = models.DefaultPlanner{MinTokS: gwOpts.Models.MinPredictedTokS}
 	}
+	accessMode := gwOpts.AccessMode
+	if accessMode == "" {
+		accessMode = gateway.AccessOpen // matches the zero value of every other GatewayOptions field
+	}
 	s := &Server{
-		catalog: gwOpts.Models.Catalog,
+		accessModeCfg: accessMode,
+		catalog:       gwOpts.Models.Catalog,
 		place: &placement{planner: gwOpts.Models.Planner, path: gwOpts.Models.PlacementFile,
 			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
 		perf:           newNodePerf(),
@@ -135,11 +157,19 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin, s.ext.transitions, &externalCollector{e: s.ext},
 		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, &poolCollector{s: s}, collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	s.affinity = gateway.NewAffinity(s.promReg)
-	s.gw = gateway.New(gwOpts.Keys, s.affinity, func() []gateway.Backend {
+	access := gateway.AccessControl{Keys: gwOpts.Keys, Mode: accessMode, Trusted: gwOpts.TrustedCIDRs, TrustedProxies: gwOpts.TrustedProxies}
+	s.gw = gateway.New(access, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()
 		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), s.ext.backends()...)
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
+	s.gw.SetModelInfo(func(id string) (gateway.ModelInfo, bool) {
+		m, ok := s.catalog.Get(id)
+		if !ok {
+			return gateway.ModelInfo{}, false
+		}
+		return gateway.ModelInfo{SizeBytes: m.SizeBytes, SHA256: m.SHA256, Arch: m.Arch, Params: m.Params, Quant: m.Quant}, true
+	})
 	s.catalog.SetOnChange(s.Replan)
 	s.Replan()
 	return s
@@ -248,7 +278,17 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /ui/", ui.Handler())
 	mux.HandleFunc("GET /status", s.handleDashboard) // the plain read-only table, no login
 	s.gw.Register(mux)
+	s.gw.RegisterOllama(mux) // Ollama-compatible front, same auth/routing (ADR-017)
 	s.registerAdmin(mux)
+	return mux
+}
+
+// OllamaHandler serves only the Ollama-compatible endpoints, for the
+// optional second listener (-ollama-listen) so Ollama clients can use their
+// default port without colliding with the main listener's other routes.
+func (s *Server) OllamaHandler() http.Handler {
+	mux := http.NewServeMux()
+	s.gw.RegisterOllama(mux)
 	return mux
 }
 

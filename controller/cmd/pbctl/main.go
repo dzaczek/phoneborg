@@ -532,7 +532,7 @@ func showGateway(o *out, raw []byte, err error) error {
 	}
 	o.table("SETTING\tVALUE", [][]string{
 		{"policy", g.Policy}, {"spill", strconv.Itoa(g.AffinitySpill)},
-		{"timeout", g.UpstreamTimeout}, {"auth", g.AuthMode}, {"thermal_limit", thermalLimit}})
+		{"timeout", g.UpstreamTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit}})
 	return nil
 }
 
