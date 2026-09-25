@@ -23,6 +23,7 @@ text.
 | [013](#adr-013-web-management-panel) | Web management panel | accepted | Static embedded panel that is just another admin API client. |
 | [014](#adr-014-virtual-models-and-pools-for-agent-workloads) | Virtual models and pools | accepted | `auto`, `pool/<name>`, `node/<alias>`; `spread` routing for small agents. |
 | [015](#adr-015-performance-tiers-from-measured-bandwidth) | Performance tiers from measured bandwidth | accepted, with update | Effective bandwidth per node, tiers `t1`..`t4`, predicted tok/s gate placement. |
+| [017](#adr-017-ollama-compatible-front-and-local-by-default-access) | Ollama-compatible front and local-by-default access | accepted | `/api/*` translates to the OpenAI gateway; `-gateway-access local\|keys\|open` gates inference/listing endpoints by peer CIDR. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -921,3 +922,128 @@ The Mi 8 generation bandwidths quoted under "Measured fact" (6.9 and
 they are 7.3 and 7.6 GB/s (`controller/models/perf_test.go` checks 7.59).
 The tier (`t2`) and the conclusions are unchanged. See
 [BENCHMARKS.md](BENCHMARKS.md#effective-bandwidth-and-performance-tiers).
+
+## ADR-017: Ollama-compatible front and local-by-default access
+
+**Problem.** Many local-LLM clients (Open WebUI, Continue, Raycast, some
+opencode-adjacent tools) speak Ollama's HTTP API, not OpenAI's, and default
+to `http://127.0.0.1:11434`. Separately, the gateway's inference endpoints
+(`/v1/chat/completions`, `/v1/completions`, `/v1/models`) are open to anyone
+who can reach port 18080 unless an operator explicitly turns on
+`-api-keys-file` and enforces it: a phone cluster is easy to run without
+keys during development, but "open unless configured" is the wrong default
+once the controller listens on more than loopback (a laptop on a shared
+network, a container with a published port).
+
+**Alternatives, Ollama front.** (1) Tell users to point Ollama clients at
+`/v1` and hope the client's OpenAI-compatible mode covers what they need.
+(2) A separate proxy process translating Ollama to OpenAI. (3) Translate
+inside the controller, reusing the existing gateway.
+
+**Trade-offs.** (1) fails for clients that only speak Ollama or want
+Ollama-specific fields (`options`, `raw`, NDJSON streaming). (2) adds a
+process, a port and a second copy of auth/routing to keep in sync. (3) adds
+one file's worth of translation but changes nothing about routing, failover,
+affinity, usage or metrics, which the OpenAI path already gets right.
+
+**Decision.** (3). `controller/gateway/ollama.go` adds `GET /api/version`,
+`GET /api/tags`, `POST /api/show`, `GET /api/ps`, `POST /api/chat`,
+`POST /api/generate` and 501 stubs for `/api/pull`, `/api/push`,
+`/api/create`, `/api/delete`, `/api/copy`, `/api/embed`, `/api/embeddings`
+(Ollama-shaped `{"error":"..."}"`; `pull`'s message points at `pbctl models
+add`). `/api/chat` and `/api/generate` build an internal `*http.Request` for
+`/v1/chat/completions` (or `/v1/completions` when `generate`'s `raw` is
+true) and call the gateway's own `handleProxy` directly, so target
+resolution (`auto`/`pool/`/`node/`), authentication, failover, affinity,
+usage accounting and metrics are exactly the OpenAI path's, not a second
+implementation. A `http.ResponseWriter` adapter
+(`ollamaStreamAdapter`) sits in front of `handleProxy`: for a streaming
+request it parses the upstream SSE line by line and writes+flushes one
+Ollama NDJSON line per delta as it arrives, then a final `{"done":true,...}`
+line with `total_duration`/`prompt_eval_count`/`eval_count`/`eval_duration`
+computed from the same `usage`/`timings` the OpenAI path already parses; for
+a non-streaming request a small buffering writer captures the OpenAI JSON
+response once and translates it in one step. Either way, an error the
+gateway would have sent as an OpenAI error envelope is re-shown in Ollama's
+flat `{"error":"..."}` shape. `options.num_ctx` is accepted and ignored:
+context size is a controller placement decision (ADR-011), not a per-request
+one. `GET /api/tags`/`POST /api/show`/`GET /api/ps` read the same served-model
+state as `GET /v1/models` (including the `auto`/`pool/`/`node/` virtual
+models, ADR-014) through a new optional `Gateway.SetModelInfo` hook the
+controller fills from the catalog, so size/digest/family/parameter
+size/quantization are real when known and clearly-fake placeholders
+(`"unknown"`, an all-zero digest) otherwise. These routes are served on the
+main listener and, with the new `-ollama-listen` flag (default empty), on a
+second address too, so a client hard-coded to Ollama's default port needs no
+reconfiguration.
+
+**Alternatives, access control.** (1) Leave it as is: open by default,
+`-api-keys-file` plus `auth=keys` to close it, as today. (2) Require
+`-api-keys-file` unconditionally. (3) A new `-gateway-access` flag with a
+`local` default: peers in a trusted CIDR list need no key, everyone else
+does.
+
+**Trade-offs.** (1) is a footgun the moment the controller is reachable from
+more than one machine (compose's published port, a shared dev box). (2)
+breaks every existing single-user/localhost setup and demands key management
+for a threat model (other processes on the same machine) that does not
+apply there. (3) keeps localhost frictionless, the compose/Docker case safe
+by trusting only the container bridge (an integrator concern, documented
+rather than guessed at here), and gives multi-machine deployments a real
+gate, at the cost of one more flag and a CIDR list to get right.
+
+**Decision.** (3). `-gateway-access local|keys|open` (default `local`) and
+`-trusted-cidrs` (default `127.0.0.0/8,::1/128`) are new controller flags.
+`gateway.AccessControl` wraps `StaticKeys` as the gateway's `Authenticator`:
+a request carrying a valid key is always attributed to its owner, in every
+mode; otherwise `keys` rejects it (401), `open` serves it as `anonymous`
+(today's behaviour, logged as a startup warning), and `local` serves it as
+principal `"local"` when the peer is in `-trusted-cidrs`, else 403
+`{"error":{"message":"PhoneBorg accepts requests from other machines only
+with an API key (see -gateway-access)","type":"access_denied",
+"code":"remote_requires_api_key"}}` (Ollama routes: the same message under
+a flat `{"error":"..."}"`). The peer address is `r.RemoteAddr` unless it is
+itself listed in the new `-trusted-proxies` (default empty), in which case
+the first `X-Forwarded-For` address is used instead — so a stray or spoofed
+header cannot claim trust unless the direct connection already comes from a
+configured reverse proxy. The existing runtime switch (`PUT /admin/gateway
+{"auth_mode":"keys"}`, `pbctl gateway set auth=keys`, ADR-008) still works
+and takes precedence over `-gateway-access`: once `StaticKeys.Enforce()` has
+been called, by any path, every mode behaves like `keys`, so the two
+controls cannot disagree. `GET /admin/gateway` and `pbctl gateway` gain an
+additive `access` field showing the effective mode. Access control wraps
+only the gateway's `Authenticator`, so it applies to exactly
+`/v1/chat/completions`, `/v1/completions`, `/v1/models` and `/api/*` — never
+the node protocol, `/metrics`, `/healthz`, `/ui/` or `/admin/`, which keep
+their existing trust models (ADR-002, ADR-008, ADR-013) untouched. Denials
+are counted in the existing `phoneborg_gateway_rejected_total
+{reason="remote_requires_api_key"}`.
+
+**Docker note.** A container sees connections from the compose bridge
+network's gateway address, not `127.0.0.1`, so `-trusted-cidrs` needs that
+bridge subnet (or the compose file must publish the controller's port on
+`127.0.0.1` only and rely on the host's own loopback trust) — see
+[OPERATIONS.md](OPERATIONS.md#access-control) for the concrete setting; the
+compose file itself is for the integrator to update.
+
+**Trade-offs.** `local` mode is still only IP-based trust, not
+authentication of the machine itself: anything that can spoof or share a
+trusted address (a compromised host on the same LAN segment placed in
+`-trusted-cidrs` by mistake) is trusted too. That is the same trust model
+`adb reverse`/`adb forward` already give the node protocol (ADR-002,
+ADR-003); this ADR does not change it, only extends a version of it,
+opt-out-able via `-gateway-access open`, to the inference endpoints.
+`ollamaStreamAdapter` buffers only the current SSE line (not the whole
+response) for translation, so memory use for a streaming reply stays
+proportional to one line, not the full generation — the same property the
+existing OpenAI path already has via `forward`'s chunked copy.
+
+**Not solved.** Ollama's request-side `tool_calls` on history messages (a
+past assistant turn) are forwarded unchanged rather than reshaped between
+Ollama's and OpenAI's slightly different shapes, since messages are passed
+through verbatim; only the top-level `tools` definitions (already
+OpenAI-shaped in Ollama) and the response's `tool_calls` are actively
+mapped. `format` as a JSON Schema object (not the literal string `"json"`)
+is not translated. `-trusted-proxies` trusts every request from a listed
+peer equally; there is no per-header allowlist or chained-proxy parsing
+beyond the first `X-Forwarded-For` address.

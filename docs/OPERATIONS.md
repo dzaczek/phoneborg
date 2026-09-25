@@ -12,11 +12,13 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Endpoints](#endpoints)
 - [Starting the controller](#starting-the-controller)
 - [Sending requests](#sending-requests)
+- [Ollama-compatible API](#ollama-compatible-api)
 - [Web panel](#web-panel)
 - [pbctl reference](#pbctl-reference)
 - [Models and placement](#models-and-placement)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
 - [API keys](#api-keys)
+- [Access control](#access-control)
 - [Draining a phone for maintenance](#draining-a-phone-for-maintenance)
 - [Gateway settings](#gateway-settings)
 - [Usage statistics](#usage-statistics)
@@ -30,7 +32,8 @@ The controller listens on `http://127.0.0.1:18080` by default (`-listen`).
 
 | Path | What | Auth |
 |---|---|---|
-| `/v1/chat/completions`, `/v1/completions`, `/v1/models` | OpenAI-compatible gateway | API key when enforced |
+| `/v1/chat/completions`, `/v1/completions`, `/v1/models` | OpenAI-compatible gateway | see [Access control](#access-control) |
+| `/api/*` | [Ollama-compatible API](#ollama-compatible-api) (same routing/auth as `/v1/...`) | see [Access control](#access-control) |
 | `/admin/...` | admin API, used by `pbctl` and the web panel | admin token |
 | `/ui/` | [web panel](#web-panel) (`/` redirects here) | admin token (in the browser) |
 | `/status` | read-only HTML table of nodes | none |
@@ -65,6 +68,10 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-heartbeat-interval` | `5s` | heartbeat interval asked of nodes |
 | `-suspect-after-missed` | `3` | missed heartbeats before `SUSPECT` |
 | `-offline-after-missed` | `6` | missed heartbeats before `OFFLINE` |
+| `-gateway-access` | `local` | who may use `/v1/chat/completions`, `/v1/completions`, `/v1/models` and `/api/*` without an API key: `local`, `keys` or `open`; see [Access control](#access-control) |
+| `-trusted-cidrs` | `127.0.0.0/8,::1/128` | peers served without a key in `local` access mode |
+| `-trusted-proxies` | none | peers whose `X-Forwarded-For` is trusted to name the real client address |
+| `-ollama-listen` | none | optional second listen address serving only the [Ollama-compatible API](#ollama-compatible-api) (e.g. `:11434`); it is always served on `-listen` too |
 | `-debug` | off | log every heartbeat |
 
 The compose stack (`make cluster-up`) runs the controller with
@@ -126,6 +133,54 @@ affinity), so follow-up turns reuse its prompt cache: ~115 s for the first
 turn, ~3 s after, on an emulated phone ([BENCHMARKS.md](BENCHMARKS.md#session-affinity-and-the-prompt-cache)).
 A 0.5B model is too small for reliable tool use; it proves the integration,
 not coding quality.
+
+## Ollama-compatible API
+
+Many local-LLM apps (Open WebUI, Continue, Raycast, ...) speak Ollama's API
+rather than OpenAI's. The controller translates `/api/*` to the same gateway
+as `/v1/...`: routing (`auto`/`pool/<name>`/`node/<alias>`), auth, failover,
+session affinity, usage accounting and metrics all apply exactly as they do
+for OpenAI clients (ADR-017). It is served on the main listener (`:18080` by
+default) and, with `-ollama-listen`, on a second address too, so a client
+hard-coded to Ollama's default port (`11434`) needs no reconfiguration:
+
+```sh
+bin/controller -ollama-listen :11434 ...   # /api/* now also answers on :11434
+```
+
+| Path | Maps to | Notes |
+|---|---|---|
+| `GET /api/version` | — | `{"version":"0.0.0-phoneborg"}` |
+| `GET /api/tags` | `GET /v1/models` | served models plus `auto`, `pool/<name>`, `node/<alias>`; size/digest/family/parameter size/quantization from the catalog when known, placeholders otherwise |
+| `POST /api/show` | — | minimal per-model info (same catalog fields as `/api/tags`) |
+| `GET /api/ps` | — | models currently loaded on ready nodes |
+| `POST /api/chat` | `POST /v1/chat/completions` | `messages`, `tools` and `format:"json"` pass straight through; `options` maps to `temperature`/`top_p`/`top_k`/`max_tokens`/`stop`/`seed` (`num_ctx` is ignored: context size is a placement decision, see [Models and placement](#models-and-placement)) |
+| `POST /api/generate` | `POST /v1/chat/completions` (or `/v1/completions` when `"raw":true`) | `system`+`prompt` become chat messages unless `raw` |
+
+`stream` defaults to `true`, matching Ollama (`/v1/...` defaults to `false`).
+A streaming response is NDJSON, one line per chunk plus a final
+`{"done":true,...}` line with `total_duration`, `prompt_eval_count`,
+`eval_count` and `eval_duration` computed from the same usage/timings the
+OpenAI path already reports.
+
+```sh
+curl http://127.0.0.1:18080/api/chat -d '{
+  "model": "qwen2.5-0.5b-instruct-q4_k_m",
+  "messages": [{"role": "user", "content": "Hello from a phone cluster!"}],
+  "stream": false
+}'
+```
+
+Open WebUI, Continue and other Ollama-client configuration should point at
+`http://127.0.0.1:18080` (or the `-ollama-listen` address) with no path
+suffix, the same way they would point at a local `ollama serve`.
+
+**Not supported:** `POST /api/pull`, `/api/push`, `/api/create`, `/api/delete`,
+`/api/copy`, `/api/embed` and `/api/embeddings` answer `501` with a plain
+`{"error":"..."}` body; `/api/pull`'s message points at `pbctl models add
+<source>` instead (see [Models and placement](#models-and-placement)).
+`format` as a JSON Schema object (rather than the literal string `"json"`)
+and `images` (vision input) are not translated.
 
 ## Web panel
 
@@ -528,6 +583,53 @@ pbctl keys revoke alice          # immediate
 - Creating keys does not close an open gateway. Enforce with
   `pbctl gateway set auth=keys` once every client sends one. Switching back
   to open needs a restart without `-api-keys-file` (ADR-008).
+
+## Access control
+
+`-gateway-access` controls who may use the inference and listing endpoints
+(`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/api/*`) without
+an API key. It never affects the node protocol (`/v1/register`,
+`/v1/benchmark`, `/v1/heartbeat`, `/v1/model-files`, `/v1/nodes`),
+`/metrics`, `/healthz`, `/ui/` or `/admin/`, which keep their own trust
+models (see [ARCHITECTURE.md](ARCHITECTURE.md#security-model)) (ADR-017).
+
+| Mode | Behaviour |
+|---|---|
+| `local` (default) | peers in `-trusted-cidrs` are served without a key, as principal `local`; everyone else must send a valid key or gets `403 remote_requires_api_key` |
+| `keys` | every request needs a valid key (same as running `pbctl gateway set auth=keys`) |
+| `open` | anyone is served, unauthenticated (today's pre-ADR-017 behaviour); the controller logs a warning at startup |
+
+```sh
+bin/controller -gateway-access local -trusted-cidrs 127.0.0.0/8,::1/128,10.0.0.0/8 ...
+```
+
+A valid API key always identifies its owner, in every mode. The runtime
+switch `pbctl gateway set auth=keys` (`PUT /admin/gateway
+{"auth_mode":"keys"}`) still works and wins over `-gateway-access`: once
+keys are enforced, `local` and `open` both behave like `keys` until a
+restart. `GET /admin/gateway` and `pbctl gateway` show the effective mode as
+`access`.
+
+By default `X-Forwarded-For` is never trusted (a client could otherwise
+claim any address). Set `-trusted-proxies` to the CIDR of a reverse proxy
+you run in front of the controller; the first address in `X-Forwarded-For`
+is then used instead of the direct peer, but only for connections that
+themselves come from a listed proxy.
+
+**Docker note.** A containerized controller sees connections from the
+compose bridge network's gateway address, not `127.0.0.1`. Either add that
+bridge subnet to `-trusted-cidrs` (`docker network inspect` shows it, e.g.
+`172.18.0.0/16`), or publish the controller's port on `127.0.0.1` only
+(`ports: ["127.0.0.1:18080:18080"]`) so only the host's own loopback reaches
+it. The compose file in `deploy/` is the integrator's to update; this is the
+setting to apply there.
+
+Denials are counted in
+`phoneborg_gateway_rejected_total{reason="remote_requires_api_key"}`.
+Existing clients that already send an API key (e.g. `pbctl`'s admin calls,
+or opencode/OpenAI clients configured with `PHONEBORG_API_KEY`) are
+unaffected by the default `local` mode; only unauthenticated remote traffic
+newly needs one.
 
 ## Draining a phone for maintenance
 
