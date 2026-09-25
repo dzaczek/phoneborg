@@ -34,7 +34,7 @@ func main() {
 	backendHost := flag.String("backend-host", "127.0.0.1", "host where nodes' advertised ports (adb forwards) are reachable")
 	keysFile := flag.String("api-keys-file", "", "API keys file (\"<name> sha256:<hex>\" or legacy \"<name> <key>\" lines), reloaded on SIGHUP; empty = no auth (dev only)")
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token; empty = admin API disabled")
-	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json); empty = keep it in memory only")
+	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json, external.json); empty = keep it in memory only")
 	modelsDir := flag.String("models-dir", "", "directory for model files served to nodes; default <state-dir>/models, or a temporary directory without -state-dir")
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
 	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
@@ -97,6 +97,14 @@ func main() {
 		}
 	}
 
+	var external controller.ExternalOptions
+	if *stateDir != "" {
+		external.File = filepath.Join(*stateDir, "external.json") // external engine nodes with their API keys (ADR-016)
+		if external.State, err = controller.LoadExternal(external.File); err != nil {
+			fatal("loading external nodes", "err", err)
+		}
+	}
+
 	reg := controller.NewRegistry(time.Duration(*suspect)**hb, time.Duration(*offline)**hb, log)
 	srv := controller.NewServer(reg, *hb, controller.GatewayOptions{
 		Keys:          keys,
@@ -105,6 +113,7 @@ func main() {
 		ThermalLimitC: *thermalLimit,
 		Models:        modelOpts,
 		Routing:       routing,
+		External:      external,
 		Config:        gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
 	}, admin, log)
 
@@ -140,6 +149,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go srv.RunExternals(ctx)
 	hs := &http.Server{Addr: *addr, Handler: srv.Handler()}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()

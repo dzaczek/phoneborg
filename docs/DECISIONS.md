@@ -23,6 +23,7 @@ text.
 | [013](#adr-013-web-management-panel) | Web management panel | accepted | Static embedded panel that is just another admin API client. |
 | [014](#adr-014-virtual-models-and-pools-for-agent-workloads) | Virtual models and pools | accepted | `auto`, `pool/<name>`, `node/<alias>`; `spread` routing for small agents. |
 | [015](#adr-015-performance-tiers-from-measured-bandwidth) | Performance tiers from measured bandwidth | accepted, with update | Effective bandwidth per node, tiers `t1`..`t4`, predicted tok/s gate placement. |
+| [016](#adr-016-external-engine-nodes) | External engine nodes | accepted | Operator-added OpenAI-compatible servers (`ext:<name>`) routed like phones, polled via `/v1/models`, never planned. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -921,3 +922,96 @@ The Mi 8 generation bandwidths quoted under "Measured fact" (6.9 and
 they are 7.3 and 7.6 GB/s (`controller/models/perf_test.go` checks 7.59).
 The tier (`t2`) and the conclusions are unchanged. See
 [BENCHMARKS.md](BENCHMARKS.md#effective-bandwidth-and-performance-tiers).
+
+## ADR-016: External engine nodes
+
+**Problem.** Phones run small models. A developer who also has a Mac with
+LM Studio, oMLX or Ollama, or a PC with llama-server, wants one endpoint for
+both: for example an opencode primary agent on a 14B model on the Mac and
+its tool-less subagents on phone pools. Today only phones running the node
+agent can be nodes, so such a client needs two providers, and the Mac's
+model gets none of the gateway's keys, usage accounting, failover or
+metrics.
+
+**Alternatives.**
+1. Run the node agent on the desktop, so it registers and heartbeats like a
+   phone.
+2. A second provider in the client, pointing straight at the desktop server.
+3. Operator-registered external nodes: the controller polls an
+   OpenAI-compatible server and the gateway routes to it like a phone.
+
+**Trade-offs.** (1) needs an agent build per desktop OS, would own the
+desktop's inference server (which the user already runs and tunes in LM
+Studio or Ollama) and pretends the desktop is a placement target. (2) needs
+no code but splits the cluster: two keys, no shared usage, no failover
+between desktop and phones, and the desktop cannot be a pool member. (3)
+uses only the OpenAI API every such server already serves: `GET
+/v1/models` for health and inventory, `/v1/chat/completions` and
+`/v1/completions` for traffic. Its cost is a second kind of node the
+controller does not manage: no heartbeat data (RAM, temperature), no class,
+no placement.
+
+**Decision.** (3).
+
+- **Registration.** `PUT /admin/external/<name>` with `url`, optional
+  write-only `api_key`, model allowlist, `max_concurrency` (default 1),
+  `ctx_size` and a `speed_tps` hint; `GET` lists, `DELETE` removes. Names
+  follow the alias rules (ADR-014) and share the alias namespace: a name
+  cannot be a phone's alias or id, and a phone alias cannot be an external
+  name. Configs, API keys and self-test results persist to
+  `<state-dir>/external.json` (atomic, mode 0600). The key is never
+  returned (`has_api_key` instead) and never logged. Drain flags stay in
+  memory, like phones'.
+- **Health.** Every 10 s, `GET {url}/v1/models` with the key as bearer and
+  a 5 s timeout. A success makes the node `ACTIVE` with the listed model ids
+  that pass the allowlist, in allowlist order; three consecutive failures
+  make it `OFFLINE` and keep `last_error`. A new node starts `OFFLINE` until
+  its first successful check, which the admin API runs synchronously so the
+  response shows the real state. Transitions are logged and counted in
+  `phoneborg_external_state_transitions_total{from,to}`;
+  `phoneborg_external_up{node_id}` is the current state. A separate counter
+  keeps `phoneborg_node_state_transitions_total` about phone lifecycles.
+- **Identity.** Node id `ext:<name>`, alias `<name>`. Everything keyed by
+  node id in the gateway (in-flight counts, cooldown, reaping, affinity
+  pins, usage, per-node metrics) works unchanged.
+- **Backends.** One `Backend` per (external node, model), so plain model
+  ids route to it. Backends carry `External`, `APIKey` and
+  `MaxConcurrency`. On forwarding, the gateway rewrites the body's `model`
+  to the real id (a phone's llama-server ignores it, a multi-model server
+  does not) and sets `Authorization: Bearer <api_key>` if a key is set. The
+  gateway never copies client headers upstream, so a client's PhoneBorg key
+  cannot leak. `node/<name>` goes to the first model (allowlist order, else
+  server order): a node target names a machine, not a model.
+- **Concurrency.** A node whose in-flight count (the gateway's existing
+  counter, shared across its models) has reached `max_concurrency` is not a
+  candidate. If no candidate is left, the request gets 503 `busy` rather
+  than waiting: queueing would need a scheduler the gateway does not have.
+  Desktop servers usually serialise requests anyway; 1 is the safe default.
+- **Speed.** A self-test per model, on registration (first check) and when
+  the model list gains a model without a measurement, and on demand
+  (`POST /admin/external/<name>/selftest`): a fixed prompt with
+  `max_tokens: 32`. llama.cpp `timings` are used when present; otherwise
+  completion tokens over wall-clock time, which includes prompt processing
+  and so underestimates. The result is `Backend.Speed` in tok/s, the same
+  unit as phones' self-tests (ADR-010); `speed_tps` overrides it. A test
+  that failed is not retried automatically.
+- **Pools.** Members list one entry per external model. Node filters match
+  `<name>` or `ext:<name>`; class filters never match (no RAM class); a
+  pool's model filter now also applies per backend (`Target.Models`), since
+  an external node serves several models.
+- **Not managed.** The planner, `/admin/placement`, `/admin/nodes` and the
+  device class counts see only phones. `/v1/models` lists external models
+  (kind `model`) and `node/<name>` (kind `node`, `"external": true`).
+  `/admin/stats` counts ACTIVE external nodes separately and includes their
+  models.
+
+**Not solved.** No queueing at the concurrency limit. `min_gen_tps` is
+checked per (node, model) entry, but a pool target filters by a node set and
+a model set: an external node's model that fails `min_gen_tps` is still
+used through the pool if another eligible member serves the same model id.
+No thermal data. The
+wall-clock self-test includes prompt time and model loading (LM Studio JIT
+loading can make the first test very slow). A server that lists models it
+cannot load (LM Studio lists every downloaded model) routes requests to
+them; use the allowlist. TLS verification uses the system roots; there is
+no option for self-signed certificates.

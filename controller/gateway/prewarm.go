@@ -84,6 +84,7 @@ func (g *Gateway) prewarmNode(ctx context.Context, b Backend, req map[string]any
 		return err
 	}
 	up.Header.Set("Content-Type", "application/json")
+	setUpstreamAuth(up, b)
 	resp, err := g.client.Do(up)
 	if err != nil {
 		return err

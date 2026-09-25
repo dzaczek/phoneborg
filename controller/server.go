@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -54,7 +55,8 @@ type Server struct {
 
 	catalog *models.Catalog
 	place   *placement
-	perf    *nodePerf // measured memory bandwidth per node (ADR-015)
+	perf    *nodePerf  // measured memory bandwidth per node (ADR-015)
+	ext     *externals // external engine nodes (ADR-016)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -67,8 +69,9 @@ type GatewayOptions struct {
 	// ThermalLimitC marks a node hot when its last heartbeat temperature is
 	// at or above this; 0 disables thermal-aware routing (ADR-010).
 	ThermalLimitC float64
-	Models        ModelOptions   // ADR-011
-	Routing       RoutingOptions // node aliases and pools, ADR-014
+	Models        ModelOptions    // ADR-011
+	Routing       RoutingOptions  // node aliases and pools, ADR-014
+	External      ExternalOptions // external engine nodes, ADR-016
 	gateway.Config
 }
 
@@ -91,6 +94,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		place: &placement{planner: gwOpts.Models.Planner, path: gwOpts.Models.PlacementFile,
 			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
 		perf:           newNodePerf(),
+		ext:            newExternals(gwOpts.External, log),
 		keys:           gwOpts.Keys,
 		usage:          gwOpts.Usage,
 		least:          &gateway.LeastInflight{},
@@ -128,12 +132,12 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	reg.onTransition = func(_ string, from, to proto.NodeState) {
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
-	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin,
+	s.promReg.MustRegister(s.registrations, s.heartbeats, s.benchmarks, s.transitions, s.mAdmin, s.ext.transitions, &externalCollector{e: s.ext},
 		&nodeCollector{reg: reg, thermalLimitC: s.ThermalLimitC}, &modelCollector{s: s}, &poolCollector{s: s}, collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	s.affinity = gateway.NewAffinity(s.promReg)
 	s.gw = gateway.New(gwOpts.Keys, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()
-		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC())
+		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), s.ext.backends()...)
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
 	s.catalog.SetOnChange(s.Replan)
@@ -164,7 +168,10 @@ func (s *Server) SetThermalLimitC(c float64) { s.thermalLimitC.Store(math.Float6
 //
 // thermalLimitC marks a node Hot when its last heartbeat temperature is at or
 // above it; 0 disables thermal marking.
-func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, thermalLimitC float64) []gateway.Backend {
+//
+// external are the external engine nodes' backends (ADR-016), appended as
+// they are; their Speed (self-test or operator tok/s) counts as measured.
+func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, thermalLimitC float64, external ...gateway.Backend) []gateway.Backend {
 	var out []gateway.Backend
 	var measured []bool
 	anyMeasured := false
@@ -197,6 +204,11 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, t
 		out = append(out, b)
 		measured = append(measured, gotMeasured)
 	}
+	for _, b := range external {
+		out = append(out, b)
+		measured = append(measured, b.Speed > 0)
+		anyMeasured = anyMeasured || b.Speed > 0
+	}
 	if anyMeasured {
 		for i := range out {
 			if !measured[i] {
@@ -212,6 +224,9 @@ func Backends(nodes []proto.Node, drained map[string]bool, defaultHost string, t
 func switching(rt *proto.RuntimeStatus) bool {
 	return rt.State == "downloading" || rt.State == "loading"
 }
+
+// RunExternals polls the external engine nodes (ADR-016) until ctx ends.
+func (s *Server) RunExternals(ctx context.Context) { s.ext.run(ctx) }
 
 // ReapGateway cancels requests stuck on nodes that left the ready set.
 func (s *Server) ReapGateway() { s.gw.Reap() }

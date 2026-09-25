@@ -11,6 +11,7 @@ into [DECISIONS.md](DECISIONS.md). For measurements, see
 - [Provisioning over adb](#provisioning-over-adb)
 - [Node lifecycle](#node-lifecycle)
 - [Request routing](#request-routing)
+- [External engine nodes](#external-engine-nodes)
 - [Model placement and switching](#model-placement-and-switching)
 - [Performance tiers and resident bytes](#performance-tiers-and-resident-bytes)
 - [Persistence](#persistence)
@@ -57,7 +58,8 @@ on the host (ADR-003, ADR-006).
 |---|---|---|
 | Registry | `controller/registry.go` | Nodes by id, inventory, last heartbeat, lifecycle state, drain flags and aliases (kept by node id, so they survive re-registration). |
 | Gateway | `controller/gateway` | OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/models`. Authenticator, target resolution, `Picker`s (`Affinity`, `LeastInflight`, `Spread`), failover, reaping, token and usage accounting, prewarm. |
-| Admin API | `controller/admin.go`, `models_admin.go`, `pools.go` | `/admin/...` JSON API behind a bearer token: nodes, drain, keys, stats, gateway settings, models, placement, pools, aliases, prewarm (ADR-008). |
+| Admin API | `controller/admin.go`, `models_admin.go`, `pools.go`, `external.go` | `/admin/...` JSON API behind a bearer token: nodes, drain, keys, stats, gateway settings, models, placement, pools, aliases, prewarm, external nodes (ADR-008). |
+| External nodes | `controller/external.go` | Operator-added OpenAI-compatible servers (LM Studio, oMLX, Ollama, llama-server on a Mac or PC): health and model polling, self-tests, backends for the gateway (ADR-016). |
 | Catalog | `controller/models` | Downloads GGUF files (`hf://`, `https://`, `file://`), resumes, hashes, reads GGUF metadata, computes RAM estimate and `resident_bytes` (ADR-011, ADR-012 update). |
 | Planner | `controller/models/planner.go` | Pure function from policies, default model, nodes and ready models to one model per node (ADR-011, ADR-015). |
 | Performance | `controller/perf.go`, `controller/models/perf.go` | Per-node effective bandwidth, performance tier, predicted tok/s (ADR-015). |
@@ -162,8 +164,11 @@ once.
              auto              any ready node
              pool/<name>       eligible pool members  (pool picker: spread │ affinity)
              node/<alias|id>   exactly that node      (no picker, no failover; 503 node_unavailable)
+                               (an external node's name, or ext:<name>, too)
              unknown pool/node 404 model_not_found
         ─► routable = ACTIVE + runtime ready + not drained + not switching
+                      (+ ACTIVE external nodes, one backend per model)
+        ─► skip nodes at their max_concurrency (external nodes); none left ─► 503 busy
         ─► context filter: estimated tokens (body bytes / 4) > every node's context
                             ─► 400 context_length_exceeded; smaller nodes are skipped
         ─► picker chooses a node
@@ -190,6 +195,33 @@ once.
 - `X-PhoneBorg-Node` on the response names the node that answered.
 - Rationale: ADR-006 (gateway, affinity, failover), ADR-010 (measured speed,
   thermal), ADR-014 (targets, pools, spread).
+
+## External engine nodes
+
+An operator can add any OpenAI-compatible server as a node with
+`PUT /admin/external/<name>` (`pbctl external add`). The gateway sees it as
+node id `ext:<name>` with alias `<name>`; it has no agent, heartbeats,
+inventory or RAM class, and the planner never assigns it a model (ADR-016).
+
+```text
+ controller ── every 10 s: GET {url}/v1/models (bearer api_key, 5 s timeout)
+      │          ok ─► ACTIVE, models = listed ids ∩ allowlist
+      │          3 failures in a row ─► OFFLINE (last_error kept)
+      │        on registration / model-list change: self-test each new model
+      │          (fixed prompt, max_tokens 32) ─► gen tok/s = routing Speed
+      ▼
+ gateway ── one Backend per (external node, model), URL = {url}
+            body "model" rewritten to the real model id
+            Authorization: Bearer <api_key> (client headers are never forwarded)
+            at most max_concurrency requests in flight (default 1)
+```
+
+External nodes take part in `auto`, pools (node filters match `<name>` or
+`ext:<name>`; class filters never match them), `node/<name>`, plain model
+ids, affinity, failover, reaping when they turn `OFFLINE`, drain, usage and
+every per-node gateway metric. `node/<name>` goes to the node's first model
+(allowlist order, else the order the server lists). They are not in
+`/admin/nodes`, `/admin/placement` or the device class counts.
 
 ## Model placement and switching
 
@@ -255,6 +287,7 @@ With `-state-dir DIR` the controller keeps:
 | `DIR/models.json` | model catalog | on change |
 | `DIR/placement.json` | placement policies and the default model | on change |
 | `DIR/routing.json` | node aliases, pools, per-node measured bandwidth | on change (atomic, mode 0600) |
+| `DIR/external.json` | external nodes with their API keys and self-test results | on change (atomic, mode 0600) |
 | `DIR/models/` | downloaded GGUF files (`-models-dir` overrides) | by the catalog |
 
 Elsewhere:
@@ -263,7 +296,7 @@ Elsewhere:
 |---|---|
 | API keys (hashed) | the `-api-keys-file` file, if given; otherwise memory only |
 | Admin token | the `-admin-token-file` file (only its SHA-256 is kept in memory) |
-| Not persisted | drain flags, runtime gateway settings (policy, spill, timeout, thermal limit, auth mode) |
+| Not persisted | drain flags (phones and external nodes), runtime gateway settings (policy, spill, timeout, thermal limit, auth mode) |
 | On each phone | `/data/local/tmp/phoneborg`: `node-agent`, `bin/llama-server`, `models/*.gguf`, `agent.log`/`agent.pid`, `runtime.log`/`runtime.pid`, `slim.state` |
 
 Without `-state-dir` everything lives in memory and model files go to a
@@ -297,6 +330,7 @@ no TLS anywhere yet.
 | `/v1/nodes`, `/status`, `/metrics`, `/healthz` | **unauthenticated**, read-only |
 | `/v1/model-files/<id>` | **unauthenticated**, same trust as the heartbeat: anything that reaches the port can download catalog models, including `file://` sources (ADR-011). |
 | llama-server on the phone | bound to the phone's 127.0.0.1, reachable only through `adb forward` |
+| External nodes (ADR-016) | the controller sends each its own API key, if set; the key is stored in `external.json` (mode 0600), never returned by the admin API and never logged. A client's PhoneBorg key is never forwarded. The external server's own exposure is the operator's responsibility. |
 
 Why unauthenticated in v0: the node protocol is meant to move to gRPC + mTLS
 before any non-localhost deployment (ADR-002). Until then, keep port 18080 on
@@ -318,3 +352,6 @@ localhost or a trusted network and do not expose it to untrusted networks.
 - Thermal routing looks at the last heartbeat only (a soft limit, ADR-010).
 - Performance prediction is a single bandwidth number per node; it ignores
   attention variants and MoE (ADR-015).
+- External nodes are not managed: no placement, no downloads, no thermal
+  data. Requests beyond an external node's `max_concurrency` are not queued;
+  they go elsewhere or get 503 `busy` (ADR-016).
