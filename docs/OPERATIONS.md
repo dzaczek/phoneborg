@@ -16,6 +16,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [pbctl reference](#pbctl-reference)
 - [Models and placement](#models-and-placement)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
+- [External nodes (Mac / PC)](#external-nodes-mac--pc)
 - [API keys](#api-keys)
 - [Draining a phone for maintenance](#draining-a-phone-for-maintenance)
 - [Gateway settings](#gateway-settings)
@@ -56,7 +57,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-listen` | `:18080` | HTTP listen address |
 | `-admin-token-file` | none | admin token file (≥ 16 characters, `#` comments allowed); none = admin API disabled |
 | `-api-keys-file` | none | API keys file; none = open gateway (dev only). Reloaded on SIGHUP. |
-| `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `models/` |
+| `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `models/` |
 | `-models-dir` | `<state-dir>/models` | where catalog model files are stored |
 | `-backend-host` | `127.0.0.1` | host where the phones' adb forwards are reachable |
 | `-upstream-timeout` | `120s` | max duration of one proxied request |
@@ -219,9 +220,9 @@ bin/pbctl nodes
 
 | Command | What |
 |---|---|
-| `pbctl nodes` | nodes: state (with `DRAINED`/`HOT`), class/tier (e.g. `m/t2`), runtime, `TOK/S` (self-test), in-flight |
+| `pbctl nodes` | nodes: `KIND` (`phone` or `external`), state (with `DRAINED`/`HOT`), class/tier (e.g. `m/t2`), runtime, `TOK/S` (self-test), in-flight. `-json` prints `/admin/nodes` (phones only) |
 | `pbctl nodes alias <id> <alias>` | set an alias, addressed as `node/<alias>`; `-` clears |
-| `pbctl drain <id>` | no new requests; running ones finish |
+| `pbctl drain <id>` | no new requests; running ones finish (`ext:<name>` for an external node) |
 | `pbctl undrain <id>` | back into rotation |
 | `pbctl forget <id>` | remove a node (it re-registers if still running) |
 
@@ -260,6 +261,15 @@ bin/pbctl nodes
 | `pbctl pools` | pools and every node's eligibility per pool |
 | `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity] [desc="..."]` | create a pool or change only the given fields; `-` clears a list |
 | `pbctl pools rm <name>` | remove a pool |
+
+**External nodes** (see [External nodes (Mac / PC)](#external-nodes-mac--pc))
+
+| Command | What |
+|---|---|
+| `pbctl external` | external nodes: URL, state, allowlist, models, in-flight/limit, context, tok/s, key set, last check and error |
+| `pbctl external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N]` | add or replace an external node, addressed as `node/<name>`; without `key-file` the current key is kept, `key-file=-` removes it |
+| `pbctl external rm <name>` | remove an external node |
+| `pbctl external selftest <name>` | measure each of its models' generation tok/s |
 
 **OpenCode** (see [OpenCode agent bridge](#opencode-agent-bridge))
 
@@ -498,6 +508,96 @@ curl -X POST http://127.0.0.1:18080/admin/prewarm \
   -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" \
   -d '{"target":"pool/fast","messages":[{"role":"system","content":"You are a terse reviewer."}]}'
 # {"results":[{"node_id":"mi8-6f3a","alias":"phone-01","ok":true,"ms":4210,"error":""}, ...]}
+```
+
+## External nodes (Mac / PC)
+
+Any OpenAI-compatible server can join the cluster as a node, for example a
+Mac running LM Studio or Ollama, or a PC with llama-server. A strong desktop
+model and the phones then sit behind one gateway: an opencode primary agent
+on `node/mac`, its subagents on phone pools. Design: ADR-016.
+
+```sh
+# LM Studio on the Mac (Developer tab: start the server, port 1234)
+pbctl external add mac http://192.168.1.20:1234 models=qwen2.5-coder-14b-instruct ctx=32768
+# oMLX (port 8000)
+pbctl external add mac-mlx http://192.168.1.20:8000
+# Ollama (port 11434, its OpenAI-compatible API is under /v1)
+pbctl external add ollama http://192.168.1.20:11434 models=qwen2.5-coder:14b concurrency=2
+# llama-server on a PC, started with --api-key
+echo 'sk-...' > pc-key && chmod 600 pc-key
+pbctl external add pc http://192.168.1.30:8080 key-file=pc-key ctx=16384
+pbctl external                      # state, models, in-flight/limit, tok/s
+pbctl nodes                         # phones and external nodes (KIND column)
+```
+
+When the controller runs in Docker (the compose stack) and the server runs
+on the same Mac, use `host.docker.internal`, e.g.
+`http://host.docker.internal:1234`. The server must listen on an address the
+controller reaches: LM Studio's "Serve on local network", Ollama's
+`OLLAMA_HOST=0.0.0.0`, llama-server's `--host 0.0.0.0`. A trailing `/v1` in
+the URL is dropped.
+
+The same through the admin API (`PUT` replaces the whole config; without
+`api_key` the current key is kept, `"api_key": ""` removes it):
+
+```sh
+curl -X PUT http://127.0.0.1:18080/admin/external/mac \
+  -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" \
+  -d '{"url":"http://host.docker.internal:1234","models":["qwen2.5-coder-14b-instruct"],
+       "max_concurrency":1,"ctx_size":32768}'
+curl http://127.0.0.1:18080/admin/external -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN"
+curl -X POST http://127.0.0.1:18080/admin/external/mac/selftest -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN"
+curl -X DELETE http://127.0.0.1:18080/admin/external/mac -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN"
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `url` | required | `http(s)://host:port` of the server |
+| `api_key` | none | sent upstream as `Authorization: Bearer`; write-only (`has_api_key` in responses), stored in `<state-dir>/external.json` (mode 0600), never logged |
+| `models` | all | allowlist of the server's model ids; also their order |
+| `max_concurrency` | 1 | requests in flight at once; a node at its limit gets no more |
+| `ctx_size` | 0 = unknown | context window in tokens, for the gateway's context check |
+| `speed_tps` | none | generation tok/s hint; overrides self-tests for routing |
+
+How they behave:
+
+- **Names** follow the alias rules (`^[a-z0-9][a-z0-9-]{0,31}$`, not
+  `auto`, not starting with `pool`) and must not be a phone's alias or id.
+  The node id is `ext:<name>`.
+- **Health.** The controller asks `GET {url}/v1/models` every 10 s (5 s
+  timeout). A success makes the node `ACTIVE` with the listed models
+  (filtered by the allowlist); three failures in a row make it `OFFLINE`,
+  with `last_error`. Requests in flight on a node that turns `OFFLINE` are
+  cancelled and retried elsewhere. `phoneborg_external_up{node_id}` and
+  `phoneborg_external_state_transitions_total{from,to}` export this.
+- **Routing.** Each model the node lists becomes a routable model id, next
+  to the phones' models, and the node joins `auto`. `node/<name>` (or
+  `node/ext:<name>`) goes to its first model: the first of the allowlist,
+  else the first the server lists, so set `models` when the server has
+  several. The request's `model` is replaced by the real model id upstream.
+  Failover, affinity, drain (`pbctl drain ext:mac`), usage statistics and
+  the per-node gateway metrics work as for phones.
+- **Pools.** `nodes=mac` or `nodes=ext:mac` selects an external node;
+  `models=` restricts which of its models the pool uses. Class filters never
+  match external nodes (they have no RAM class): a pool with `classes=` is
+  phones only. `min_gen_tps` compares the self-test (or `speed_tps`).
+- **Speed.** On registration and when the model list changes, each model
+  without a measurement gets one self-test: a fixed short prompt with
+  `max_tokens: 32`. Generation tok/s comes from llama.cpp `timings` when the
+  server sends them, else from completion tokens over wall-clock time (which
+  includes prompt processing, so it reads low). Re-run with
+  `pbctl external selftest <name>`.
+- **Not managed.** No placement, downloads or model switching: external
+  nodes are not in `/admin/nodes`, `/admin/placement` or the device class
+  counts. Load the model on the server yourself.
+
+```jsonc
+// opencode.json: primary agent on the Mac, subagents on phones
+"agent": {
+  "build":    { "model": "phoneborg/node/mac" },
+  "reviewer": { "model": "phoneborg/pool/fast", "mode": "subagent" }
+}
 ```
 
 ## API keys

@@ -15,7 +15,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | Document | Covers |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | components, provisioning, node lifecycle, request routing, model placement and switching, persistence, ports, security model, limitations |
-| [DECISIONS.md](DECISIONS.md) | ADR-001..015 with an index and dated updates |
+| [DECISIONS.md](DECISIONS.md) | ADR-001..016 with an index and dated updates |
 | [DEV_EMULATION.md](DEV_EMULATION.md) | colima + redroid setup, `make test`, `make e2e`, `make llm-smoke`, load generator |
 
 ## I want to…

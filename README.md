@@ -59,6 +59,9 @@ exports everything to Prometheus and Grafana.
   speed and keeps too-slow placements away.
 - **Management:** `pbctl` CLI and a built-in web panel: drain, aliases,
   pools, API keys (stored hashed), gateway settings, usage per key and node.
+- **External engine nodes:** add a Mac or PC running LM Studio, oMLX,
+  Ollama or llama-server as a node, so a desktop model and the phones sit
+  behind the same gateway.
 - **OpenCode bridge:** `pbctl opencode` generates tool-less subagents that
   run on the cluster.
 - **Observability:** JSON logs, `phoneborg_*` metrics, a Grafana dashboard.
@@ -120,7 +123,7 @@ Setups and all other numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..015) |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..016) |
 
 ## Repository layout
 
