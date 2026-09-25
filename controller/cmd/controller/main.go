@@ -39,6 +39,10 @@ func main() {
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
 	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
 	minPredictedTokS := flag.Float64("min-predicted-tok-s", 3, "minimum predicted generation tok/s (ADR-015) below which the planner will not place a model on a node; a policy's own min_tok_s overrides it; unknown predictions never exclude")
+	gatewayAccess := flag.String("gateway-access", gateway.AccessLocal, "who may use the inference/listing endpoints (/v1/chat/completions, /v1/completions, /v1/models, /api/*) without an API key: \"local\" (trusted peers only), \"keys\" (nobody, same as enforced keys) or \"open\" (anyone, today's behaviour); ADR-017")
+	trustedCIDRs := flag.String("trusted-cidrs", "127.0.0.0/8,::1/128", "comma-separated CIDRs served without an API key in \"local\" access mode")
+	trustedProxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of reverse proxies whose X-Forwarded-For is trusted to name the real client address; empty = never trust it")
+	ollamaListen := flag.String("ollama-listen", "", "optional second HTTP listen address serving only the Ollama-compatible API (e.g. \":11434\"); empty = off (it is also served on -listen)")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -63,6 +67,22 @@ func main() {
 		}
 	} else {
 		log.Warn("API authentication disabled; set -api-keys-file outside development")
+	}
+
+	switch *gatewayAccess {
+	case gateway.AccessLocal, gateway.AccessKeys:
+	case gateway.AccessOpen:
+		log.Warn("-gateway-access=open: the inference and listing endpoints accept anyone who can reach this port, with no API key")
+	default:
+		fatal("invalid -gateway-access", "value", *gatewayAccess, "want", "local, keys or open")
+	}
+	trustedCIDRList, err := gateway.ParseCIDRList(*trustedCIDRs)
+	if err != nil {
+		fatal("invalid -trusted-cidrs", "err", err)
+	}
+	trustedProxyList, err := gateway.ParseCIDRList(*trustedProxies)
+	if err != nil {
+		fatal("invalid -trusted-proxies", "err", err)
 	}
 
 	var admin controller.AdminOptions
@@ -99,13 +119,16 @@ func main() {
 
 	reg := controller.NewRegistry(time.Duration(*suspect)**hb, time.Duration(*offline)**hb, log)
 	srv := controller.NewServer(reg, *hb, controller.GatewayOptions{
-		Keys:          keys,
-		Usage:         usage,
-		BackendHost:   *backendHost,
-		ThermalLimitC: *thermalLimit,
-		Models:        modelOpts,
-		Routing:       routing,
-		Config:        gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
+		Keys:           keys,
+		Usage:          usage,
+		BackendHost:    *backendHost,
+		ThermalLimitC:  *thermalLimit,
+		Models:         modelOpts,
+		Routing:        routing,
+		AccessMode:     *gatewayAccess,
+		TrustedCIDRs:   trustedCIDRList,
+		TrustedProxies: trustedProxyList,
+		Config:         gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
 	}, admin, log)
 
 	go func() {
@@ -144,7 +167,21 @@ func main() {
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
 	log.Info("controller listening", "addr", *addr, "heartbeat_interval", hb.String(),
-		"admin_api", admin.Token != "", "state_dir", *stateDir, "models_dir", modelOpts.Catalog.Dir())
+		"admin_api", admin.Token != "", "state_dir", *stateDir, "models_dir", modelOpts.Catalog.Dir(),
+		"gateway_access", *gatewayAccess)
+
+	// Optional second listener for the Ollama-compatible API only, so Ollama
+	// clients can use their default port (ADR-017).
+	var ollamaHS *http.Server
+	if *ollamaListen != "" {
+		ollamaHS = &http.Server{Addr: *ollamaListen, Handler: srv.OllamaHandler()}
+		go func() {
+			if err := ollamaHS.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+		log.Info("ollama-compatible API also listening", "addr", *ollamaListen)
+	}
 
 	select {
 	case err := <-errc:
@@ -158,6 +195,12 @@ func main() {
 		log.Error("shutdown", "err", err)
 	}
 	_ = hs.Close() // cut requests still running after the grace period
+	if ollamaHS != nil {
+		if err := ollamaHS.Shutdown(sctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			log.Error("ollama listener shutdown", "err", err)
+		}
+		_ = ollamaHS.Close()
+	}
 	if err := usage.Flush(); err != nil {
 		log.Error("saving usage", "err", err)
 	}

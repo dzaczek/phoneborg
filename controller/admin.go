@@ -112,6 +112,10 @@ type GatewaySettings struct {
 	UpstreamTimeout string  `json:"upstream_timeout"`
 	AuthMode        string  `json:"auth_mode"`
 	ThermalLimitC   float64 `json:"thermal_limit_c"`
+	// Access is the effective -gateway-access mode ("local", "keys" or
+	// "open"): "keys" whenever key authentication is enforced, whichever way
+	// it got enforced (ADR-017).
+	Access string `json:"access"`
 }
 
 // GatewayUpdate is the body of PUT /admin/gateway; nil fields are unchanged.
@@ -282,6 +286,16 @@ func (s *Server) authMode() string {
 	return "open"
 }
 
+// accessMode reports the effective -gateway-access mode: "keys" whenever key
+// authentication is enforced (startup flag or the runtime auth=keys switch),
+// else the configured mode (ADR-017).
+func (s *Server) accessMode() string {
+	if s.keys.Enforced() {
+		return gateway.AccessKeys
+	}
+	return s.accessModeCfg
+}
+
 // keyUsage prefers lifetime totals when they are persisted.
 func (s *Server) keyUsage() map[string]UsageCounters {
 	if t, ok := s.usage.Lifetime(); ok {
@@ -393,7 +407,8 @@ func (s *Server) gatewaySettings() GatewaySettings {
 	policy := s.policy
 	s.settingsMu.Unlock()
 	return GatewaySettings{Policy: policy, AffinitySpill: s.affinity.SpillThreshold(),
-		UpstreamTimeout: s.gw.UpstreamTimeout().String(), AuthMode: s.authMode(), ThermalLimitC: s.ThermalLimitC()}
+		UpstreamTimeout: s.gw.UpstreamTimeout().String(), AuthMode: s.authMode(), ThermalLimitC: s.ThermalLimitC(),
+		Access: s.accessMode()}
 }
 
 func (s *Server) adminGateway(w http.ResponseWriter, r *http.Request) {
