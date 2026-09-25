@@ -717,12 +717,14 @@ is then used instead of the direct peer, but only for connections that
 themselves come from a listed proxy.
 
 **Docker note.** A containerized controller sees connections from the
-compose bridge network's gateway address, not `127.0.0.1`. Either add that
-bridge subnet to `-trusted-cidrs` (`docker network inspect` shows it, e.g.
-`172.18.0.0/16`), or publish the controller's port on `127.0.0.1` only
-(`ports: ["127.0.0.1:18080:18080"]`) so only the host's own loopback reaches
-it. The compose file in `deploy/` is the integrator's to update; this is the
-setting to apply there.
+compose bridge network's gateway address, not `127.0.0.1`. The dev stack in
+`deploy/docker-compose.yml` therefore does both: it publishes every port
+(18080, 11434, 9090, 3000 and the emulated phones' adb ports) on the host's
+`127.0.0.1` only, and passes `-trusted-cidrs 127.0.0.0/8,::1/128,172.16.0.0/12`
+so host connections arriving through the Docker bridge count as local. Other
+machines cannot reach the stack at all. To serve other machines, publish the
+controller port on `0.0.0.0`, create API keys (`pbctl keys create`) and give
+each client its key; requests from them without a key get 403.
 
 Denials are counted in
 `phoneborg_gateway_rejected_total{reason="remote_requires_api_key"}`.

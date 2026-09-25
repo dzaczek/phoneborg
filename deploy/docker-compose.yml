@@ -17,13 +17,19 @@ services:
     # Nodes' inference servers are reached through adb forwards on the host
     # running adb (this Mac), see ADR-006.
     # Long timeout: agent clients (e.g. opencode) send 10k+ token prompts.
-    # Admin API (pbctl) and persistent usage statistics, see docs/USAGE.md.
+    # Admin API (pbctl) and persistent usage statistics, see docs/OPERATIONS.md.
     # The model catalog, placement and model files (-models-dir defaults to
     # <state-dir>/models) live in the controller-state volume too (ADR-011).
+    # Access (ADR-017): ports are published on the host's 127.0.0.1 only, and
+    # inside the container host connections come from the Docker bridge, so the
+    # bridge range is trusted like loopback. Requests from other machines need
+    # an API key; to allow them, publish on 0.0.0.0 and create keys (pbctl keys).
     command: ["-backend-host", "host.docker.internal", "-upstream-timeout", "600s",
-              "-admin-token-file", "/run/phoneborg/admin-token", "-state-dir", "/var/lib/phoneborg"]
+              "-admin-token-file", "/run/phoneborg/admin-token", "-state-dir", "/var/lib/phoneborg",
+              "-gateway-access", "local", "-trusted-cidrs", "127.0.0.0/8,::1/128,172.16.0.0/12",
+              "-ollama-listen", ":11434"]
     extra_hosts: ["host.docker.internal:host-gateway"]
-    ports: ["${CONTROLLER_PORT:-18080}:18080"]
+    ports: ["127.0.0.1:${CONTROLLER_PORT:-18080}:18080", "127.0.0.1:${OLLAMA_PORT:-11434}:11434"]
     volumes:
       # DEV ONLY: deploy/dev-admin-token is a public, well-known token. Replace
       # it with your own secret file outside development.
@@ -37,7 +43,7 @@ services:
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus",
               "--storage.tsdb.retention.time=15d", "--storage.tsdb.retention.size=1GB"]
     volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
-    ports: ["9090:9090"]
+    ports: ["127.0.0.1:9090:9090"]
     depends_on: [controller]
 
   grafana:
@@ -50,7 +56,7 @@ services:
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
     depends_on: [prometheus]
 
   # Low-end profile: the weakest phone we expect to use.
@@ -58,7 +64,7 @@ services:
     <<: *phone
     mem_limit: ${PHONE_LOW_MEM:-2g}
     cpus: ${PHONE_LOW_CPUS:-2}
-    ports: ["5555:5555"]
+    ports: ["127.0.0.1:5555:5555"]
 
   # Mid profile. Real target phones (8-12 GB) need a bigger colima VM,
   # e.g. `colima start --memory 16` and PHONE_MID_MEM=8g.
@@ -66,7 +72,7 @@ services:
     <<: *phone
     mem_limit: ${PHONE_MID_MEM:-3g}
     cpus: ${PHONE_MID_CPUS:-4}
-    ports: ["5556:5555"]
+    ports: ["127.0.0.1:5556:5555"]
 
 volumes:
   controller-state:
