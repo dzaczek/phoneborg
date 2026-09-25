@@ -129,7 +129,8 @@ type ClusterSummary struct {
 	ByState       map[proto.NodeState]int `json:"by_state"`
 	Drained       int                     `json:"drained"`
 	ReadyBackends int                     `json:"ready_backends"` // ready, not drained
-	Models        map[string]int          `json:"models"`         // ready, not drained nodes per model
+	Models        map[string]int          `json:"models"`         // ready, not drained nodes per model, external ones included
+	External      int                     `json:"external"`       // ACTIVE external engine nodes (ADR-016), not counted in Nodes
 	Inflight      int                     `json:"inflight"`
 }
 
@@ -170,6 +171,9 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
 	s.registerPoolAdmin(func(pattern, action string, fn http.HandlerFunc) {
+		mux.Handle(pattern, s.adminAuth(action, fn))
+	})
+	s.registerExternalAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
 	// Unknown admin paths also need the token, so they reveal nothing.
@@ -243,12 +247,20 @@ func (s *Server) adminDrain(drain bool) http.HandlerFunc {
 	action := map[bool]string{true: "node_drain", false: "node_undrain"}[drain]
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		err := s.reg.SetDrained(id, drain)
+		var err error
+		name, external := strings.CutPrefix(id, ExternalPrefix)
+		if external { // external engine node (ADR-016)
+			if err = s.ext.setDrained(name, drain); errors.Is(err, ErrExternalUnknown) {
+				err = ErrUnknownNode
+			}
+		} else {
+			err = s.reg.SetDrained(id, drain)
+		}
 		moved := 0
 		if err == nil && drain {
 			moved = s.affinity.Unpin(id) // pinned sessions move on their next request
 		}
-		if err == nil {
+		if err == nil && !external {
 			s.Replan() // drained nodes only follow pins (ADR-011)
 		}
 		s.audit(r, action, err, "node_id", id, "moved_sessions", moved)
@@ -375,6 +387,16 @@ func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
 		if !b.Drained {
 			c.ReadyBackends++
 			c.Models[b.Model]++
+		}
+	}
+	for _, b := range s.ext.backends() {
+		if !b.Drained {
+			c.Models[b.Model]++
+		}
+	}
+	for _, x := range s.ext.list(nil, nil) {
+		if x.State == ExternalActive {
+			c.External++
 		}
 	}
 	for _, n := range s.gw.Inflight() {

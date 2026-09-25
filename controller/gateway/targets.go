@@ -31,6 +31,9 @@ type Target struct {
 	Label string
 	Model string          // served model to match; "" = any
 	Nodes map[string]bool // allowed node ids; nil = any node
+	// Models restricts the served models (pools with external nodes, which
+	// serve several); nil = any.
+	Models map[string]bool
 	// Node is set for node targets: the request goes to this node only,
 	// bypassing the picker, and is never retried on another node.
 	Node string
@@ -45,6 +48,8 @@ func (t Target) allows(b Backend) bool {
 	case t.Node != "":
 		return b.NodeID == t.Node
 	case t.Nodes != nil && !t.Nodes[b.NodeID]:
+		return false
+	case t.Models != nil && !t.Models[b.Model]:
 		return false
 	}
 	return t.Model == "" || b.Model == t.Model
@@ -71,6 +76,7 @@ type ModelEntry struct {
 	Description string `json:"description,omitempty"` // pools
 	Model       string `json:"model,omitempty"`       // nodes: the served model
 	Ready       *bool  `json:"ready,omitempty"`       // nodes
+	External    bool   `json:"external,omitempty"`    // nodes: an external engine (ADR-016)
 }
 
 // Targets resolves pool and node targets. Implementations must be safe for

@@ -136,7 +136,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.prewarmTimeout = PrewarmTimeout
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
-	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large"} {
+	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy"} {
 		g.mRejected.WithLabelValues(reason)
 	}
 	for _, target := range []string{KindAuto, KindModel} {
@@ -387,6 +387,12 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			return // response already started; nothing more we can do
 		}
 	}
+	if len(tried) == 0 { // every candidate is at its concurrency limit (or left meanwhile)
+		g.mRejected.WithLabelValues("busy").Inc()
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusServiceUnavailable)})
+		openAIError(w, http.StatusServiceUnavailable, "server_error", "busy", fmt.Sprintf("every node for %s is at its concurrency limit", meta.Model))
+		return
+	}
 	g.mRejected.WithLabelValues("backends_failed").Inc()
 	g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusBadGateway)})
 	openAIError(w, http.StatusBadGateway, "server_error", "backends_failed", "all attempted nodes failed")
@@ -404,12 +410,21 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	defer g.track(b.NodeID, a, false)
 	ctx, cancel := context.WithTimeout(cctx, g.UpstreamTimeout())
 	defer cancel()
+	if b.External {
+		// External servers host several models and need the real id, not
+		// "auto", "pool/..." or "node/..." (ADR-016).
+		var err error
+		if body, err = withModel(body, b.Model); err != nil {
+			return fmt.Errorf("%w: %v", errRetryable, err)
+		}
+	}
 	up, err := http.NewRequestWithContext(ctx, http.MethodPost, b.URL+r.URL.Path, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("%w: %v", errRetryable, err)
 	}
 	up.Header.Set("Content-Type", "application/json")
 	up.Header.Set("X-Request-Id", reqID)
+	setUpstreamAuth(up, b)
 	resp, err := g.client.Do(up)
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -507,6 +522,28 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	return nil
 }
 
+// withModel returns body with its "model" field set to model.
+func withModel(body []byte, model string) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	id, err := json.Marshal(model)
+	if err != nil {
+		return nil, err
+	}
+	m["model"] = id
+	return json.Marshal(m)
+}
+
+// setUpstreamAuth sends an external node's own API key. Client headers are
+// never copied upstream, so a client's PhoneBorg key cannot leak (ADR-016).
+func setUpstreamAuth(up *http.Request, b Backend) {
+	if b.APIKey != "" {
+		up.Header.Set("Authorization", "Bearer "+b.APIKey)
+	}
+}
+
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	if _, err := g.auth.Authenticate(r); err != nil {
 		openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
@@ -542,7 +579,8 @@ func (g *Gateway) candidates(all []Backend, tried map[string]bool, estTokens int
 	now := g.now()
 	var healthy, cooling []Backend
 	for _, b := range all {
-		if tried[b.NodeID] || (b.CtxSize > 0 && estTokens > b.CtxSize) {
+		if tried[b.NodeID] || (b.CtxSize > 0 && estTokens > b.CtxSize) ||
+			(b.MaxConcurrency > 0 && g.inflight[b.NodeID] >= b.MaxConcurrency) {
 			continue
 		}
 		if now.Before(g.cooldown[b.NodeID]) {

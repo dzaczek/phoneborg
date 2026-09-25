@@ -61,16 +61,13 @@ func listPools(c *client, o *out) error {
 	}
 	var rows, members [][]string
 	for _, p := range ps.Pools {
-		eligible := 0
 		for _, m := range p.Members {
 			node := m.NodeID
 			if m.Alias != "" {
 				node = m.Alias + " (" + m.NodeID + ")"
 			}
 			state := "eligible"
-			if m.Eligible {
-				eligible++
-			} else {
+			if !m.Eligible {
 				state = m.Reason
 			}
 			members = append(members, []string{p.Name, node, dash(m.Model), state})
@@ -79,7 +76,7 @@ func listPools(c *client, o *out) error {
 		if p.MinGenTPS > 0 {
 			minTPS = strconv.FormatFloat(p.MinGenTPS, 'f', -1, 64)
 		}
-		rows = append(rows, []string{"pool/" + p.Name, p.Routing, strconv.Itoa(eligible), orAny(p.Models), orAny(p.Nodes), orAny(p.Classes),
+		rows = append(rows, []string{"pool/" + p.Name, p.Routing, strconv.Itoa(eligibleNodes(p.Members)), orAny(p.Models), orAny(p.Nodes), orAny(p.Classes),
 			minTPS, dash(p.Description)})
 	}
 	o.table("POOL\tROUTING\tELIGIBLE\tMODELS\tNODES\tCLASSES\tMIN TOK/S\tDESCRIPTION", rows)
@@ -112,13 +109,19 @@ func setPool(c *client, o *out, name string, kvs []string) error {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return err
 	}
-	eligible := 0
-	for _, m := range p.Members {
+	return o.done(raw, nil, fmt.Sprintf("pool/%s saved (%s routing, %d eligible node(s))", p.Name, p.Routing, eligibleNodes(p.Members)))
+}
+
+// eligibleNodes counts nodes with an eligible member entry; an external
+// node has one entry per model (ADR-016).
+func eligibleNodes(members []controller.PoolMember) int {
+	ids := map[string]bool{}
+	for _, m := range members {
 		if m.Eligible {
-			eligible++
+			ids[m.NodeID] = true
 		}
 	}
-	return o.done(raw, nil, fmt.Sprintf("pool/%s saved (%s routing, %d eligible node(s))", p.Name, p.Routing, eligible))
+	return len(ids)
 }
 
 // applyPoolSet applies "models=a,b nodes=x,y classes=s,m min_tps=5

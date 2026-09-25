@@ -24,6 +24,14 @@ type Backend struct {
 	// excluded). Prompts estimated to be longer are routed elsewhere.
 	CtxSize int
 	Alias   string // the node's alias, "" = none (ADR-014)
+	// External marks an operator-added OpenAI-compatible server (ADR-016):
+	// the request body's "model" is rewritten to Model, and APIKey, if set,
+	// is sent upstream as the bearer token. Never log APIKey.
+	External bool
+	APIKey   string
+	// MaxConcurrency caps the node's in-flight requests; a node at its limit
+	// is not a candidate. 0 = no limit.
+	MaxConcurrency int
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies

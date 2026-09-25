@@ -1,4 +1,7 @@
 // Nodes: live table with drain / undrain / forget and a details drawer.
+// External engine nodes (ADR-016) are listed after the phones; they can be
+// drained, but have no alias (their name is the alias) and are removed with
+// pbctl external rm.
 import { api, get } from '../api.js';
 import { h, fill, table, badge, bytes, int, tps, ago, classOf } from '../dom.js';
 import { toast, errorToast, confirmDialog, formDialog, field, drawer } from '../ui.js';
@@ -107,6 +110,60 @@ function details(n) {
   ]);
 }
 
+// externalSpeed is the operator's hint, else the fastest self-test.
+function externalSpeed(x) {
+  if (x.speed_tps > 0) return x.speed_tps;
+  return Math.max(0, ...Object.values(x.measured || {}).map((m) => m.gen_tps || 0));
+}
+
+function externalDetails(x) {
+  const kv = (pairs) => h('dl.kv', null, pairs.filter(([, v]) => v !== '' && v != null).map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
+  drawer(`External node ${x.name}`, [
+    kv([
+      ['State', [badge(x.state), x.drained ? badge('DRAINED') : null]],
+      ['Node id', x.node_id],
+      ['URL', x.url],
+      ['API key', x.has_api_key ? 'set (never shown)' : 'none'],
+      ['Allowed models', (x.models || []).length ? x.models.join(', ') : 'any'],
+      ['Models', (x.discovered_models || []).join(', ') || '–'],
+      ['Max concurrency', x.max_concurrency],
+      ['Context', x.ctx_size ? int(x.ctx_size) : 'unknown'],
+      ['Speed hint', x.speed_tps ? `${x.speed_tps} tok/s` : ''],
+      ['Last check', ago(x.last_check)],
+      ['Last error', x.last_error || ''],
+    ]),
+    h('h3', null, 'Self-tests'), h('pre', null, JSON.stringify(x.measured || {}, null, 2)),
+    h('p.muted.small', null, 'Snapshot taken when this panel was opened. Managed with pbctl external.'),
+  ]);
+}
+
+function externalRow(x) {
+  const n = { id: x.node_id, drained: x.drained, inflight: x.inflight };
+  const models = x.discovered_models || [];
+  return h('tr', null,
+    h('td.nowrap', null,
+      h('button.link', { type: 'button', onclick: () => externalDetails(x), title: 'Show details', 'data-focus-key': x.node_id + ':details' }, x.name),
+      ' ', badge('external', 'info'),
+      h('span.cell-sub.mono', null, x.node_id)),
+    h('td', null, h('span.mono', null, x.url)),
+    h('td', null, '–'),
+    h('td', null, [badge(x.state), x.drained ? badge('DRAINED') : null]),
+    h('td', null, models.length ? h('span', null, models[0]) : h('span.muted', null, 'none'),
+      models.length > 1 ? h('span.cell-sub', { title: models.join(', ') }, `+${models.length - 1} more`) : null,
+      x.last_error ? h('span.cell-sub', { title: x.last_error }, x.last_error.length > 60 ? x.last_error.slice(0, 60) + '…' : x.last_error) : null),
+    h('td.num', null, '–'),
+    h('td.num', null, x.ctx_size ? int(x.ctx_size) : '–'),
+    h('td.num', null, tps(externalSpeed(x))),
+    h('td.num', null, '–'),
+    h('td.num', null, '–'),
+    h('td.num', null, '–'),
+    h('td.num', { title: `max ${x.max_concurrency} concurrent` }, `${int(x.inflight)} / ${int(x.pinned_sessions)}`),
+    h('td', null, ago(x.last_check)),
+    h('td.actions', null, x.drained
+      ? h('button.small', { type: 'button', onclick: () => act(n, 'undrain'), 'data-focus-key': x.node_id + ':drain' }, 'Undrain')
+      : h('button.small', { type: 'button', onclick: () => act(n, 'drain'), 'data-focus-key': x.node_id + ':drain' }, 'Drain')));
+}
+
 const COLS = [{ label: 'Node', title: 'Select a node for details' }, 'Device', { label: 'Class', title: 'Device class by total RAM / performance tier by measured generation bandwidth (ADR-015)' }, 'State', { label: 'Model', title: 'Served model, runtime state and llama.cpp build' },
   { label: 'Threads', num: true }, { label: 'Ctx', num: true }, { label: 'Tok/s', num: true, title: 'Measured generation speed (self-test)' },
   { label: 'RAM avail / total', num: true }, { label: 'Temp', num: true }, { label: 'Battery', num: true },
@@ -118,8 +175,10 @@ export default function nodesView() {
   const el = h('section', null, h('div.page-head', null, h('h1', null, 'Nodes'), summary), body);
 
   async function refresh() {
-    const nodes = await get('/admin/nodes');
-    summary.textContent = `${nodes.length} node(s), ${nodes.filter((n) => n.state === 'ACTIVE').length} active`;
+    const [nodes, ext] = await Promise.all([get('/admin/nodes'), get('/admin/external')]);
+    const externals = (ext && ext.external) || [];
+    summary.textContent = `${nodes.length} node(s), ${nodes.filter((n) => n.state === 'ACTIVE').length} active` +
+      (externals.length ? `, ${externals.length} external` : '');
     const rows = nodes.map((n) => {
       const inv = n.inventory || {};
       const hb = n.last_heartbeat || {};
@@ -148,7 +207,7 @@ export default function nodesView() {
         h('td', null, ago(n.last_seen)),
         actions);
     });
-    fill(body, table(COLS, rows, 'No nodes yet. Connect a phone and run pcprov watch.'));
+    fill(body, table(COLS, rows.concat(externals.map(externalRow)), 'No nodes yet. Connect a phone and run pcprov watch.'));
   }
 
   return { title: 'Nodes', el, live: true, refresh };

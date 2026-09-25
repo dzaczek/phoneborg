@@ -1,6 +1,7 @@
 // Command pbctl manages a PhoneBorg cluster through the controller's admin
 // API: nodes, draining, API keys, usage statistics, gateway settings, the
-// model catalog, model placement, node aliases and pools.
+// model catalog, model placement, node aliases, pools and external engine
+// nodes.
 package main
 
 import (
@@ -25,9 +26,9 @@ import (
 const usageText = `usage: pbctl [-json] [-url URL] [-token-file FILE] <command> [args]
 
 commands:
-  nodes                       list nodes (state, drain, runtime, load)
+  nodes                       list nodes, phones and external (state, drain, runtime, load)
   nodes alias <id> <alias>    name a node, addressed as model node/<alias> ("-" clears)
-  drain <id>                  stop sending new requests to a node
+  drain <id>                  stop sending new requests to a node (ext:<name> for external nodes)
   undrain <id>                put a drained node back into rotation
   forget <id>                 remove a node (it re-registers if alive)
   keys                        list API keys with usage
@@ -60,6 +61,12 @@ commands:
             [routing=spread|affinity] [desc="..."]
                               create a pool or change the given fields ("-" clears a list)
   pools rm <name>             remove a pool
+  external                    external engine nodes (LM Studio, oMLX, Ollama, llama-server)
+  external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N]
+                              add or replace an external node, addressed as node/<name>
+                              (without key-file the current key is kept; key-file=- removes it)
+  external rm <name>          remove an external node
+  external selftest <name>    measure each of its models' tok/s
   opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools]
                               generate opencode.json + .opencode/agent subagents for the phone cluster
   opencode sync [-dir D]      regenerate agents/config from the current cluster state (idempotent)
@@ -141,6 +148,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return setAlias(c, o, rest[1], rest[2])
 	case cmd == "pools":
 		return poolsCmd(c, o, rest)
+	case cmd == "external":
+		return externalCmd(c, o, rest)
 	case cmd == "drain" || cmd == "undrain":
 		id, err := one()
 		if err != nil {
@@ -341,7 +350,11 @@ func nodes(c *client, o *out) error {
 	if err := json.Unmarshal(raw, &ns); err != nil {
 		return err
 	}
-	if len(ns) == 0 {
+	_, xs, err := getExternal(c)
+	if err != nil {
+		xs = nil // a controller without external nodes (ADR-016)
+	}
+	if len(ns) == 0 && len(xs) == 0 {
 		fmt.Fprintln(o.w, "no nodes")
 		return nil
 	}
@@ -375,10 +388,11 @@ func nodes(c *client, o *out) error {
 			node = n.Alias + " (" + n.ID + ")"
 		}
 		class := n.Class + "/" + n.PerfTier
-		rows = append(rows, []string{node, class, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
+		rows = append(rows, []string{node, "phone", class, state, drained, strings.TrimSpace(n.Inventory.Manufacturer + " " + n.Inventory.Model),
 			model, runtime, build, toks, strconv.Itoa(n.Inflight), strconv.Itoa(n.PinnedSessions), ago(n.LastSeen)})
 	}
-	o.table("NODE\tCLASS\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tTOK/S\tINFLIGHT\tPINNED\tLAST SEEN", rows)
+	rows = append(rows, externalNodeRows(xs)...)
+	o.table("NODE\tKIND\tCLASS\tSTATE\tDRAIN\tDEVICE\tMODEL\tRUNTIME\tBUILD\tTOK/S\tINFLIGHT\tPINNED\tLAST SEEN", rows)
 	return nil
 }
 

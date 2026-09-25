@@ -275,21 +275,24 @@ func poolMembers(p Pool, nodes []proto.Node, drained map[string]bool, thermalLim
 	return out
 }
 
-// withMembers returns p with its members computed from the registry.
+// withMembers returns p with its members computed from the registry and
+// the external nodes.
 func (s *Server) withMembers(p Pool) Pool {
 	nodes, drained := s.reg.View()
-	p.Members = poolMembers(p, nodes, drained, s.ThermalLimitC())
+	p.Members = append(poolMembers(p, nodes, drained, s.ThermalLimitC()), externalMembers(p, s.ext.list(nil, nil))...)
 	return p
 }
 
+// eligible counts the nodes with at least one eligible member entry (an
+// external node has one per model).
 func eligible(members []PoolMember) int {
-	n := 0
+	ids := map[string]bool{}
 	for _, m := range members {
 		if m.Eligible {
-			n++
+			ids[m.NodeID] = true
 		}
 	}
-	return n
+	return len(ids)
 }
 
 // serverTargets resolves pools and node aliases for the gateway.
@@ -302,10 +305,11 @@ func (t serverTargets) Resolve(name string) (gateway.Target, bool) {
 		if !ok {
 			return gateway.Target{}, false
 		}
-		tgt := gateway.Target{Label: name, Nodes: map[string]bool{}}
+		tgt := gateway.Target{Label: name, Nodes: map[string]bool{}, Models: map[string]bool{}}
 		for _, m := range s.withMembers(p).Members {
 			if m.Eligible {
 				tgt.Nodes[m.NodeID] = true
+				tgt.Models[m.Model] = true // external nodes serve several models
 			}
 		}
 		if p.Routing == RoutingSpread {
@@ -314,6 +318,9 @@ func (t serverTargets) Resolve(name string) (gateway.Target, bool) {
 		return tgt, true
 	}
 	if nn, ok := strings.CutPrefix(name, nodePrefix); ok {
+		if ext := strings.TrimPrefix(nn, ExternalPrefix); s.ext.has(ext) {
+			return gateway.Target{Label: name, Node: ExternalPrefix + ext}, true
+		}
 		if id, ok := s.reg.Lookup(nn); ok {
 			return gateway.Target{Label: name, Node: id}, true
 		}
@@ -325,10 +332,11 @@ func (t serverTargets) Models() []gateway.ModelEntry {
 	s := t.s
 	nodes, drained := s.reg.View()
 	limit := s.ThermalLimitC()
+	exts := s.ext.list(nil, nil)
 	var out []gateway.ModelEntry
 	for _, p := range s.pools.list() {
 		out = append(out, gateway.ModelEntry{ID: poolPrefix + p.Name, Object: "model", OwnedBy: "phoneborg", Kind: gateway.KindPool,
-			Nodes: eligible(poolMembers(p, nodes, drained, limit)), Description: p.Description})
+			Nodes: eligible(append(poolMembers(p, nodes, drained, limit), externalMembers(p, exts)...)), Description: p.Description})
 	}
 	for _, n := range nodes {
 		if n.Alias == "" {
@@ -340,6 +348,15 @@ func (t serverTargets) Models() []gateway.ModelEntry {
 		}
 		reason := nodeReason(n, drained[n.ID], limit)
 		ready := reason == "" || reason == ReasonHot // a hot node still serves explicit requests
+		e.Ready = &ready
+		out = append(out, e)
+	}
+	for _, x := range exts {
+		e := gateway.ModelEntry{ID: nodePrefix + x.Name, Object: "model", OwnedBy: "phoneborg", Kind: gateway.KindNode, Nodes: 1, External: true}
+		if len(x.DiscoveredModels) > 0 {
+			e.Model = x.DiscoveredModels[0] // what node/<name> is sent to
+		}
+		ready := x.State == ExternalActive && !x.Drained && e.Model != ""
 		e.Ready = &ready
 		out = append(out, e)
 	}
@@ -356,9 +373,10 @@ func (c *poolCollector) Describe(ch chan<- *prometheus.Desc) { ch <- descPoolMem
 func (c *poolCollector) Collect(ch chan<- prometheus.Metric) {
 	nodes, drained := c.s.reg.View()
 	limit := c.s.ThermalLimitC()
+	exts := c.s.ext.list(nil, nil)
 	for _, p := range c.s.pools.list() {
 		ch <- prometheus.MustNewConstMetric(descPoolMembers, prometheus.GaugeValue,
-			float64(eligible(poolMembers(p, nodes, drained, limit))), p.Name)
+			float64(eligible(append(poolMembers(p, nodes, drained, limit), externalMembers(p, exts)...))), p.Name)
 	}
 }
 
@@ -382,7 +400,12 @@ func (s *Server) adminSetAlias(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, `body must be {"alias": "<alias>"} ("" clears it)`)
 		return
 	}
-	err := s.reg.SetAlias(id, *u.Alias)
+	var err error
+	if *u.Alias != "" && s.ext.has(*u.Alias) {
+		err = ErrAliasTaken // external node names share the namespace (ADR-016)
+	} else {
+		err = s.reg.SetAlias(id, *u.Alias)
+	}
 	if err == nil {
 		err = s.saveRouting()
 	}
