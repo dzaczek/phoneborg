@@ -146,6 +146,50 @@ use it on localhost or a trusted network.
 | API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. |
 | Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
 
+### Screenshots
+
+Taken on the dev cluster (a Xiaomi Mi 8 and two emulated phones) during a load test.
+
+**Sign-in screen (the token field is a password field).** — Sign-in screen (the token field is a password field).
+
+![Sign-in screen (the token field is a password field).](images/panel-login.png)
+
+**Overview** — cluster health, throughput, models served, placement warnings and virtual models.
+
+![Overview: cluster health, throughput, models served, placement warnings and virtual models.](images/panel-overview.png)
+
+**Nodes** — class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.
+
+![Nodes: class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.](images/panel-nodes.png)
+
+**Node details** — inventory and runtime as reported in heartbeats.
+
+![Node details: inventory and runtime as reported in heartbeats.](images/panel-node-details.png)
+
+**Models** — the catalog with download status, size, fit, tags and recommendations.
+
+![Models: the catalog with download status, size, fit, tags and recommendations.](images/panel-models.png)
+
+**Placement** — device classes, performance tiers, policies and the current plan with predicted tok/s.
+
+![Placement: device classes, performance tiers, policies and the current plan with predicted tok/s.](images/panel-placement.png)
+
+**Pools** — routing, filters and member eligibility with reasons.
+
+![Pools: routing, filters and member eligibility with reasons.](images/panel-pools.png)
+
+**Proxy** — gateway routing policy, spill, timeout, thermal limit and key enforcement.
+
+![Proxy: gateway routing policy, spill, timeout, thermal limit and key enforcement.](images/panel-proxy.png)
+
+**API keys** — usage per key; create and revoke.
+
+![API keys: usage per key; create and revoke.](images/panel-keys.png)
+
+**Usage** — requests and tokens per API key and per node.
+
+![Usage: requests and tokens per API key and per node.](images/panel-usage.png)
+
 Live views refresh every 5 s. **Settings** sets the Grafana and Prometheus
 links (default: ports 3000 and 9090 on the controller's host), or open
 `/ui/?grafana=URL&prometheus=URL` once. Against a controller without the
@@ -607,6 +651,38 @@ on http://127.0.0.1:3000 (anonymous view, `admin`/`admin` to edit) with the
 | Models | catalog, downloads, planned vs serving nodes, switching nodes, model errors |
 | Administration | drained nodes, admin actions (`phoneborg_admin_actions_total`; rising `result="unauthorized"` means wrong tokens are being tried) |
 | Pools and virtual models | requests per target, eligible nodes per pool |
+
+### Dashboard screenshots
+
+The dashboard during a 4-minute load test on the dev cluster. The Temperature panel shows the Mi 8 overheating (up to 96 °C) under sustained direct `node/mi8` traffic.
+
+**Cluster**
+
+![Grafana: Cluster row](images/grafana-cluster.png)
+
+**Inference gateway**
+
+![Grafana: Inference gateway row](images/grafana-inference-gateway.png)
+
+**Usage per API key**
+
+![Grafana: Usage per API key row](images/grafana-usage-per-api-key.png)
+
+**Nodes**
+
+![Grafana: Nodes row](images/grafana-nodes.png)
+
+**Models**
+
+![Grafana: Models row](images/grafana-models.png)
+
+**Administration**
+
+![Grafana: Administration row](images/grafana-administration.png)
+
+**Pools and virtual models**
+
+![Grafana: Pools and virtual models row](images/grafana-pools-and-virtual-models.png)
 
 Battery level is exported as `phoneborg_node_battery_level_percent` (and
 shown in the panel's Nodes view) but has no Grafana panel yet.

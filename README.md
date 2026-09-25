@@ -65,6 +65,10 @@ exports everything to Prometheus and Grafana.
 - **Test without phones:** emulated Android phones (redroid) driven through
   real adb.
 
+![PhoneBorg web panel: overview](docs/images/panel-overview.png)
+
+More screenshots of the web panel and the Grafana dashboard: [docs/OPERATIONS.md](docs/OPERATIONS.md#screenshots).
+
 ## Quick start
 
 Requirements: Go 1.25+, `adb`, and Docker (for the llama.cpp build,
