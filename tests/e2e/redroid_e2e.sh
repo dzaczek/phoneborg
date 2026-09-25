@@ -108,4 +108,6 @@ wait_for 60 "model served again after restart" models_ready
 $LOAD -n 4 -c 2 >/dev/null || fail "requests failed after controller restart"
 nodes
 
+curl -fsS -X DELETE "$CTRL/admin/pools/e2e" -H "Authorization: Bearer $ADMIN_TOKEN" >/dev/null || true
+
 log "PASS"
