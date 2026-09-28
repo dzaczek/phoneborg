@@ -281,6 +281,12 @@ ul.warnings li { margin-bottom: 4px; }
 .chat-turn.chat-failed .chat-msg.assistant { border-color: var(--bad); }
 .chat-row { display: flex; gap: 8px; align-items: flex-end; }
 .chat-row textarea { flex: 1; }
+.chat-options { border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); padding: 8px 10px; }
+.chat-options summary { cursor: pointer; font-weight: 600; }
+.chat-options-body { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.chat-options-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.chat-options-row .field { margin-bottom: 0; min-width: 100px; }
+.chat-options-row .field input, .chat-options-row .field select { min-width: 0; width: 100%; max-width: 150px; }
 
 /* ---------- policy editor ---------- */
 .policy { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; background: var(--surface-2); }
