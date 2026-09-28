@@ -44,7 +44,7 @@ func newEnv(t *testing.T, token string, keys *gateway.StaticKeys, nodes ...strin
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	reg := NewRegistry(time.Hour, time.Hour, log)
-	srv := NewServer(reg, time.Second, GatewayOptions{Keys: keys,
+	srv := NewServer(reg, time.Second, GatewayOptions{Keys: keys, Devices: DeviceOptions{AutoProvision: true},
 		Config: gateway.Config{UpstreamTimeout: 5 * time.Second, MaxAttempts: 2, Cooldown: time.Minute}},
 		AdminOptions{Token: token}, log)
 	e := &env{t: t, reg: reg, srv: srv, h: srv.Handler(), logs: logs}

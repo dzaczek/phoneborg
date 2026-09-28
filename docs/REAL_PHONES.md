@@ -146,6 +146,15 @@ Notes:
   [OPERATIONS.md](OPERATIONS.md#sending-requests)).
 - The first push of a 0.5 GB model takes ~30 s over USB 2.0. Later runs skip
   it when the file size matches.
+- `watch -controller-url ... -admin-token-file ...` also reports every
+  attached device to the controller, so unauthorized, mid-provisioning and
+  failed phones show up in the web panel's Devices view and `pbctl devices`,
+  not only fully registered nodes; see
+  [OPERATIONS.md](OPERATIONS.md#usb-device-detection-and-provisioning)
+  (ADR-019). Reporting is off by default, so the commands above are
+  unaffected.
+- Only one `watch` or `provision` may drive a given adb server at a time; a
+  second instance fails fast, naming the first one's PID.
 
 ## 6. Verify
 
@@ -303,6 +312,9 @@ are in [OPERATIONS.md](OPERATIONS.md#troubleshooting).
 |---|---|---|
 | `pcprov` fails with "unsupported ABI" | 32-bit phone | not supported |
 | `pcprov` fails with "no llama.cpp build matches this phone's CPU" | SoC lacks dotprod/fp16, and the fallback build was never made | `make llama-all` (builds every variant), then re-provision |
+| `pcprov watch`/`provision` fails with "another pcprov (pid ...) is already watching/provisioning this adb server" | a second instance was started against the same adb server (ADR-019) | stop the other one, or confirm it should own provisioning; only `watch`/`provision` take this lock, `devices`/`status` do not |
+| Devices view / `pbctl devices` shows a device `failed` with "another attached device reports this same serial" or "placeholder serial" | two devices share a serial, or a device reports a known junk serial (e.g. `0123456789ABCDEF`) | fix the serial (vendor tool) or unplug the duplicate; pcprov never provisions either |
+| Devices view shows a phone `failed` repeatedly, retried less often over time | exponential backoff (30 s, doubling to 10 min) after each failure | fix the underlying issue, then **Retry** (panel) or `pbctl devices provision <serial>` to reset it immediately, or replug the phone |
 | `agent.log` shows `signal: illegal instruction` | llama.cpp build too new for the CPU (only possible with an explicit `-llama-server` override) | drop the override and let pcprov choose the build |
 | node goes `SUSPECT` when the screen turns off | CPU sleeps | step 4 |
 | `phoneborg_node_runtime_restarts` keeps growing | llama-server is being killed (out of memory or vendor task killer) | smaller model or context; close apps; check `runtime.log` |

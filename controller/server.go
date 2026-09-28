@@ -63,6 +63,7 @@ type Server struct {
 	place   *placement
 	perf    *nodePerf  // measured memory bandwidth per node (ADR-015)
 	ext     *externals // external engine nodes (ADR-016)
+	devices *devices   // USB device auto-detection, reported by pcprov (ADR-019)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -78,6 +79,7 @@ type GatewayOptions struct {
 	Models        ModelOptions    // ADR-011
 	Routing       RoutingOptions  // node aliases and pools, ADR-014
 	External      ExternalOptions // external engine nodes, ADR-016
+	Devices       DeviceOptions   // USB device auto-detection, ADR-019
 	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
 	// "local by default" (ADR-017); the empty value behaves like "open", so
 	// callers that do not set it (e.g. existing tests) are unaffected.
@@ -117,6 +119,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
 		perf:           newNodePerf(),
 		ext:            newExternals(gwOpts.External, log),
+		devices:        newDevices(gwOpts.Devices.File, gwOpts.Devices.AutoProvision),
 		keys:           gwOpts.Keys,
 		usage:          gwOpts.Usage,
 		least:          &gateway.LeastInflight{},

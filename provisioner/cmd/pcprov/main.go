@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -49,6 +50,8 @@ func main() {
 	all := fs.Bool("all", false, "provision all ready devices")
 	slimFlag := fs.Bool("slim", false, "run slim after a successful provision (provision, watch)")
 	slimTelephony := fs.Bool("slim-telephony", false, "slim/unslim: also disable dialer/contacts (off by default)")
+	controllerURL := fs.String("controller-url", "http://127.0.0.1:18080", "controller URL for device reporting (watch only, ADR-019)")
+	adminTokenFile := fs.String("admin-token-file", "", "admin token file for device reporting (watch only); empty = reporting disabled")
 	var serials, connects multi
 	fs.Var(&serials, "serial", "device serial (repeatable); for watch, restricts to these serials")
 	fs.Var(&connects, "connect", "adb connect host:port first (repeatable), e.g. emulated phones")
@@ -90,6 +93,15 @@ func main() {
 				os.Exit(1)
 			}
 		}
+		// Only watch and provision drive devices; read-only commands (devices,
+		// status, ...) do not need exclusivity (ADR-019).
+		lockPath := provisioner.LockPath(provisioner.ADBServerPort())
+		release, err := provisioner.Lock(lockPath)
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		defer release()
 	}
 
 	switch cmd {
@@ -131,8 +143,24 @@ func main() {
 				}
 			}
 		}
+		var reporter *provisioner.Reporter
+		if *adminTokenFile != "" {
+			tok, err := controllerToken(*adminTokenFile)
+			if err != nil {
+				log.Error("loading admin token", "err", err)
+				os.Exit(1)
+			}
+			reporter = provisioner.NewReporter(*controllerURL, tok)
+			log.Info("reporting devices to controller", "url", *controllerURL, "host", reporter.Host)
+		} else {
+			log.Info("device reporting disabled; pass -admin-token-file to show devices in the web panel (ADR-019)")
+		}
 		log.Info("watching for devices", "only", serials)
-		_ = p.Watch(ctx, 3*time.Second, func(s string) bool { return len(allowed) == 0 || allowed[s] }, afterProvision)
+		_ = p.Watch(ctx, 3*time.Second, provisioner.WatchOptions{
+			Include:  func(s string) bool { return len(allowed) == 0 || allowed[s] },
+			After:    afterProvision,
+			Reporter: reporter,
+		})
 	case "slim", "unslim":
 		failed := 0
 		for _, s := range resolveTargets(ctx, log, adb, *all, serials) {
@@ -208,6 +236,27 @@ func dedupe(in []string) []string {
 		}
 	}
 	return out
+}
+
+// controllerToken reads the first line of path that is not blank or a "#"
+// comment (mirrors the controller's own -admin-token-file format).
+func controllerToken(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line, nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("%s: no admin token", path)
 }
 
 func fail(log *slog.Logger, err error) {
