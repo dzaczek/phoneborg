@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/dzaczek/phoneborg/proto"
 )
 
 const RemoteDir = "/data/local/tmp/phoneborg"
@@ -26,6 +29,10 @@ type Provisioner struct {
 	ADB  ADB
 	Opts Options
 	Log  *slog.Logger
+	// OnStep, if set, is called with the current step name during Provision,
+	// in addition to the usual log line; Watch uses it to report progress
+	// (docs/DECISIONS.md ADR-019).
+	OnStep func(serial, step string)
 }
 
 // SupportedABI reports whether the device can run the arm64 agent.
@@ -41,7 +48,12 @@ func SupportedABI(abiList string) bool {
 // Provision is idempotent: it replaces any running agent with the pushed one.
 func (p *Provisioner) Provision(ctx context.Context, serial string) error {
 	log := p.Log.With("serial", serial)
-	step := func(name string) { log.Info("provision step", "step", name) }
+	step := func(name string) {
+		log.Info("provision step", "step", name)
+		if p.OnStep != nil {
+			p.OnStep(serial, name)
+		}
+	}
 
 	step("check-abi")
 	abis, err := p.ADB.Shell(ctx, serial, "getprop ro.product.cpu.abilist")
@@ -177,40 +189,100 @@ func (p *Provisioner) Status(ctx context.Context, serial string) (string, error)
 }
 
 // Watch provisions every device that reaches the "device" state. A device
-// that disappears (USB unplugged) is forgotten, so re-plugging re-provisions.
-// after, if non-nil, runs once right after each successful provision (used to
-// chain slim).
-// healInterval is how often Watch verifies adb links of provisioned devices.
-const healInterval = 15 * time.Second
+// that disappears (USB unplugged) is forgotten, so re-plugging re-provisions
+// (and resets its backoff, ADR-019). healInterval is how often Watch verifies
+// adb links of already-provisioned devices; reportInterval is the same for
+// controller reports, when opts.Reporter is set.
+const (
+	healInterval   = 15 * time.Second
+	reportInterval = 15 * time.Second
+)
 
-func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include func(serial string) bool, after func(serial string)) error {
-	done := map[string]bool{}
-	warned := map[string]string{}
+// WatchOptions configures Watch beyond the poll interval.
+type WatchOptions struct {
+	// Include restricts which serials Watch manages; nil manages every
+	// device, emulated ones included.
+	Include func(serial string) bool
+	// After, if set, runs once right after each successful provision (used
+	// to chain slim).
+	After func(serial string)
+	// Reporter posts the device view to the controller and receives
+	// auto_provision and pending operator commands (ADR-019); nil disables
+	// reporting, and auto-provisioning behaves as if auto_provision were
+	// always true (today's behaviour).
+	Reporter *Reporter
+}
+
+// Watch is single-threaded by design: one device is provisioned at a time,
+// in this loop, so two provisions of the same serial can never race each
+// other within one process. Lock (see lock_unix.go) keeps a second pcprov
+// process off the same adb server entirely (ADR-019).
+func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, opts WatchOptions) error {
+	include := opts.Include
+	if include == nil {
+		include = func(string) bool { return true }
+	}
+	records := map[string]*deviceRecord{}
+	pending := map[string]bool{}  // serial -> operator "provision now"/"retry" command queued
+	ackQueue := map[string]bool{} // serials whose pending command was consumed, awaiting a successful report
 	lastHeal := map[string]time.Time{}
+	autoProvision := true // the controller may turn this off in a report response
+	lastReportKey := ""
+	var lastReportAt time.Time
+
+	p.OnStep = func(serial, step string) {
+		if rec := records[serial]; rec != nil {
+			rec.Step = step
+		}
+	}
+
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		now := time.Now()
 		devs, err := p.ADB.Devices(ctx)
 		if err != nil {
 			p.Log.Error("adb devices failed", "err", err)
 		}
+		dup := DuplicateSerials(devs)
 		seen := map[string]bool{}
 		for _, d := range devs {
 			if !include(d.Serial) {
 				continue
 			}
 			seen[d.Serial] = true
+			rec := records[d.Serial]
+			if rec == nil {
+				rec = &deviceRecord{DeviceStatus: proto.DeviceStatus{Serial: d.Serial, FirstSeen: now}}
+				records[d.Serial] = rec
+			}
+			rec.ADBState, rec.Model, rec.LastSeen = d.State, d.Model, now
+
 			if d.State != "device" {
-				if warned[d.Serial] != d.State {
-					p.Log.Warn("device not ready", "serial", d.Serial, "state", d.State,
-						"hint", "unauthorized: accept the USB debugging prompt on the phone")
-					warned[d.Serial] = d.State
+				if rec.Status != proto.DeviceWaitingAuth || rec.Hint != hintForADBState(d.State) {
+					p.Log.Warn("device not ready", "serial", d.Serial, "state", d.State)
 				}
+				rec.Status, rec.Error, rec.Hint = proto.DeviceWaitingAuth, "", hintForADBState(d.State)
 				continue
 			}
-			if done[d.Serial] {
-				// Re-check adb reverse/forward periodically: adb drops them
-				// when a phone re-enumerates on USB without leaving the list.
+
+			placeholder := IsPlaceholderSerial(d.Serial)
+			plan := planDevice(rec, dup[d.Serial], placeholder, pending[d.Serial], autoProvision, now)
+			wasPending := pending[d.Serial]
+			rec.Status = plan.Status
+			switch {
+			case dup[d.Serial]:
+				rec.Error, rec.Hint = "another attached device reports this same serial",
+					"adb -s "+d.Serial+" is ambiguous; unplug the duplicate or fix its serial, then replug"
+			case placeholder:
+				rec.Error, rec.Hint = "placeholder serial "+d.Serial,
+					"this looks like a generic/junk USB serial, not a real device"
+			}
+			if !plan.Attempt {
+				if wasPending && (dup[d.Serial] || placeholder) {
+					delete(pending, d.Serial) // reject the command instead of leaving it queued forever
+					ackQueue[d.Serial] = true
+				}
 				if time.Since(lastHeal[d.Serial]) >= healInterval {
 					lastHeal[d.Serial] = time.Now()
 					if _, err := p.Heal(ctx, d.Serial); err != nil {
@@ -219,28 +291,92 @@ func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, include
 				}
 				continue
 			}
-			p.Log.Info("new device", "serial", d.Serial, "model", d.Model)
+
+			p.Log.Info("provisioning device", "serial", d.Serial, "model", d.Model, "forced", wasPending)
+			delete(pending, d.Serial)
+			rec.Step, rec.Error, rec.Hint = "", "", ""
 			if err := p.Provision(ctx, d.Serial); err != nil {
-				p.Log.Error("provision failed", "serial", d.Serial, "err", err)
-				continue // retried next tick
+				p.Log.Error("provision failed", "serial", d.Serial, "err", err, "retry_in", NextBackoff(rec.backoff))
+				rec.Status, rec.Error, rec.Hint = proto.DeviceFailed, err.Error(), hintForProvisionError(err)
+				rec.backoff = NextBackoff(rec.backoff)
+				rec.nextAttempt = now.Add(rec.backoff)
+			} else {
+				rec.provisioned = true
+				rec.Status, rec.backoff, rec.nextAttempt = proto.DeviceProvisioned, 0, time.Time{}
+				if opts.After != nil {
+					opts.After(d.Serial)
+				}
 			}
-			done[d.Serial] = true
-			if after != nil {
-				after(d.Serial)
+			if wasPending {
+				ackQueue[d.Serial] = true
 			}
 		}
-		for s := range done {
-			if !seen[s] {
+		var gone []string
+		for s, rec := range records {
+			if !seen[s] && rec.Status != proto.DeviceGone {
+				rec.Status, rec.Step, rec.Error, rec.Hint, rec.LastSeen = proto.DeviceGone, "", "", "", now
 				p.Log.Info("device gone", "serial", s)
-				delete(done, s)
-				delete(warned, s)
-				delete(lastHeal, s)
+			}
+			if !seen[s] {
+				gone = append(gone, s)
 			}
 		}
+
+		if opts.Reporter != nil {
+			snapshot := make([]proto.DeviceStatus, 0, len(records))
+			for _, rec := range records {
+				snapshot = append(snapshot, rec.DeviceStatus)
+			}
+			sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Serial < snapshot[j].Serial })
+			key := reportKey(snapshot)
+			if key != lastReportKey || now.Sub(lastReportAt) >= reportInterval {
+				acked := make([]string, 0, len(ackQueue))
+				for s := range ackQueue {
+					acked = append(acked, s)
+				}
+				resp, err := opts.Reporter.Report(ctx, snapshot, acked)
+				lastReportAt = time.Now()
+				if err != nil {
+					p.Log.Warn("device report failed", "err", err)
+				} else {
+					autoProvision = resp.AutoProvision
+					for _, cmd := range resp.Commands {
+						pending[cmd.Serial] = true
+					}
+					for _, s := range acked {
+						delete(ackQueue, s)
+					}
+					lastReportKey = key
+					for _, s := range gone {
+						delete(records, s) // reported as "gone" above; drop it now
+					}
+				}
+			}
+		} else {
+			for _, s := range gone {
+				delete(records, s)
+			}
+		}
+		for _, s := range gone {
+			delete(lastHeal, s)
+		}
+
 		select {
 		case <-t.C:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+// reportKey summarises a (serial-sorted) device snapshot for change
+// detection: it ignores timestamps, so a report is not forced on every tick
+// just because LastSeen advanced, only on a real state change (or the
+// reportInterval floor).
+func reportKey(snapshot []proto.DeviceStatus) string {
+	var b strings.Builder
+	for _, d := range snapshot {
+		fmt.Fprintf(&b, "%s|%s|%s|%s|%s|%s\n", d.Serial, d.ADBState, d.Status, d.Step, d.Error, d.Hint)
+	}
+	return b.String()
 }

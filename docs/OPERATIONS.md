@@ -60,7 +60,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-listen` | `:18080` | HTTP listen address |
 | `-admin-token-file` | none | admin token file (≥ 16 characters, `#` comments allowed); none = admin API disabled |
 | `-api-keys-file` | none | API keys file; none = open gateway (dev only). Reloaded on SIGHUP. |
-| `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `models/` |
+| `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `devices.json`, `models/` |
 | `-models-dir` | `<state-dir>/models` | where catalog model files are stored |
 | `-backend-host` | `127.0.0.1` | host where the phones' adb forwards are reachable |
 | `-upstream-timeout` | `120s` | max duration of one proxied request |
@@ -195,6 +195,7 @@ use it on localhost or a trusted network.
 |---|---|
 | Overview | Nodes by state; ready, drained and hot nodes; requests/s and tokens/s (last 30 s, computed in the browser); errors; models served; placement warnings; a **Virtual models** card listing `/v1/models` by kind (`auto`, `pool/<name>` with eligible node counts, `node/<alias>` with served model and readiness), each with a copy button for its `phoneborg/<id>` reference. |
 | Nodes | Every node with device, class/tier, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. Aliases are shown in place of ids. **Set alias**/**Edit alias**; drain, undrain and forget (with confirmation). Select a node for its inventory and runtime details. |
+| Devices | USB devices `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [below](#usb-device-detection-and-provisioning)). |
 | Models | The catalog: download status, size, estimated RAM, fitting classes, tags. Add from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`; edit tags, recommended classes/tiers and the default flag; delete (the reason is shown if refused). |
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
 | Pools | Pools routed as `pool/<name>`: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
@@ -261,6 +262,51 @@ links (default: ports 3000 and 9090 on the controller's host), or open
 `/ui/?grafana=URL&prometheus=URL` once. Against a controller without the
 models or pools API, those views say so and the rest works.
 
+### USB device detection and provisioning
+
+`pcprov watch` can report the USB devices it sees to the controller
+(ADR-019), so devices that are not yet nodes — not authorized, mid
+provisioning, or failed — show up in the **Devices** panel view and `pbctl
+devices`, next to phones that already became nodes. Reporting is off by
+default (empty `-admin-token-file`), so existing `pcprov watch` invocations
+keep working unchanged:
+
+```sh
+pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -agent-args "-ctx-size 16384" \
+  -controller-url http://127.0.0.1:18080 -admin-token-file admin-token
+```
+
+A systemd unit for a production host running pcprov next to the controller:
+
+```ini
+# /etc/systemd/system/pcprov.service
+[Unit]
+Description=PhoneBorg provisioner
+After=network.target
+
+[Service]
+ExecStart=/opt/phoneborg/bin/pcprov watch \
+  -model /opt/phoneborg/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  -agent-args "-ctx-size 16384" \
+  -controller-url http://127.0.0.1:18080 \
+  -admin-token-file /opt/phoneborg/admin-token
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The **auto-provision** toggle (panel, or `pbctl devices auto on|off`) turns
+off automatic provisioning of newly detected devices; pcprov keeps
+detecting them, reporting them and healing adb links of already-provisioned
+ones either way. **Provision**/**Retry** (panel) or `pbctl devices provision
+<serial>` request a one-shot attempt for one device, delivered to pcprov in
+its next report and acknowledged back. A failed attempt backs off (30 s,
+doubling to 10 min) instead of retrying every poll; replugging the device or
+an explicit retry resets it. Only one `pcprov watch`/`provision` may drive a
+given adb server at a time; a second instance exits naming the first one's
+PID.
+
 ## pbctl reference
 
 Build with `make pbctl` (also part of `make all`).
@@ -290,6 +336,9 @@ bin/pbctl nodes
 | `pbctl drain <id>` | no new requests; running ones finish (`ext:<name>` for an external node) |
 | `pbctl undrain <id>` | back into rotation |
 | `pbctl forget <id>` | remove a node (it re-registers if still running) |
+| `pbctl devices` | USB devices `pcprov watch` reports: adb state, status (with step/error/hint), linked node, reporting host (ADR-019) |
+| `pbctl devices auto on\|off` | turn automatic provisioning of newly detected devices on or off |
+| `pbctl devices provision <serial>` | request a one-shot provision/retry for one device |
 
 **API keys, gateway, usage**
 

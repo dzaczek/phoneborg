@@ -183,6 +183,9 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	s.registerChatAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
+	s.registerDevicesAdmin(func(pattern, action string, fn http.HandlerFunc) {
+		mux.Handle(pattern, s.adminAuth(action, fn))
+	})
 	// Unknown admin paths also need the token, so they reveal nothing.
 	mux.Handle("/admin/", s.adminAuth("unknown", http.NotFound))
 }

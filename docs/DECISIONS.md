@@ -26,6 +26,7 @@ text.
 | [016](#adr-016-external-engine-nodes) | External engine nodes | accepted | Operator-added OpenAI-compatible servers (`ext:<name>`) routed like phones, polled via `/v1/models`, never planned. |
 | [017](#adr-017-ollama-compatible-front-and-local-by-default-access) | Ollama-compatible front and local-by-default access | accepted | `/api/*` translates to the OpenAI gateway; `-gateway-access local\|keys\|open` gates inference/listing endpoints by peer CIDR. |
 | [018](#adr-018-chat-test-in-the-web-panel) | "Chat test" in the web panel | accepted | Admin-token-authenticated `POST /admin/chat/completions` proxies through the normal gateway path, attributed to principal `panel`. |
+| [019](#adr-019-usb-device-auto-detection-in-the-panel-and-conflict-free-provisioning) | USB device auto-detection in the panel and conflict-free provisioning | accepted | `pcprov watch` reports its adb device view to a new admin endpoint; `auto_provision` setting and one-shot provision/retry; per-serial backoff, duplicate/placeholder rejection and a host-wide flock. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -1223,3 +1224,145 @@ traffic there; the gateway's own per-principal metrics are what show it is
 `panel` traffic. There is no server-side cap on how much a panel session can
 generate beyond the gateway's normal `-upstream-timeout` and node
 concurrency limits.
+
+## ADR-019: USB device auto-detection in the panel and conflict-free provisioning
+
+**Problem.** The controller only knows about nodes that have registered: a
+phone that is `unauthorized`, `offline`, mid-provisioning or failed is
+invisible to it, so an operator has to watch `pcprov`'s own logs on the adb
+host to see why a phone never showed up. There was also no way to pause
+automatic provisioning from the panel (only by stopping `pcprov watch`
+itself, which also stops adb-link healing), and no per-device conflict
+handling: `pcprov watch` retried a failing phone every 3 s forever, two
+`pcprov` processes could in principle drive the same adb server at once, and
+a duplicate or junk serial (seen on some cheap/misconfigured USB
+descriptors) was provisioned like any other device.
+
+**Alternatives.**
+1. Leave `pcprov` a purely local CLI tool; operators read its logs.
+2. Have the controller run `adb` itself (poll `adb devices`, provision) and
+   drop `pcprov` as a separate process.
+3. `pcprov watch` keeps owning adb (ADR-001/ADR-003's model: only the adb
+   host's `pcprov` touches phones) and reports its device view to a new
+   controller admin endpoint; the controller stays adb-free and only
+   displays/steers what pcprov tells it.
+
+**Trade-offs.** (1) needs a terminal on the adb host for anything beyond
+"is a phone eventually ACTIVE". (2) collapses two processes into one, but
+means the controller process needs `adb` on its `PATH` and both provisioning
+and the gateway/admin API now share one process's failure domain, and two
+controllers (e.g. an accidental second instance) would then need the same
+adb exclusivity problem solved a second way. (3) keeps the existing
+separation and adds one small, opt-in reporting protocol, at the cost of the
+controller's view of devices being only as fresh as `pcprov`'s last report.
+
+**Decision.** (3).
+
+- **Reporting protocol** (`proto/devices.go`, alongside the node protocol's
+  wire types per ADR-002's convention: flat, JSON, no new dependency for
+  `pcprov`, which does not otherwise import `controller`).
+  `POST /admin/devices/report` (`proto.PathDevicesReport`) takes a
+  `DeviceReport{Host, Devices, Acked}`: `Host` identifies the reporting
+  `pcprov` (its hostname), `Devices` is pcprov's **whole** current view
+  (replacing, not merging, the controller's previous view from that host),
+  and `Acked` names serials whose queued command (below) pcprov executed
+  this cycle. Each `DeviceStatus` carries the serial, raw adb state, model,
+  a lifecycle `Status` (`new`, `waiting-authorization`, `provisioning` with
+  `Step`, `provisioned`, `failed` with `Error`/`Hint`, or `gone`, reported
+  once and then dropped) and first/last-seen timestamps. The response,
+  `DeviceReportResponse{AutoProvision, Commands}`, carries the setting below
+  and any pending one-shot commands for pcprov's devices.
+- **`pcprov` flags**: `-controller-url` (default
+  `http://127.0.0.1:18080`) and `-admin-token-file` (default empty).
+  Reporting is enabled only when a token file is given, so every existing
+  `pcprov watch`/`provision` invocation keeps working unchanged. `watch`
+  reports on every state change and at least every 15 s
+  (`reportInterval`), matching the existing 3 s poll / 15 s adb-link-heal
+  cadence already in the loop.
+- **Controller state** (`controller/devices.go`): an in-memory map keyed by
+  reporting host, holding each host's last device list and its last-report
+  time, plus one `auto_provision` bool and a set of pending per-serial
+  commands, all behind one mutex. `GET /admin/devices` lists every device
+  across every host, each with the linked node id/alias (best-effort: the
+  node id equals the phone's `ro.serialno`, ADR-001, so a device and a node
+  are linked when their ids match) and a `stale` flag once its host has not
+  reported for `DeviceStaleAfter` (45 s, three report intervals) — the panel
+  and `pbctl devices` show this as "not reporting" rather than silently
+  showing an outdated device. `PUT /admin/devices {"auto_provision":bool}`
+  changes the setting, persisted to `<state-dir>/devices.json` (version,
+  atomic write, mode 0600) exactly like `routing.json`/`placement.json`;
+  default `true` (today's behaviour) when no state dir or no file yet.
+  `POST /admin/devices/{serial}/provision` queues a command, delivered in
+  the next report response and cleared only once pcprov acknowledges it —
+  asking again before that is a no-op (idempotent). One command covers both
+  the panel's **Provision** (a device auto-provisioning left alone) and
+  **Retry** (a failed one) actions, since to pcprov both mean "attempt this
+  serial now, regardless of `auto_provision` or backoff".
+- **`auto_provision=false`** stops `pcprov watch` from provisioning *new*
+  devices on its own; it keeps polling `adb devices`, reporting every
+  device's status and healing already-provisioned devices' adb links every
+  15 s exactly as before (ADR unrelated to healing). A queued
+  provision/retry command bypasses the setting, and even bypasses an
+  already-successful provision in the same run (e.g. to push a rebuilt
+  agent) — the only thing that overrides *nothing* is the duplicate/
+  placeholder guard below.
+- **Backoff and reset** (`provisioner/devices.go`, pure and unit-tested):
+  a failed attempt waits 30 s before the next automatic retry, doubling on
+  each further failure up to a 10 min cap, instead of retrying every 3 s
+  tick. The device disappearing (unplugged) and reappearing, or an explicit
+  operator retry, resets it. Watch is single-threaded — one `Provision`
+  call in flight at a time, in the same goroutine that also does the adb
+  polling and reporting — so a serial can never be provisioned twice
+  concurrently within one process; a `deviceRecord.provisioned` flag stops
+  it from being auto-retried at all once it has succeeded.
+- **Duplicate/placeholder serials**: `pcprov` never provisions two devices
+  that `adb devices` currently reports with the same serial (`adb -s
+  <serial>` would be ambiguous), or a serial from a small known-junk list
+  (e.g. `0123456789ABCDEF`, seen on some misconfigured USB descriptors).
+  Both are reported `failed` with a clear error and hint, and neither is
+  provisioned even by an explicit "provision now"/"retry" command.
+- **Exclusivity**: `pcprov watch`/`provision` take an exclusive,
+  non-blocking `flock` (`syscall.Flock`, `provisioner/lock_unix.go`) on a
+  file in `os.TempDir()` (never a per-session directory like
+  `$XDG_RUNTIME_DIR`, which a systemd service and a login shell see
+  differently), named by the
+  adb server port (`$ANDROID_ADB_SERVER_PORT`, default 5037 — adb's own
+  notion of "one server per port", not the controller's port, since two
+  different adb servers on one host never conflict). A second instance
+  fails immediately with a message naming the first one's PID, read back
+  from the lock file. Read-only commands (`devices`, `status`, `stop`,
+  `slim`/`unslim`, `heal`) take no lock. `provisioner/lock_other.go`
+  (`!linux && !darwin`) is a no-op, so the package still builds elsewhere;
+  ADR-019 targets the Linux/macOS hosts pcprov already runs on.
+- **Port collision check** (requested, not assumed): `adb forward tcp:0
+  tcp:<device port>` (`provisioner/adb.go`) already lets adb/the OS assign a
+  genuinely free ephemeral host port per call, and Watch's single-threaded
+  loop means these calls are never concurrent within one process; the new
+  lock now also rules out a second process racing the same adb server. No
+  collision was found, and no change was made to port selection beyond the
+  lock itself.
+- **Panel and pbctl.** A new **Devices** view (`controller/ui/static/js/
+  views/devices.js`), polled on the same 5 s live-view cycle as every other
+  view (ADR-013): status badges, hint/error, linked node, reporting host
+  (with a "not reporting" badge when stale), an auto-provision toggle and
+  per-device **Provision**/**Retry** buttons. `pbctl devices`, `pbctl
+  devices auto on|off` and `pbctl devices provision <serial>` are thin
+  clients of the same three endpoints, in the existing `pbctl` style (its
+  types come from `controller`, ADR-008).
+
+**Trade-offs.** The controller's device view is only as fresh as the last
+report; a `pcprov` that dies without reporting "gone" leaves stale entries
+visible until `DeviceStaleAfter` marks the whole host stale (not per
+device). A "gone" device is visible for exactly one report cycle and then
+disappears with no history. The node/device link is best-effort string
+matching, not a real identifier carried through both protocols; a node
+started with `node-agent -node-id` overriding the default breaks it. Nothing
+stops two different operators from both holding the admin token and issuing
+conflicting provision requests — the same single-admin-role limitation
+ADR-008 already accepted.
+
+**Not solved.** Multiple `pcprov` hosts can report to one controller (kept
+distinctly by `Host`), but this is not a scenario the project otherwise
+documents or tests end-to-end. There is no rate limit on `POST
+/admin/devices/report` beyond it being just another admin action; a
+misbehaving reporter could still be throttled only by revoking its token.

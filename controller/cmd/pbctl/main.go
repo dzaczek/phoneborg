@@ -28,6 +28,9 @@ const usageText = `usage: pbctl [-json] [-url URL] [-token-file FILE] <command> 
 commands:
   nodes                       list nodes, phones and external (state, drain, runtime, load)
   nodes alias <id> <alias>    name a node, addressed as model node/<alias> ("-" clears)
+  devices                     USB devices pcprov sees: not-yet-authorized, provisioning, failed (ADR-019)
+  devices auto on|off         turn automatic provisioning of new devices on or off
+  devices provision <serial>  request "provision now"/"retry" for one device (one-shot)
   drain <id>                  stop sending new requests to a node (ext:<name> for external nodes)
   undrain <id>                put a drained node back into rotation
   forget <id>                 remove a node (it re-registers if alive)
@@ -146,6 +149,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return nodes(c, o)
 	case cmd == "nodes" && len(rest) == 3 && rest[0] == "alias":
 		return setAlias(c, o, rest[1], rest[2])
+	case cmd == "devices":
+		return devicesCmd(c, o, rest)
 	case cmd == "pools":
 		return poolsCmd(c, o, rest)
 	case cmd == "external":
