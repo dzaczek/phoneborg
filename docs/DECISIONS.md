@@ -25,6 +25,7 @@ text.
 | [015](#adr-015-performance-tiers-from-measured-bandwidth) | Performance tiers from measured bandwidth | accepted, with update | Effective bandwidth per node, tiers `t1`..`t4`, predicted tok/s gate placement. |
 | [016](#adr-016-external-engine-nodes) | External engine nodes | accepted | Operator-added OpenAI-compatible servers (`ext:<name>`) routed like phones, polled via `/v1/models`, never planned. |
 | [017](#adr-017-ollama-compatible-front-and-local-by-default-access) | Ollama-compatible front and local-by-default access | accepted | `/api/*` translates to the OpenAI gateway; `-gateway-access local\|keys\|open` gates inference/listing endpoints by peer CIDR. |
+| [018](#adr-018-chat-test-in-the-web-panel) | "Chat test" in the web panel | accepted | Admin-token-authenticated `POST /admin/chat/completions` proxies through the normal gateway path, attributed to principal `panel`. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -1140,3 +1141,85 @@ mapped. `format` as a JSON Schema object (not the literal string `"json"`)
 is not translated. `-trusted-proxies` trusts every request from a listed
 peer equally; there is no per-header allowlist or chained-proxy parsing
 beyond the first `X-Forwarded-For` address.
+
+## ADR-018: "Chat test" in the web panel
+
+**Problem.** Operators had no way to try inference from the panel itself:
+proving a model works meant a terminal and curl or `pbctl`. The obvious
+implementation, the panel calling `POST /v1/chat/completions` with the admin
+token, does not work in the production deployment: with `-gateway-access
+local` (ADR-017's default), a remote browser is neither a trusted peer nor
+holder of an API key, and the admin token is deliberately not a gateway
+credential (mixing the two would let anything that can reach the panel also
+mint itself unlimited inference access, and `/v1/models` already shows this
+gap — the panel's own Overview falls back to "not reachable" for it under
+`-gateway-access local`). A concrete design question follows: how does a
+browser holding only the admin token reach the gateway's routing, failover
+and streaming, without weakening `/v1/*`'s access control?
+
+**Alternatives.**
+1. Accept the admin token as an alternative on `/v1/*`.
+2. A separate, minimal inference path under `/admin/` with its own
+   request/response handling, independent of the gateway.
+3. A new endpoint under `/admin/` (admin-token-authenticated, like every
+   other panel call) that calls into the gateway's existing proxying
+   directly, the same way `controller/gateway/ollama.go` calls
+   `handleProxy` for `/api/chat` (ADR-017), so routing, failover, affinity,
+   usage and metrics are not duplicated.
+
+**Trade-offs.** (1) works but blurs two different trust boundaries: the
+admin token would become a second, unauditable way to spend inference
+capacity from anywhere the panel is reachable, exactly what ADR-017 set out
+to avoid. (2) avoids that but re-implements target resolution, candidate
+selection, retries and usage/metrics recording a second time, which is what
+ADR-006/ADR-010/ADR-014's gateway already does correctly. (3) keeps exactly
+one implementation of gateway behaviour and adds only a thin admin route,
+at the cost of one exported method the gateway did not previously need
+(the ADR-017 Ollama front could stay in-package and call `handleProxy`
+directly; the admin API is a different Go package, so it needs an exported
+entry point that skips re-authenticating an admin-already-checked request).
+
+**Decision.** (3).
+
+- **`POST /admin/chat/completions`** (`controller/chat_admin.go`) is
+  authenticated like every other admin route (`adminAuth`, the admin
+  token). It sets the request path to `/v1/chat/completions` and calls the
+  gateway's new exported `Gateway.ServeChat(w, r, principal)`
+  (`controller/gateway/proxy.go`), which is `handleProxy`'s body factored
+  out from `Authenticate`: routing (`auto`/`pool/`/`node/`/model), context
+  checks, failover, affinity, usage recording and every gateway metric run
+  exactly as for `/v1/chat/completions`, with the caller supplying the
+  principal instead of the request being authenticated a second time.
+  Usage and `phoneborg_gateway_requests_total`/`..._tokens_total` attribute
+  this traffic to a distinct principal, `panel` (`PanelPrincipal`), so it is
+  never folded into `anonymous`, `local` or a real API key's numbers.
+  Streaming passes through unchanged (the panel always sends
+  `"stream":true`); `adminAuth`'s status-tracking `ResponseWriter` wrapper
+  gained an `Unwrap() http.ResponseWriter` method (the standard Go 1.20+
+  `http.ResponseController` hook) so `forward`'s per-chunk `Flush()` still
+  reaches the real connection through it.
+- **`GET /admin/chat/models`** returns the same list `GET /v1/models`
+  would (`Gateway.ModelEntries()`, exported from the previously unexported
+  `modelEntries`, shared with `GET /api/tags`): served models, then `auto`,
+  pools and aliased nodes (ADR-014). The panel's model selector uses this
+  instead of `/v1/models` for the same reason the chat endpoint does not
+  use `/v1/chat/completions`: the admin token is not necessarily a valid
+  gateway credential.
+- **Panel.** A new "Chat" view (`controller/ui/static/js/views/chat.js`):
+  model selector, optional system prompt, a message box and streamed
+  output via the Fetch API's `ReadableStream` (parsing the same SSE the
+  gateway already forwards), a **Clear** button, and, after each reply, the
+  serving node (`X-PhoneBorg-Node`, resolved to its alias via
+  `GET /admin/nodes`), token counts and tok/s (from the response's
+  `usage`/`timings`, whichever the backend sent) and latency measured in
+  the browser. Conversation history lives only in the page (a JS array),
+  never persisted; it is lost on refresh or leaving the tab, like every
+  other view's in-progress form state (ADR-013).
+
+**Not solved.** The chat endpoint is not counted separately from other
+admin actions beyond the existing `phoneborg_admin_actions_total{action=
+"chat_completions"}`; a busy panel session looks like any other admin
+traffic there; the gateway's own per-principal metrics are what show it is
+`panel` traffic. There is no server-side cap on how much a panel session can
+generate beyond the gateway's normal `-upstream-timeout` and node
+concurrency limits.

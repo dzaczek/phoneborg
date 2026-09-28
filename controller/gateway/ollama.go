@@ -176,7 +176,7 @@ func (g *Gateway) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 	if _, ok := g.ollamaAuth(w, r); !ok {
 		return
 	}
-	entries := g.modelEntries()
+	entries := g.ModelEntries()
 	out := make([]ollamaTagModel, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, g.ollamaModelFor(e.ID, e.Model))

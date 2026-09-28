@@ -62,6 +62,38 @@ export async function getOptional(path) {
   }
 }
 
+// chatCompletionsStream POSTs to the admin-authenticated chat-test proxy
+// (POST /admin/chat/completions; ADR-018) and returns the raw fetch Response
+// for the caller to stream-read (SSE), unlike api() which buffers and parses
+// JSON. Errors are normalised into the same ApiError shape, and 401/503
+// trigger the same sign-out as every other admin call. No client-side
+// timeout is applied: a real generation can run for minutes, bounded by the
+// controller's own -upstream-timeout.
+export async function chatCompletionsStream(body, signal) {
+  let res;
+  try {
+    res = await fetch('/admin/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token.get(), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+      signal, cache: 'no-store', credentials: 'omit',
+    });
+  } catch (e) {
+    throw new ApiError(0, e.name === 'AbortError' ? 'Cancelled.' : 'Cannot reach the controller.');
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+    const apiErr = data && data.error;
+    const msg = (apiErr && (apiErr.message || apiErr)) || text.trim() || res.statusText || 'HTTP ' + res.status;
+    const err = new ApiError(res.status, msg);
+    if (res.status === 401 || res.status === 503) onAuthError(err);
+    throw err;
+  }
+  return res;
+}
+
 // gatewayModels fetches GET /v1/models: a gateway endpoint authenticated
 // with an API key, not the admin token, so a 401 (key enforcement on, the
 // admin token is not a valid key) does not mean the admin session is bad.

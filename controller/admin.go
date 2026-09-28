@@ -180,6 +180,9 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	s.registerExternalAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
+	s.registerChatAdmin(func(pattern, action string, fn http.HandlerFunc) {
+		mux.Handle(pattern, s.adminAuth(action, fn))
+	})
 	// Unknown admin paths also need the token, so they reveal nothing.
 	mux.Handle("/admin/", s.adminAuth("unknown", http.NotFound))
 }
@@ -193,6 +196,11 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.code = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap lets http.ResponseController reach the real ResponseWriter (e.g. its
+// Flush method), so a streamed admin response (POST /admin/chat/completions,
+// ADR-018) is flushed to the client chunk by chunk instead of buffered.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // adminAuth checks the admin token in constant time and counts the action.
 func (s *Server) adminAuth(action string, next http.HandlerFunc) http.Handler {

@@ -284,6 +284,23 @@ func (g *Gateway) track(nodeID string, a *attempt, add bool) {
 var errRetryable = errors.New("retryable upstream failure")
 
 func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
+	principal, err := g.auth.Authenticate(r)
+	if err != nil {
+		g.rejectUnauthorized(w, err)
+		return
+	}
+	g.ServeChat(w, r, principal)
+}
+
+// ServeChat proxies a chat/completions-shaped request through the same
+// routing, failover, affinity and metrics path as the authenticated
+// /v1/chat/completions and /v1/completions handlers, without authenticating
+// the request itself: the caller supplies principal. It is exported for the
+// admin API's "Chat test" panel endpoint (POST /admin/chat/completions,
+// ADR-018), which authenticates with the admin token rather than an API key
+// or -gateway-access, and attributes usage/metrics to a distinct principal
+// so panel traffic is never conflated with real client traffic.
+func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Principal) {
 	reqID := r.Header.Get("X-Request-Id")
 	if reqID == "" {
 		reqID = newID()
@@ -291,11 +308,6 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-Id", reqID)
 	log := g.log.With("request_id", reqID, "path", r.URL.Path)
 
-	principal, err := g.auth.Authenticate(r)
-	if err != nil {
-		g.rejectUnauthorized(w, err)
-		return
-	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
 		g.mRejected.WithLabelValues("bad_request").Inc()
@@ -565,16 +577,17 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		Object string       `json:"object"`
 		Data   []ModelEntry `json:"data"`
-	}{Object: "list", Data: g.modelEntries()}
+	}{Object: "list", Data: g.ModelEntries()}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// modelEntries lists served models, then virtual models (ADR-014): "auto",
+// ModelEntries lists served models, then virtual models (ADR-014): "auto",
 // then pools and aliased nodes from the Targets resolver. Shared by
-// GET /v1/models and the Ollama-compatible GET /api/tags (ADR-017), so both
-// see the same routing state.
-func (g *Gateway) modelEntries() []ModelEntry {
+// GET /v1/models, the Ollama-compatible GET /api/tags (ADR-017) and the
+// admin API's chat-test model list (ADR-018), so all three see the same
+// routing state.
+func (g *Gateway) ModelEntries() []ModelEntry {
 	seen := map[string]int{}
 	routable := g.routable()
 	for _, b := range routable {

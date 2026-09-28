@@ -199,8 +199,18 @@ use it on localhost or a trusted network.
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
 | Pools | Pools routed as `pool/<name>`: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
+| Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply. **Clear** resets the conversation; history lives in the page only. |
 | API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. |
 | Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
+
+Chat goes through `POST /admin/chat/completions` and `GET /admin/chat/models`
+(admin token, not the gateway's own auth), so it works from a remote browser
+that holds only the admin token even under `-gateway-access local`, where
+such a browser is neither a trusted peer nor has an API key (ADR-018). The
+request is otherwise proxied through the normal gateway path — routing,
+failover, affinity, usage and metrics all apply — attributed to the
+principal `panel` in usage stats and `phoneborg_gateway_requests_total`, so
+it is never conflated with `anonymous`, `local` or a real API key's traffic.
 
 ### Screenshots
 
