@@ -16,6 +16,8 @@ into [DECISIONS.md](DECISIONS.md). For measurements, see
 - [Performance tiers and resident bytes](#performance-tiers-and-resident-bytes)
 - [Persistence](#persistence)
 - [Ports](#ports)
+- [Super Borg mode](#super-borg-mode)
+- [Production deployment](#production-deployment)
 - [Security model](#security-model)
 - [Known limitations](#known-limitations)
 
@@ -58,6 +60,7 @@ on the host (ADR-003, ADR-006).
 |---|---|---|
 | Registry | `controller/registry.go` | Nodes by id, inventory, last heartbeat, lifecycle state, drain flags and aliases (kept by node id, so they survive re-registration). |
 | Gateway | `controller/gateway` | OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/models`. Authenticator, target resolution, `Picker`s (`Affinity`, `LeastInflight`, `Spread`), failover, reaping, token and usage accounting, prewarm. |
+| Super Borg | `controller/gateway/superborg.go`, `controller/superborg.go` | Cluster-wide mode: one model `superborg`; an orchestrator node delegates subtasks to the other nodes through a `delegate` tool, the gateway runs them in parallel (ADR-020). |
 | Admin API | `controller/admin.go`, `models_admin.go`, `pools.go`, `external.go` | `/admin/...` JSON API behind a bearer token: nodes, drain, keys, stats, gateway settings, models, placement, pools, aliases, prewarm, external nodes (ADR-008). |
 | External nodes | `controller/external.go` | Operator-added OpenAI-compatible servers (LM Studio, oMLX, Ollama, llama-server on a Mac or PC): health and model polling, self-tests, backends for the gateway (ADR-016). |
 | Catalog | `controller/models` | Downloads GGUF files (`hf://`, `https://`, `file://`), resumes, hashes, reads GGUF metadata, computes RAM estimate and `resident_bytes` (ADR-011, ADR-012 update). |
@@ -159,6 +162,7 @@ once.
 
 ```text
  request ─► authenticate (open: anonymous │ keys: 401 without a valid key)
+        ─► Super Borg mode on? ─► orchestrator loop (see Super Borg mode); "model" is ignored
         ─► resolve "model":
              <model id>        ready nodes serving it
              auto              any ready node
@@ -286,7 +290,7 @@ With `-state-dir DIR` the controller keeps:
 | `DIR/usage.json` | usage totals per key and node since first use | every 30 s and on SIGINT/SIGTERM; a corrupt file stops startup |
 | `DIR/models.json` | model catalog | on change |
 | `DIR/placement.json` | placement policies and the default model | on change |
-| `DIR/routing.json` | node aliases, pools, per-node measured bandwidth | on change (atomic, mode 0600) |
+| `DIR/routing.json` | node aliases, pools, per-node measured bandwidth, Super Borg settings | on change (atomic, mode 0600) |
 | `DIR/external.json` | external nodes with their API keys and self-test results | on change (atomic, mode 0600) |
 | `DIR/models/` | downloaded GGUF files (`-models-dir` overrides) | by the catalog |
 
@@ -315,6 +319,101 @@ on the `controller-state` volume.
 | 9090 | host | Prometheus (compose) |
 | 3000 | host | Grafana (compose) |
 | 5555, 5556 | host | adb of the emulated phones `phone-low`, `phone-mid` (compose) |
+
+## Super Borg mode
+
+While Super Borg mode is on (`PUT /admin/superborg`, `pbctl superborg on`,
+the panel's Pools view), the cluster is a single model. `/v1/models`,
+`/api/tags` and the panel's Chat list only `superborg`, and every chat
+request goes through this loop, whatever its `model` (ADR-020):
+
+```text
+ chat request ─► client brings its own tools, or /v1/completions?
+                   yes ─► forward unchanged to the orchestrator (agents keep their tool loop)
+              ─► orchestrator = configured alias/id if ready,
+                                else the ready node serving the largest catalog model
+                 workers      = every other ready, not hot node (phones and external nodes)
+              ─► system prompt: rules + worker roster (name, model, params, tags, tok/s),
+                                sorted and stable so llama-server keeps it in its prefix cache;
+                                merged into the client's own system message
+              ─► round 1..2: orchestrator request, always streamed, tools = [delegate]
+                   delegate({tasks:[{worker, task}]})   worker names as an enum
+                   content / reasoning deltas ─► relayed to the client as they arrive
+                   tool-call deltas           ─► accumulated
+                   no tool call ─► that was the answer, done
+                   tool call    ─► run every task in parallel:
+                                     worker = the named one, else the least busy free one
+                                     non-streaming, max_tokens 512, thinking off
+                                     failure ─► retry once on another worker,
+                                                then "error: …" as the task's result
+                                     progress "→ mi8: …" / "← mi8: done in 14 s"
+                                       ─► client as reasoning_content
+                                 results ─► tool messages ─► next round
+              ─► round 3: same request without tools, so the orchestrator must answer
+              ─► client: SSE chunks (stream) or one chat.completion; usage = sum of all calls
+```
+
+- Every orchestrator and worker call goes through the normal `forward`
+  path, so in-flight accounting, reaping of lost nodes, per-node metrics
+  and usage work as for any request.
+- If the orchestrator fails before any byte reached the client, the next
+  node in the same order (largest model) takes over, with a roster rebuilt
+  for the new set of workers. After output has started, an error ends the
+  stream with a bracketed message.
+- Thinking (`enable_thinking`) is off for the orchestrator by default and
+  always off for workers: on phones every token costs, and worker results
+  become the orchestrator's prompt, processed at roughly 10–20 tok/s.
+- The mode, the orchestrator and the thinking flag are stored in
+  `routing.json`.
+
+Measured on the four-phone cluster (OnePlus 10 Pro orchestrating with
+Qwen3-8B at ~3.7 tok/s; Mi 8, POCO F3 and Pixel 8 Pro as workers): a
+request with three independent parts ran its subtasks in parallel in
+10–85 s, and took about 6 minutes in total, most of it the orchestrator
+generating the final answer. A 4B orchestrator answers the same request in
+about 2 minutes, with clearly worse planning.
+
+## Production deployment
+
+The reference deployment is one Linux VM next to the phones; the phones
+reach it only over USB.
+
+```text
+ hypervisor ── USB passthrough by host port (not by vendor:product id:
+ │             two phones of one vendor share 18d1:4ee7 and get mixed up)
+ ▼
+ Linux VM (Debian), adb installed, user with the phones' adb keys
+ ├─ /srv/phoneborg            separate LVM volume (models are tens of GB)
+ │   ├─ app/                  source tree + bin/ (controller, pbctl, pcprov,
+ │   │                        node-agent-android-arm64, llama/<variant>/llama-server)
+ │   ├─ state/                -state-dir: routing.json, placement.json, models.json,
+ │   │                        usage.json, external.json, devices.json, models/*.gguf
+ │   └─ admin-token           mode 0600
+ ├─ phoneborg-controller.service
+ │     controller -listen :18080 -ollama-listen :11434 -upstream-timeout 600s
+ │                -admin-token-file … -state-dir … -gateway-access local
+ └─ phoneborg-pcprov.service  (Requires= the controller)
+       pcprov watch -model <state>/models/qwen2.5-0.5b-…gguf
+                    -agent-args "-ctx-size 16384" -admin-token-file …
+```
+
+- **Bootstrap model.** pcprov pushes one small GGUF with the agent, so a
+  new phone serves something within minutes; the planner then switches it
+  to its planned model, which the agent downloads from the controller
+  (`/v1/model-files/<id>` over `adb reverse`), not over adb push.
+- **Upgrading.** Sync the source tree to `app/`, `make controller pbctl`
+  (Go is installed on the VM; llama.cpp binaries are built elsewhere with
+  Docker and copied to `bin/llama`), then `systemctl restart
+  phoneborg-controller`. Agents re-register within seconds and keep
+  serving; state is reloaded from `state/`.
+- **Do not restart the controller while a phone is downloading a model**:
+  the download runs over the controller's HTTP server and breaks. The agent
+  resumes it from the partial file (HTTP Range) once it has re-registered.
+- **Cooling and power.** A phone at or above `-thermal-limit-c` gets no new
+  sessions, but an explicitly chosen node (`node/<alias>`, the configured
+  Super Borg orchestrator) still serves; a hot phone throttles hard (the
+  OnePlus 10 Pro dropped from ~3.7 to ~1 tok/s at 79 °C). Keep phones
+  charged and ventilated.
 
 ## Security model
 
@@ -355,3 +454,8 @@ localhost or a trusted network and do not expose it to untrusted networks.
 - External nodes are not managed: no placement, no downloads, no thermal
   data. Requests beyond an external node's `max_concurrency` are not queued;
   they go elsewhere or get 503 `busy` (ADR-016).
+- Super Borg (ADR-020) multiplies latency: plan, parallel subtasks and a
+  synthesis round, each with phone-speed prompt processing. Small
+  orchestrators sometimes delegate dependent steps in the same round and
+  pass on wrong worker answers; the rules in the system prompt reduce this
+  but do not enforce it.

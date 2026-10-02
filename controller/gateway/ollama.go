@@ -26,9 +26,10 @@ import (
 type ModelInfo struct {
 	SizeBytes int64
 	SHA256    string
-	Arch      string // Ollama's "family", e.g. "qwen2"
-	Params    string // e.g. "0.5B"
-	Quant     string // e.g. "Q4_K_M"
+	Arch      string   // Ollama's "family", e.g. "qwen2"
+	Params    string   // e.g. "0.5B"
+	Quant     string   // e.g. "Q4_K_M"
+	Tags      []string // catalog tags, e.g. "reasoning"; shown to the Super Borg orchestrator (ADR-020)
 }
 
 // ModelInfoFunc looks up a model's catalog metadata; ok is false when

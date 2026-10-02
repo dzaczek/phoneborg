@@ -42,6 +42,10 @@ commands:
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
+  superborg                   Super Borg mode: one model, an orchestrator delegating to the other phones (ADR-020)
+  superborg on [orchestrator=<node>|auto] [thinking=on|off]
+                              switch it on (clients can no longer choose a node)
+  superborg off               back to normal routing
   served                      list models ready nodes serve, pools and nodes (/v1/models)
   models                      model catalog (size, status, fits, tags, serving)
   models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]
@@ -188,6 +192,8 @@ func dispatch(c *client, o *out, args []string) error {
 		}
 		raw, err := c.do(http.MethodPut, "/admin/gateway", u)
 		return showGateway(o, raw, err)
+	case cmd == "superborg":
+		return superborgCmd(c, o, rest)
 	case cmd == "served" && len(rest) == 0:
 		return served(c, o)
 	case cmd == "models":

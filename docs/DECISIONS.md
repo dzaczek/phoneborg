@@ -1366,3 +1366,73 @@ distinctly by `Host`), but this is not a scenario the project otherwise
 documents or tests end-to-end. There is no rate limit on `POST
 /admin/devices/report` beyond it being just another admin action; a
 misbehaving reporter could still be throttled only by revoking its token.
+
+## ADR-020: Super Borg mode — one model, an orchestrator delegating to phones
+
+**Problem.** With four phones of very different strength, the operator
+wants the cluster to behave as one assistant: a stronger phone (the
+OnePlus, 12 GB, Qwen3-8B) reasons about the request and hands parts of it
+to the smaller models, choosing who does what, instead of the client
+picking `auto`, a pool or a node. The phones run llama-server, which knows
+nothing about the other phones; something has to run the plan–delegate–
+answer loop.
+
+**Alternatives.**
+1. A separate agent process (Python or Go) on the host that calls the
+   gateway like any client.
+2. A request classifier that only routes each request to one phone
+   (docs/TODO.md item 2, "Laya").
+3. The loop inside the gateway, as a cluster-wide mode: the orchestrator
+   model gets a `delegate` tool; the gateway executes its calls on the
+   other nodes through the existing `forward` path.
+
+**Trade-offs.** (1) keeps the gateway simple but duplicates node selection,
+health, failover, usage and metrics, and still needs a switch so clients
+cannot bypass it. (2) is cheap per request but never splits work, so it
+cannot use the phones in parallel. (3) reuses `forward` for every
+orchestrator and worker call (in-flight accounting, reaping of lost nodes,
+per-node usage and metrics), sees the live backend set and speeds, and the
+mode switch is natural at the one place requests enter. Its cost is a
+second request path in `ServeChat` and an SSE parser for the
+orchestrator's stream.
+
+**Decision.** (3).
+
+- **Mode** (`controller/superborg.go`): `{enabled, orchestrator,
+  thinking}`, stored in `routing.json`, served as `GET/PUT
+  /admin/superborg`, `pbctl superborg`, and a card in the panel's Pools
+  view. While enabled, `ModelEntries` lists only `superborg`, so
+  `/v1/models`, `/api/tags` and the panel all show one model.
+- **Loop** (`controller/gateway/superborg.go`): the orchestrator gets a
+  system prompt with the worker roster (alias, model, catalog params and
+  tags, measured tok/s; sorted and free of volatile data so llama-server's
+  prefix cache keeps it) merged into the client's system message, and one
+  tool, `delegate({tasks:[{worker, task}]})`, with the worker names as an
+  enum. Its request is always streamed; content and reasoning deltas are
+  relayed to the client as they arrive, tool-call deltas are accumulated.
+  Delegated tasks run in parallel as non-streaming requests with
+  `max_tokens` 512 and thinking off; results go back as `tool` messages.
+  At most 2 rounds; the round after is sent without tools.
+- **Prompt rules** (from the first live runs, where a 4B orchestrator sent
+  a translation of a not-yet-written poem in the same round and gave Polish
+  writing to a 0.5B model): tasks in one call run at the same time, so no
+  task may need another's result; models under 2B params get only very
+  simple tasks; worker answers must be checked. The rules use parameter
+  counts from the catalog, not model names.
+- **Choice of nodes**: no model names are hard-coded (AGENTS.md). The
+  orchestrator is the configured alias/id, else the ready node serving the
+  largest catalog model; the workers are all other ready, not hot nodes.
+- **Failure handling**: an orchestrator failing before any output is
+  replaced by the next-largest node; a failed worker task is retried once
+  on another worker, then reported to the orchestrator as an error text;
+  an error after output started ends the stream with a bracketed message.
+- **Bypass**: `/v1/completions` and requests with client `tools` go to the
+  orchestrator unchanged, so agent clients keep their own tool loop.
+
+**Consequences.** Delegation multiplies latency on phones: plan, parallel
+subtasks, then synthesis of their results, each with prompt processing at
+roughly 10–20 tok/s. Super Borg pays off for requests that split into
+independent parts; simple questions cost about the same as asking the
+orchestrator directly. Thinking is off by default for that reason. While the
+mode is on, pools, node targets and `auto` are unavailable to clients by
+design.

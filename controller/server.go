@@ -64,6 +64,8 @@ type Server struct {
 	perf    *nodePerf  // measured memory bandwidth per node (ADR-015)
 	ext     *externals // external engine nodes (ADR-016)
 	devices *devices   // USB device auto-detection, reported by pcprov (ADR-019)
+
+	superborg atomic.Pointer[SuperborgSettings] // Super Borg mode (ADR-020), persisted in routing.json
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -154,6 +156,10 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	if len(gwOpts.Routing.State.Performance) > 0 {
 		s.perf.load(gwOpts.Routing.State.Performance)
 	}
+	sb := SuperborgSettings{}
+	if gwOpts.Routing.State.Superborg != nil {
+		sb = *gwOpts.Routing.State.Superborg
+	}
 	reg.onTransition = func(_ string, from, to proto.NodeState) {
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
@@ -166,12 +172,13 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), s.ext.backends()...)
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
+	s.applySuperborg(sb)
 	s.gw.SetModelInfo(func(id string) (gateway.ModelInfo, bool) {
 		m, ok := s.catalog.Get(id)
 		if !ok {
 			return gateway.ModelInfo{}, false
 		}
-		return gateway.ModelInfo{SizeBytes: m.SizeBytes, SHA256: m.SHA256, Arch: m.Arch, Params: m.Params, Quant: m.Quant}, true
+		return gateway.ModelInfo{SizeBytes: m.SizeBytes, SHA256: m.SHA256, Arch: m.Arch, Params: m.Params, Quant: m.Quant, Tags: m.Tags}, true
 	})
 	s.catalog.SetOnChange(s.Replan)
 	s.Replan()

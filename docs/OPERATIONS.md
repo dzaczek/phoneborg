@@ -17,6 +17,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [pbctl reference](#pbctl-reference)
 - [Models and placement](#models-and-placement)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
+- [Super Borg mode](#super-borg-mode)
 - [External nodes (Mac / PC)](#external-nodes-mac--pc)
 - [API keys](#api-keys)
 - [Access control](#access-control)
@@ -198,9 +199,9 @@ use it on localhost or a trusted network.
 | Devices | USB devices `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [below](#usb-device-detection-and-provisioning)). |
 | Models | The catalog: download status, size, estimated RAM, fitting classes, tags. Add from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`; edit tags, recommended classes/tiers and the default flag; delete (the reason is shown if refused). |
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
-| Pools | Pools routed as `pool/<name>`: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
+| Pools | A **Super Borg** card on top: on/off, orchestrator (auto or a node), thinking, the node orchestrating now and the workers ([Super Borg mode](#super-borg-mode)). Below it, pools routed as `pool/<name>`: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
-| Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
+| Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; only `superborg` while Super Borg mode is on, with delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
 | API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. |
 | Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
 
@@ -350,6 +351,9 @@ bin/pbctl nodes
 | `pbctl gateway` | current gateway settings |
 | `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
 | `pbctl stats` | uptime, cluster summary, usage by key and node |
+| `pbctl superborg` | Super Borg mode: on/off, orchestrator, thinking, active orchestrator and workers |
+| `pbctl superborg on [orchestrator=<node>\|auto] [thinking=on\|off]` | switch it on, changing only the given settings |
+| `pbctl superborg off` | back to normal routing |
 | `pbctl served` | what ready phones serve, plus `auto`, pools and aliased nodes (`/v1/models`) |
 
 **Models and placement**
@@ -623,6 +627,63 @@ curl -X POST http://127.0.0.1:18080/admin/prewarm \
   -d '{"target":"pool/fast","messages":[{"role":"system","content":"You are a terse reviewer."}]}'
 # {"results":[{"node_id":"mi8-6f3a","alias":"phone-01","ok":true,"ms":4210,"error":""}, ...]}
 ```
+
+## Super Borg mode
+
+Super Borg turns the cluster into one model (ADR-020). While it is on,
+`/v1/models`, `/api/tags` and the panel's Chat list only `superborg`, and
+every chat request, whatever its `model`, goes to the **orchestrator** node.
+The orchestrator sees a short list of the other ready phones (the
+**workers**: alias, model, parameters, catalog tags, measured tok/s) and a
+`delegate` tool. It answers simple questions itself; for bigger ones it
+sends self-contained subtasks to the workers, which the gateway runs in
+parallel, and then writes the final answer from their results.
+
+```sh
+pbctl nodes alias b82175b7 oneplus                  # optional, nicer worker names
+pbctl superborg on orchestrator=oneplus             # or orchestrator=auto
+pbctl superborg on thinking=on                      # let the orchestrator reason first (slower)
+pbctl superborg                                     # settings, active orchestrator, workers
+pbctl superborg off                                 # back to auto/pool/node routing
+```
+
+The same switch is the **Super Borg** card at the top of the panel's Pools
+view, and `GET`/`PUT /admin/superborg` (`{"enabled":true,"orchestrator":"oneplus","thinking":false}`).
+The setting is stored in `routing.json` and survives restarts.
+
+- **Orchestrator choice**: the configured alias or node id; `auto` (or a
+  configured node that is not ready) picks the ready node serving the
+  largest catalog model. Give it a model with good tool calling, e.g.
+  Qwen3 (pin it with `pbctl placement set qwen3-8b-q4_k_m pin=oneplus`). If it
+  fails before answering, the next-largest node takes over.
+- **Workers**: every other ready, not overheating node, phones and external
+  nodes alike. A task names a worker; if that one is unknown or already has
+  a task in the same call, the least busy free worker gets it. A worker that
+  fails is retried once on another worker; a failed task is reported to the
+  orchestrator as an error text.
+- **Limits**: at most 2 delegation rounds, after which the orchestrator
+  must answer without tools; each worker answer is capped at 512 tokens
+  (they become the orchestrator's prompt, and phones process prompts at
+  roughly 10–20 tok/s). Workers always run with thinking off.
+- **Progress**: streaming clients see the orchestrator's reasoning and lines
+  like `→ mi8: translate …` / `← mi8: done in 14.2 s` as
+  `reasoning_content` (the panel shows them in the Thinking block); the
+  answer itself is `content`. Non-streaming clients get both in one
+  message.
+- **Direct requests**: `/v1/completions` and chat requests that bring their
+  own `tools` (coding agents such as opencode) go straight to the
+  orchestrator without delegation, so the client still sees its own tool
+  calls.
+- **Metrics**: `phoneborg_superborg_requests_total{result}`,
+  `phoneborg_superborg_delegations_total{node_id,result}`, and
+  `phoneborg_gateway_target_requests_total{target="superborg"}`; every
+  orchestrator and worker call is also counted per node as usual.
+
+Manual test: with Super Borg on, ask in the panel Chat (model `superborg`)
+a simple question (answered directly, no `→` lines) and a composite one,
+e.g. "Napisz krótki wiersz o kocie po polsku, przetłumacz go na angielski i
+podaj 3 ciekawostki o kotach": the Thinking block shows the subtasks going
+to different phones in parallel, then the final answer.
 
 ## External nodes (Mac / PC)
 
