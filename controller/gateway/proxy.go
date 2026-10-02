@@ -63,6 +63,7 @@ type Gateway struct {
 	picker    atomic.Pointer[Picker]
 	targets   atomic.Pointer[Targets]
 	modelInfo atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
+	superborg atomic.Pointer[Superborg]     // nil = Super Borg mode off (ADR-020)
 	timeout   atomic.Int64                  // upstream timeout, ns
 	backends  BackendSource
 	cfg       Config
@@ -87,6 +88,9 @@ type Gateway struct {
 	mGenTPS    *prometheus.GaugeVec
 	mPromptTPS *prometheus.GaugeVec
 	mTargets   *prometheus.CounterVec
+
+	mSuperborg   *prometheus.CounterVec
+	mDelegations *prometheus.CounterVec
 }
 
 func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, reg prometheus.Registerer, log *slog.Logger) *Gateway {
@@ -128,6 +132,12 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 		mTargets: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "phoneborg_gateway_target_requests_total", Help: "Inference requests by resolved target: auto, pool/<name>, node/<alias-or-id> or model (ADR-014)."},
 			[]string{"target"}),
+		mSuperborg: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "phoneborg_superborg_requests_total", Help: "Chat requests answered through the Super Borg orchestrator (ADR-020), by result."},
+			[]string{"result"}),
+		mDelegations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "phoneborg_superborg_delegations_total", Help: "Subtasks the Super Borg orchestrator delegated, by worker node and result (ADR-020)."},
+			[]string{"node_id", "result"}),
 	}
 	if g.cfg.Usage == nil {
 		g.cfg.Usage = noUsage{}
@@ -135,13 +145,16 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.SetPicker(picker)
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
 	g.prewarmTimeout = PrewarmTimeout
-	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets)
+	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
 	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy", "remote_requires_api_key"} {
 		g.mRejected.WithLabelValues(reason)
 	}
 	for _, target := range []string{KindAuto, KindModel} {
 		g.mTargets.WithLabelValues(target)
+	}
+	for _, result := range []string{"ok", "error"} {
+		g.mSuperborg.WithLabelValues(result)
 	}
 	return g
 }
@@ -306,7 +319,6 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		reqID = newID()
 	}
 	w.Header().Set("X-Request-Id", reqID)
-	log := g.log.With("request_id", reqID, "path", r.URL.Path)
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
@@ -322,6 +334,24 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		return
 	}
 
+	if sb := g.superborg.Load(); sb != nil {
+		// Super Borg mode (ADR-020): the cluster is one model, the client
+		// does not choose a node.
+		g.mTargets.WithLabelValues(KindSuperborg).Inc()
+		if !superborgDirect(r.URL.Path, meta) {
+			g.serveSuperborg(w, r, *sb, body, meta, principal, reqID)
+			return
+		}
+		orch, ok := g.pickOrchestrator(*sb, nil)
+		if !ok {
+			g.mRejected.WithLabelValues("model_not_found").Inc()
+			g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusServiceUnavailable)})
+			openAIError(w, http.StatusServiceUnavailable, "server_error", "model_not_found", "no ready nodes")
+			return
+		}
+		g.serveTarget(w, r, Target{Label: KindSuperborg, Nodes: map[string]bool{orch.NodeID: true}}, body, meta, principal, reqID)
+		return
+	}
 	tgt, err := g.Resolve(meta.Model)
 	if err != nil {
 		g.mRejected.WithLabelValues("model_not_found").Inc()
@@ -330,7 +360,12 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		return
 	}
 	g.mTargets.WithLabelValues(tgt.Label).Inc()
+	g.serveTarget(w, r, tgt, body, meta, principal, reqID)
+}
 
+// serveTarget routes a parsed request to tgt's backends, with failover.
+func (g *Gateway) serveTarget(w http.ResponseWriter, r *http.Request, tgt Target, body []byte, meta requestMeta, principal Principal, reqID string) {
+	log := g.log.With("request_id", reqID, "path", r.URL.Path)
 	all := tgt.filter(g.routable())
 	if tgt.Node != "" && len(all) == 0 {
 		g.mRejected.WithLabelValues("node_unavailable").Inc()
@@ -588,8 +623,16 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 // admin API's chat-test model list (ADR-018), so all three see the same
 // routing state.
 func (g *Gateway) ModelEntries() []ModelEntry {
-	seen := map[string]int{}
 	routable := g.routable()
+	if sb := g.superborg.Load(); sb != nil {
+		// Super Borg mode (ADR-020): one model, the whole cluster.
+		e := ModelEntry{ID: KindSuperborg, Object: "model", OwnedBy: "phoneborg", Kind: KindSuperborg, Nodes: len(routable)}
+		if orch, ok := g.pickOrchestrator(*sb, nil); ok {
+			e.Description = "orchestrator " + workerName(orch) + " (" + orch.Model + ")"
+		}
+		return []ModelEntry{e}
+	}
+	seen := map[string]int{}
 	for _, b := range routable {
 		seen[b.Model]++
 	}

@@ -168,6 +168,49 @@ function poolCard(p, nodes, modelIds) {
     membersTable(p));
 }
 
+// Super Borg mode (ADR-020): one model "superborg"; the orchestrator node
+// delegates subtasks to the other ready nodes.
+async function setSuperborg(next) {
+  try {
+    await api('PUT', '/admin/superborg', next);
+    toast(next.enabled ? 'Super Borg on: the cluster answers as one model.' : 'Super Borg off: normal routing.');
+  } catch (e) {
+    if (e.status !== 401 && e.status !== 503) errorToast(e);
+  }
+  refreshNow();
+}
+
+function superborgCard(sb, nodes) {
+  const cur = { enabled: sb.enabled, orchestrator: sb.orchestrator || '', thinking: sb.thinking };
+  const names = nodes.map((n) => n.alias || n.id);
+  if (cur.orchestrator && !names.includes(cur.orchestrator)) names.push(cur.orchestrator);
+  const orch = h('select', { 'aria-label': 'Orchestrator', 'data-focus-key': 'sb:orch',
+    onchange: () => setSuperborg({ ...cur, orchestrator: orch.value }) },
+    h('option', { value: '' }, 'auto (largest model)'),
+    names.map((v) => h('option', { value: v, selected: v === cur.orchestrator }, v)));
+  const thinking = h('input', { type: 'checkbox', checked: cur.thinking, 'data-focus-key': 'sb:think',
+    onchange: () => setSuperborg({ ...cur, thinking: thinking.checked }) });
+  const toggle = h(cur.enabled ? 'button.small.danger' : 'button.small.primary', { type: 'button', 'data-focus-key': 'sb:toggle',
+    onclick: () => setSuperborg({ ...cur, enabled: !cur.enabled }) }, cur.enabled ? 'Turn off' : 'Turn on');
+  const active = sb.active_orchestrator
+    ? h('span', null, nodes.find((n) => n.id === sb.active_orchestrator)?.alias || h('span.mono', null, sb.active_orchestrator),
+      h('span.cell-sub.mono', null, sb.orchestrator_model))
+    : h('span.muted', null, 'no ready node');
+  const workers = (sb.workers || []).map((w) => [
+    h('span', null, w.alias || h('span.mono', null, w.node_id), w.alias ? h('span.cell-sub.mono', null, w.node_id) : null),
+    w.model, { v: tps(w.gen_tps), num: true }]);
+  return h('div.card.section', null,
+    h('div.row', null, h('h2', null, 'Super Borg'), badge(cur.enabled ? 'on' : 'off', cur.enabled ? 'ok' : 'info'), h('span.spacer'), toggle),
+    h('p.muted', null, 'When on, the cluster is one model, "superborg": every chat request goes to the orchestrator, ' +
+      'which answers itself or delegates subtasks to the other phones in parallel. Clients cannot choose a node or pool.'),
+    h('dl.kv', null,
+      h('dt', null, 'Orchestrator'), h('dd', null, orch),
+      h('dt', null, 'Active now'), h('dd', null, active),
+      h('dt', null, 'Thinking'), h('dd', null, h('label', null, thinking, ' orchestrator reasons before it plans (slower)'))),
+    h('h3', null, 'Workers'),
+    table(['Node', 'Model', { label: 'tok/s', num: true }], workers, 'No other ready node: the orchestrator answers alone.'));
+}
+
 export default function poolsView() {
   const addBtn = h('button.primary', { type: 'button', hidden: true }, 'Add pool');
   const body = h('div', null, h('p.muted', null, 'Loading…'));
@@ -182,11 +225,11 @@ export default function poolsView() {
       return;
     }
     addBtn.hidden = false;
-    const [nodes, modelIds] = await Promise.all([get('/admin/nodes'), fetchModelIds()]);
+    const [nodes, modelIds, sb] = await Promise.all([get('/admin/nodes'), fetchModelIds(), getOptional('/admin/superborg')]);
     addBtn.onclick = () => poolDialog(null, nodes, modelIds);
 
     const pools = res.pools || [];
-    fill(body, pools.length
+    fill(body, sb ? superborgCard(sb, nodes) : null, pools.length
       ? pools.map((p) => poolCard(p, nodes, modelIds))
       : h('div.card', null, h('p.empty', null, 'No pools yet. Add one to group nodes under pool/<name>.')));
   }

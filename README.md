@@ -53,6 +53,9 @@ exports everything to Prometheus and Grafana.
   speed-aware routing.
 - **Virtual models:** `auto`, `pool/<name>` and `node/<alias>` let each
   agent of a tool like opencode get its own phones.
+- **Super Borg mode:** one switch turns the cluster into a single model:
+  the strongest phone orchestrates and delegates subtasks to the others in
+  parallel.
 - **Model catalog and placement:** add GGUFs from Hugging Face; phones
   download over USB and switch, sized to their RAM.
 - **Performance tiers:** measured bandwidth per phone predicts each model's

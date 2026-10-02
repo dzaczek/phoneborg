@@ -92,6 +92,7 @@ type RoutingState struct {
 	Aliases     map[string]string      `json:"aliases"`
 	Pools       []Pool                 `json:"pools"`
 	Performance map[string]models.Perf `json:"performance,omitempty"`
+	Superborg   *SuperborgSettings     `json:"superborg,omitempty"` // ADR-020
 }
 
 // RoutingOptions configures aliases and pools.
@@ -211,7 +212,7 @@ func (s *Server) saveRouting() error {
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}, Performance: s.perf.snapshot()}
+	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}, Performance: s.perf.snapshot(), Superborg: s.superborg.Load()}
 	for _, p := range ps.byName {
 		st.Pools = append(st.Pools, p)
 	}
