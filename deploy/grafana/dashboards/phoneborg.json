@@ -12,6 +12,46 @@
   "from": "now-30m",
   "to": "now"
  },
+ "links": [
+  {
+   "title": "PhoneBorg on GitHub",
+   "type": "link",
+   "icon": "doc",
+   "url": "https://github.com/dzaczek/phoneborg",
+   "targetBlank": true
+  }
+ ],
+ "templating": {
+  "list": [
+   {
+    "name": "node",
+    "label": "Node",
+    "type": "query",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prometheus"
+    },
+    "query": {
+     "query": "label_values(phoneborg_gateway_tokens_total, node_id)",
+     "refId": "node"
+    },
+    "definition": "label_values(phoneborg_gateway_tokens_total, node_id)",
+    "refresh": 2,
+    "multi": true,
+    "includeAll": true,
+    "sort": 1,
+    "current": {
+     "selected": true,
+     "text": [
+      "All"
+     ],
+     "value": [
+      "$__all"
+     ]
+    }
+   }
+  ]
+ },
  "panels": [
   {
    "type": "row",
@@ -346,7 +386,7 @@
   },
   {
    "type": "row",
-   "title": "Inference gateway",
+   "title": "Cluster tokens per minute",
    "id": 9,
    "collapsed": false,
    "gridPos": {
@@ -358,9 +398,501 @@
    "panels": []
   },
   {
+   "type": "stat",
+   "title": "Input tokens / min",
+   "id": 10,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Prompt tokens sent to the phones in the last minute (incl. ones served from the prompt cache)",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 0,
+    "y": 6
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"prompt\"}[1m])) or vector(0)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Output tokens / min",
+   "id": 11,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Tokens the phones generated in the last minute",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 6,
+    "y": 6
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"completion\"}[1m])) or vector(0)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Input tokens (time range)",
+   "id": 12,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 12,
+    "y": 6
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"prompt\"}[$__range])) or vector(0)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Output tokens (time range)",
+   "id": 13,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 18,
+    "y": 6
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"completion\"}[$__range])) or vector(0)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Cluster input tokens per minute",
+   "id": 14,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Prompt tokens the whole cluster processed in each minute (incl. ones served from the prompt cache)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 10
+   },
+   "interval": "1m",
+   "maxDataPoints": 1500,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "legendFormat": "input",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"prompt\"}[1m]))"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "min": 0,
+     "custom": {
+      "drawStyle": "bars",
+      "barAlignment": 0,
+      "lineWidth": 1,
+      "fillOpacity": 80,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "input"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "blue"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "sum",
+      "max",
+      "mean"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Cluster output tokens per minute",
+   "id": 15,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Tokens the whole cluster generated in each minute",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 10
+   },
+   "interval": "1m",
+   "maxDataPoints": 1500,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "legendFormat": "output",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"completion\"}[1m]))"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "min": 0,
+     "custom": {
+      "drawStyle": "bars",
+      "barAlignment": 0,
+      "lineWidth": 1,
+      "fillOpacity": 80,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "output"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "green"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "sum",
+      "max",
+      "mean"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "row",
+   "title": "Node tokens per minute",
+   "id": 16,
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 18
+   },
+   "panels": []
+  },
+  {
+   "type": "timeseries",
+   "title": "$node",
+   "id": 17,
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Input and output tokens of one node per minute; one panel per node (dashboard variable node)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 19
+   },
+   "interval": "1m",
+   "maxDataPoints": 1500,
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "legendFormat": "input",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"prompt\", node_id=\"$node\"}[1m]))"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "legendFormat": "output",
+     "expr": "sum(increase(phoneborg_gateway_tokens_total{kind=\"completion\", node_id=\"$node\"}[1m]))"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "min": 0,
+     "custom": {
+      "drawStyle": "bars",
+      "barAlignment": 0,
+      "lineWidth": 1,
+      "fillOpacity": 80,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "input"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "blue"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "output"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "green"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "sum",
+      "max",
+      "mean"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "repeat": "node",
+   "repeatDirection": "h",
+   "maxPerRow": 2
+  },
+  {
+   "type": "row",
+   "title": "Inference gateway",
+   "id": 18,
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 27
+   },
+   "panels": []
+  },
+  {
    "type": "timeseries",
    "title": "Requests / s by node",
-   "id": 10,
+   "id": 19,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -370,7 +902,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 6
+    "y": 28
    },
    "targets": [
     {
@@ -413,7 +945,7 @@
   {
    "type": "timeseries",
    "title": "Request latency",
-   "id": 11,
+   "id": 20,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -423,7 +955,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 6
+    "y": 28
    },
    "targets": [
     {
@@ -484,7 +1016,7 @@
   {
    "type": "timeseries",
    "title": "Generation speed per node",
-   "id": 12,
+   "id": 21,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -494,7 +1026,7 @@
     "h": 8,
     "w": 8,
     "x": 0,
-    "y": 14
+    "y": 36
    },
    "targets": [
     {
@@ -546,7 +1078,7 @@
   {
    "type": "timeseries",
    "title": "Token throughput",
-   "id": 13,
+   "id": 22,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -556,7 +1088,7 @@
     "h": 8,
     "w": 8,
     "x": 8,
-    "y": 14
+    "y": 36
    },
    "targets": [
     {
@@ -599,7 +1131,7 @@
   {
    "type": "timeseries",
    "title": "In-flight requests",
-   "id": 14,
+   "id": 23,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -609,7 +1141,7 @@
     "h": 8,
     "w": 8,
     "x": 16,
-    "y": 14
+    "y": 36
    },
    "targets": [
     {
@@ -652,7 +1184,7 @@
   {
    "type": "timeseries",
    "title": "Responses by status",
-   "id": 15,
+   "id": 24,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -662,7 +1194,7 @@
     "h": 8,
     "w": 8,
     "x": 0,
-    "y": 22
+    "y": 44
    },
    "targets": [
     {
@@ -705,7 +1237,7 @@
   {
    "type": "timeseries",
    "title": "Failover / upstream errors",
-   "id": 16,
+   "id": 25,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -715,7 +1247,7 @@
     "h": 8,
     "w": 8,
     "x": 8,
-    "y": 22
+    "y": 44
    },
    "targets": [
     {
@@ -758,7 +1290,7 @@
   {
    "type": "timeseries",
    "title": "Rejected requests",
-   "id": 17,
+   "id": 26,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -768,7 +1300,7 @@
     "h": 8,
     "w": 8,
     "x": 16,
-    "y": 22
+    "y": 44
    },
    "targets": [
     {
@@ -811,7 +1343,7 @@
   {
    "type": "timeseries",
    "title": "Prompt cache hit ratio",
-   "id": 18,
+   "id": 27,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -821,7 +1353,7 @@
     "h": 6,
     "w": 8,
     "x": 0,
-    "y": 30
+    "y": 52
    },
    "targets": [
     {
@@ -864,7 +1396,7 @@
   {
    "type": "timeseries",
    "title": "Routing decisions (session affinity)",
-   "id": 19,
+   "id": 28,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -874,7 +1406,7 @@
     "h": 6,
     "w": 8,
     "x": 8,
-    "y": 30
+    "y": 52
    },
    "targets": [
     {
@@ -917,7 +1449,7 @@
   {
    "type": "timeseries",
    "title": "Requests by API key",
-   "id": 20,
+   "id": 29,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -927,7 +1459,7 @@
     "h": 6,
     "w": 8,
     "x": 16,
-    "y": 30
+    "y": 52
    },
    "targets": [
     {
@@ -970,20 +1502,20 @@
   {
    "type": "row",
    "title": "Usage per API key",
-   "id": 21,
+   "id": 30,
    "collapsed": false,
    "gridPos": {
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 36
+    "y": 58
    },
    "panels": []
   },
   {
    "type": "bargauge",
    "title": "Total tokens per API key (time range)",
-   "id": 22,
+   "id": 31,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -993,7 +1525,7 @@
     "h": 8,
     "w": 8,
     "x": 0,
-    "y": 37
+    "y": 59
    },
    "targets": [
     {
@@ -1029,7 +1561,7 @@
   {
    "type": "bargauge",
    "title": "Input vs output per API key (time range)",
-   "id": 23,
+   "id": 32,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1039,7 +1571,7 @@
     "h": 8,
     "w": 8,
     "x": 8,
-    "y": 37
+    "y": 59
    },
    "targets": [
     {
@@ -1085,7 +1617,7 @@
   {
    "type": "bargauge",
    "title": "Input served from cache per API key",
-   "id": 24,
+   "id": 33,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1095,7 +1627,7 @@
     "h": 8,
     "w": 8,
     "x": 16,
-    "y": 37
+    "y": 59
    },
    "targets": [
     {
@@ -1132,7 +1664,7 @@
   {
    "type": "timeseries",
    "title": "Token rate per API key (input / output)",
-   "id": 25,
+   "id": 34,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1142,7 +1674,7 @@
     "h": 7,
     "w": 24,
     "x": 0,
-    "y": 45
+    "y": 67
    },
    "targets": [
     {
@@ -1194,20 +1726,20 @@
   {
    "type": "row",
    "title": "Nodes",
-   "id": 26,
+   "id": 35,
    "collapsed": false,
    "gridPos": {
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 52
+    "y": 74
    },
    "panels": []
   },
   {
    "type": "timeseries",
    "title": "Node state",
-   "id": 27,
+   "id": 36,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1217,7 +1749,7 @@
     "h": 8,
     "w": 8,
     "x": 0,
-    "y": 53
+    "y": 75
    },
    "targets": [
     {
@@ -1260,7 +1792,7 @@
   {
    "type": "timeseries",
    "title": "Available RAM",
-   "id": 28,
+   "id": 37,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1270,7 +1802,7 @@
     "h": 8,
     "w": 8,
     "x": 8,
-    "y": 53
+    "y": 75
    },
    "targets": [
     {
@@ -1313,7 +1845,7 @@
   {
    "type": "timeseries",
    "title": "Load (1m)",
-   "id": 29,
+   "id": 38,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1323,7 +1855,7 @@
     "h": 8,
     "w": 8,
     "x": 16,
-    "y": 53
+    "y": 75
    },
    "targets": [
     {
@@ -1366,7 +1898,7 @@
   {
    "type": "timeseries",
    "title": "Seconds since last heartbeat",
-   "id": 30,
+   "id": 39,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1376,7 +1908,7 @@
     "h": 8,
     "w": 8,
     "x": 0,
-    "y": 61
+    "y": 83
    },
    "targets": [
     {
@@ -1419,7 +1951,7 @@
   {
    "type": "timeseries",
    "title": "Temperature",
-   "id": 31,
+   "id": 40,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1429,7 +1961,7 @@
     "h": 8,
     "w": 8,
     "x": 8,
-    "y": 61
+    "y": 83
    },
    "targets": [
     {
@@ -1472,7 +2004,7 @@
   {
    "type": "timeseries",
    "title": "Runtime ready / restarts",
-   "id": 32,
+   "id": 41,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1482,7 +2014,7 @@
     "h": 8,
     "w": 8,
     "x": 16,
-    "y": 61
+    "y": 83
    },
    "targets": [
     {
@@ -1534,7 +2066,7 @@
   {
    "type": "timeseries",
    "title": "Benchmark CPU (synthetic)",
-   "id": 33,
+   "id": 42,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1544,7 +2076,7 @@
     "h": 6,
     "w": 12,
     "x": 0,
-    "y": 69
+    "y": 91
    },
    "targets": [
     {
@@ -1587,7 +2119,7 @@
   {
    "type": "timeseries",
    "title": "Total RAM / cores",
-   "id": 34,
+   "id": 43,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1597,7 +2129,7 @@
     "h": 6,
     "w": 12,
     "x": 12,
-    "y": 69
+    "y": 91
    },
    "targets": [
     {
@@ -1649,7 +2181,7 @@
   {
    "type": "timeseries",
    "title": "Self-test tok/s per node",
-   "id": 35,
+   "id": 44,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1659,7 +2191,7 @@
     "h": 6,
     "w": 12,
     "x": 0,
-    "y": 75
+    "y": 97
    },
    "targets": [
     {
@@ -1711,7 +2243,7 @@
   {
    "type": "timeseries",
    "title": "Hot nodes",
-   "id": 36,
+   "id": 45,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1721,7 +2253,7 @@
     "h": 6,
     "w": 12,
     "x": 12,
-    "y": 75
+    "y": 97
    },
    "targets": [
     {
@@ -1764,20 +2296,20 @@
   {
    "type": "row",
    "title": "Models",
-   "id": 37,
+   "id": 46,
    "collapsed": false,
    "gridPos": {
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 81
+    "y": 103
    },
    "panels": []
   },
   {
    "type": "stat",
    "title": "Models in catalog",
-   "id": 38,
+   "id": 47,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1787,7 +2319,7 @@
     "h": 4,
     "w": 4,
     "x": 0,
-    "y": 82
+    "y": 104
    },
    "targets": [
     {
@@ -1828,7 +2360,7 @@
   {
    "type": "stat",
    "title": "Models ready",
-   "id": 39,
+   "id": 48,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1838,7 +2370,7 @@
     "h": 4,
     "w": 4,
     "x": 4,
-    "y": 82
+    "y": 104
    },
    "targets": [
     {
@@ -1879,7 +2411,7 @@
   {
    "type": "stat",
    "title": "Nodes switching",
-   "id": 40,
+   "id": 49,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1889,7 +2421,7 @@
     "h": 4,
     "w": 4,
     "x": 8,
-    "y": 82
+    "y": 104
    },
    "targets": [
     {
@@ -1930,7 +2462,7 @@
   {
    "type": "stat",
    "title": "Nodes with model errors",
-   "id": 41,
+   "id": 50,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1940,7 +2472,7 @@
     "h": 4,
     "w": 4,
     "x": 12,
-    "y": 82
+    "y": 104
    },
    "targets": [
     {
@@ -1985,7 +2517,7 @@
   {
    "type": "stat",
    "title": "Planned nodes",
-   "id": 42,
+   "id": 51,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -1995,7 +2527,7 @@
     "h": 4,
     "w": 8,
     "x": 16,
-    "y": 82
+    "y": 104
    },
    "targets": [
     {
@@ -2036,7 +2568,7 @@
   {
    "type": "timeseries",
    "title": "Planned vs serving nodes per model",
-   "id": 43,
+   "id": 52,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2046,7 +2578,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 86
+    "y": 108
    },
    "targets": [
     {
@@ -2098,7 +2630,7 @@
   {
    "type": "timeseries",
    "title": "Node model states",
-   "id": 44,
+   "id": 53,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2108,7 +2640,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 86
+    "y": 108
    },
    "targets": [
     {
@@ -2151,7 +2683,7 @@
   {
    "type": "timeseries",
    "title": "Controller model downloads",
-   "id": 45,
+   "id": 54,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2161,7 +2693,7 @@
     "h": 6,
     "w": 24,
     "x": 0,
-    "y": 94
+    "y": 116
    },
    "targets": [
     {
@@ -2204,20 +2736,20 @@
   {
    "type": "row",
    "title": "Administration",
-   "id": 46,
+   "id": 55,
    "collapsed": false,
    "gridPos": {
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 100
+    "y": 122
    },
    "panels": []
   },
   {
    "type": "timeseries",
    "title": "Drained nodes",
-   "id": 47,
+   "id": 56,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2227,7 +2759,7 @@
     "h": 6,
     "w": 12,
     "x": 0,
-    "y": 101
+    "y": 123
    },
    "targets": [
     {
@@ -2270,7 +2802,7 @@
   {
    "type": "timeseries",
    "title": "Admin actions",
-   "id": 48,
+   "id": 57,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2280,7 +2812,7 @@
     "h": 6,
     "w": 12,
     "x": 12,
-    "y": 101
+    "y": 123
    },
    "targets": [
     {
@@ -2323,20 +2855,20 @@
   {
    "type": "row",
    "title": "Pools and virtual models",
-   "id": 49,
+   "id": 58,
    "collapsed": false,
    "gridPos": {
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 107
+    "y": 129
    },
    "panels": []
   },
   {
    "type": "timeseries",
    "title": "Requests / s by target",
-   "id": 50,
+   "id": 59,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2346,7 +2878,7 @@
     "h": 6,
     "w": 12,
     "x": 0,
-    "y": 108
+    "y": 130
    },
    "targets": [
     {
@@ -2389,7 +2921,7 @@
   {
    "type": "timeseries",
    "title": "Eligible nodes per pool",
-   "id": 51,
+   "id": 60,
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2399,7 +2931,7 @@
     "h": 6,
     "w": 12,
     "x": 12,
-    "y": 108
+    "y": 130
    },
    "targets": [
     {

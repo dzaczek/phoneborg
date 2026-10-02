@@ -44,6 +44,47 @@ stat("Error ratio (5m)", '(sum(rate(phoneborg_gateway_upstream_errors_total[5m])
      20, unit="percentunit", thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.05}])
 y[0] += 4
 
+row("Cluster tokens per minute")
+IN, OUT = 'kind="prompt"', 'kind="completion"'
+stat("Input tokens / min", f'sum(increase(phoneborg_gateway_tokens_total{{{IN}}}[1m])) or vector(0)', 0, w=6,
+     desc="Prompt tokens sent to the phones in the last minute (incl. ones served from the prompt cache)")
+stat("Output tokens / min", f'sum(increase(phoneborg_gateway_tokens_total{{{OUT}}}[1m])) or vector(0)', 6, w=6,
+     desc="Tokens the phones generated in the last minute")
+stat("Input tokens (time range)", f'sum(increase(phoneborg_gateway_tokens_total{{{IN}}}[$__range])) or vector(0)', 12, w=6)
+stat("Output tokens (time range)", f'sum(increase(phoneborg_gateway_tokens_total{{{OUT}}}[$__range])) or vector(0)', 18, w=6)
+for p_ in panels[-4:]:
+    p_["fieldConfig"]["defaults"]["decimals"] = 0
+y[0] += 4
+
+def minute_bars(title, targets, x, w, desc, repeat=None):
+    """Bars, one per minute: tokens in that minute. targets = [(expr, legend, color)]."""
+    panels.append({"type": "timeseries", "title": title, "id": nid(), "datasource": DS, "description": desc,
+        "gridPos": {"h": 8, "w": w, "x": x, "y": y[0]}, "interval": "1m", "maxDataPoints": 1500,
+        "targets": [{"refId": chr(65+i), "datasource": DS, "legendFormat": l, "expr": e} for i, (e, l, _) in enumerate(targets)],
+        "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0,
+            "custom": {"drawStyle": "bars", "barAlignment": 0, "lineWidth": 1, "fillOpacity": 80,
+                       "stacking": {"mode": "none"}, "showPoints": "never"}},
+            "overrides": [{"matcher": {"id": "byName", "options": l},
+                           "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": c}}]}
+                          for _, l, c in targets]},
+        "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum", "max", "mean"]},
+                    "tooltip": {"mode": "multi"}}})
+    if repeat:
+        panels[-1].update({"repeat": repeat, "repeatDirection": "h", "maxPerRow": 2})
+
+TOK = 'phoneborg_gateway_tokens_total'
+minute_bars("Cluster input tokens per minute", [(f'sum(increase({TOK}{{{IN}}}[1m]))', "input", "blue")], 0, 12,
+            "Prompt tokens the whole cluster processed in each minute (incl. ones served from the prompt cache)")
+minute_bars("Cluster output tokens per minute", [(f'sum(increase({TOK}{{{OUT}}}[1m]))', "output", "green")], 12, 12,
+            "Tokens the whole cluster generated in each minute")
+y[0] += 8
+
+row("Node tokens per minute")
+minute_bars("$node", [(f'sum(increase({TOK}{{{IN}, node_id="$node"}}[1m]))', "input", "blue"),
+                      (f'sum(increase({TOK}{{{OUT}, node_id="$node"}}[1m]))', "output", "green")], 0, 12,
+            "Input and output tokens of one node per minute; one panel per node (dashboard variable node)", repeat="node")
+y[0] += 8
+
 row("Inference gateway")
 ts("Requests / s by node", [('sum by (node_id) (rate(phoneborg_gateway_requests_total[1m]))', "{{node_id}}")], 0, unit="reqps", stack=True)
 ts("Request latency", [
@@ -152,6 +193,13 @@ ts("Eligible nodes per pool", [('phoneborg_pool_members', "{{pool}}")], 12, w=12
 
 dash = {"uid": "phoneborg", "title": "PhoneBorg", "tags": ["phoneborg"], "timezone": "browser",
         "schemaVersion": 39, "version": 1, "refresh": "5s", "time": {"from": "now-30m", "to": "now"},
+        "links": [{"title": "PhoneBorg on GitHub", "type": "link", "icon": "doc",
+                   "url": "https://github.com/dzaczek/phoneborg", "targetBlank": True}],
+        "templating": {"list": [{"name": "node", "label": "Node", "type": "query", "datasource": DS,
+            "query": {"query": 'label_values(phoneborg_gateway_tokens_total, node_id)', "refId": "node"},
+            "definition": 'label_values(phoneborg_gateway_tokens_total, node_id)',
+            "refresh": 2, "multi": True, "includeAll": True, "sort": 1,
+            "current": {"selected": True, "text": ["All"], "value": ["$__all"]}}]},
         "panels": panels}
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboards", "phoneborg.json")
 json.dump(dash, open(out, "w"), indent=1)
