@@ -360,6 +360,9 @@ request goes through this loop, whatever its `model` (ADR-020):
   node in the same order (largest model) takes over, with a roster rebuilt
   for the new set of workers. After output has started, an error ends the
   stream with a bracketed message.
+- Orchestrator calls use `-upstream-timeout` as an idle limit (reset on
+  every response chunk), so a thinking model that keeps generating for
+  more than the timeout is not cut off; worker calls keep the total limit.
 - Thinking (`enable_thinking`) is off for the orchestrator by default and
   always off for workers: on phones every token costs, and worker results
   become the orchestrator's prompt, processed at roughly 10–20 tok/s.

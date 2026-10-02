@@ -1426,6 +1426,11 @@ orchestrator's stream.
   replaced by the next-largest node; a failed worker task is retried once
   on another worker, then reported to the orchestrator as an error text;
   an error after output started ends the stream with a bracketed message.
+- **Idle timeout for the orchestrator**: its calls use `-upstream-timeout`
+  as the longest silence between response chunks rather than a total limit.
+  The first live run with thinking on was cut off after exactly 600 s
+  while Qwen3-8B on the OnePlus was still generating the final answer.
+  Workers keep the total limit; their output is capped at 512 tokens.
 - **Bypass**: `/v1/completions` and requests with client `tools` go to the
   orchestrator unchanged, so agent clients keep their own tool loop.
 

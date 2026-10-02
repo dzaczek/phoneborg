@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -268,5 +269,48 @@ func TestParseSubtasks(t *testing.T) {
 		if len(got) != want || (want == 0) != (err != nil) {
 			t.Errorf("%s: %v, %v", args, got, err)
 		}
+	}
+}
+
+// slowStream streams n content chunks, gap apart, then stalls for stall.
+func slowStream(t *testing.T, n int, gap, stall time.Duration) *httptest.Server {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"t%d \"}}]}\n\n", i)
+			w.(http.Flusher).Flush()
+			time.Sleep(gap)
+		}
+		select {
+		case <-time.After(stall):
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func TestSuperborgOrchestratorRunsWhileGenerating(t *testing.T) {
+	g, h := newGW(t, AllowAll{}, Backend{NodeID: "o", Model: "m", URL: slowStream(t, 6, 100*time.Millisecond, 0).URL})
+	g.SetUpstreamTimeout(250 * time.Millisecond) // shorter than the 600 ms stream, longer than any gap
+	g.SetSuperborg(&Superborg{})
+	w := post(h, chat)
+	var c completion
+	_ = json.Unmarshal(w.Body.Bytes(), &c)
+	if w.Code != 200 || c.Choices[0].Message.Content != "t0 t1 t2 t3 t4 t5 " {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestSuperborgOrchestratorStopsWhenSilent(t *testing.T) {
+	g, h := newGW(t, AllowAll{}, Backend{NodeID: "o", Model: "m", URL: slowStream(t, 1, 0, 2*time.Second).URL})
+	g.SetUpstreamTimeout(250 * time.Millisecond)
+	g.SetSuperborg(&Superborg{})
+	start := time.Now()
+	w := post(h, `{"model":"x","stream":true,"messages":[{"role":"user","content":"x"}]}`)
+	if d := time.Since(start); d > time.Second || !strings.Contains(w.Body.String(), "no output from the node within the upstream timeout") {
+		t.Fatalf("after %v: %s", d, w.Body)
 	}
 }

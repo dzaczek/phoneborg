@@ -418,7 +418,7 @@ func (g *Gateway) serveTarget(w http.ResponseWriter, r *http.Request, tgt Target
 			b = picker.Pick(Request{Model: meta.Model, AffinityKey: meta.affinityKey(), PromptBytes: len(body)}, cands, g.inflightOf)
 		}
 		tried[b.NodeID] = true
-		err := g.forward(w, r, b, body, meta.Stream, principal, reqID)
+		err := g.forward(w, r, b, body, meta.Stream, false, principal, reqID)
 		if err == nil {
 			return
 		}
@@ -458,7 +458,14 @@ func (g *Gateway) rejectUnauthorized(w http.ResponseWriter, err error) {
 	openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
 }
 
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, body []byte, stream bool, p Principal, reqID string) error {
+// errIdleTimeout ends an idle-timed forward whose backend sent nothing for
+// the upstream timeout.
+var errIdleTimeout = errors.New("no output from the node within the upstream timeout")
+
+// forward proxies body to b. The upstream timeout bounds the whole request,
+// or, with idle, only the silence between response chunks (and before the
+// first one), so a node that keeps generating is never cut off (ADR-020).
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, body []byte, stream, idle bool, p Principal, reqID string) error {
 	g.addInflight(b.NodeID, 1)
 	defer g.addInflight(b.NodeID, -1)
 	start := g.now()
@@ -469,6 +476,14 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	g.track(b.NodeID, a, true)
 	defer g.track(b.NodeID, a, false)
 	ctx, cancel := context.WithTimeout(cctx, g.UpstreamTimeout())
+	alive := func() {}
+	if idle {
+		var cancelIdle context.CancelCauseFunc
+		ctx, cancelIdle = context.WithCancelCause(cctx)
+		timer := time.AfterFunc(g.UpstreamTimeout(), func() { cancelIdle(errIdleTimeout) })
+		cancel = func() { timer.Stop(); cancelIdle(nil) }
+		alive = func() { timer.Reset(g.UpstreamTimeout()) }
+	}
 	defer cancel()
 	if b.External {
 		// External servers host several models and need the real id, not
@@ -533,6 +548,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	for {
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			alive()
 			if first {
 				g.mTTFB.WithLabelValues(b.Model).Observe(g.now().Sub(start).Seconds())
 				first = false
@@ -577,6 +593,9 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	g.log.Info("request done", "request_id", reqID, "node_id", b.NodeID, "model", b.Model,
 		"principal", p.Name, "status", code, "stream", stream, "duration_ms", g.now().Sub(start).Milliseconds())
 	if copyErr != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) {
+			copyErr = cause
+		}
 		return fmt.Errorf("stream copy: %w", copyErr) // not retryable: bytes already sent
 	}
 	return nil

@@ -306,7 +306,9 @@ type orchestration struct {
 // relaying its text to the client as it arrives and collecting tool calls.
 func (g *Gateway) orchestrateOnce(r *http.Request, orch Backend, req map[string]json.RawMessage, em *sbEmitter, p Principal, reqID string) (orchestration, error) {
 	sw := &sseCollector{header: http.Header{}, em: em}
-	err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), orch, mustJSON(req), true, p, reqID)
+	// Idle timeout: a thinking 8B model on a phone can generate for longer
+	// than the upstream timeout; it is only stopped when it goes silent.
+	err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), orch, mustJSON(req), true, true, p, reqID)
 	if err != nil {
 		return orchestration{}, err
 	}
@@ -578,7 +580,7 @@ func (g *Gateway) runSubtask(r *http.Request, workers []Backend, b Backend, task
 	for attempt := 0; attempt < 2; attempt++ {
 		tried[b.NodeID] = true
 		bw := newBufferedWriter()
-		err := g.forward(bw, g.internalRequest(r, "/v1/chat/completions", nil), b, body, false, p, reqID)
+		err := g.forward(bw, g.internalRequest(r, "/v1/chat/completions", nil), b, body, false, false, p, reqID)
 		if err == nil && bw.status == http.StatusOK {
 			text, u, perr := parseCompletion(bw.body.Bytes())
 			return b, text, u, perr

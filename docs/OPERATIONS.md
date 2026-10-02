@@ -665,6 +665,11 @@ The setting is stored in `routing.json` and survives restarts.
   must answer without tools; each worker answer is capped at 512 tokens
   (they become the orchestrator's prompt, and phones process prompts at
   roughly 10–20 tok/s). Workers always run with thinking off.
+- **Timeouts**: for the orchestrator, `-upstream-timeout` is an idle
+  limit: it is stopped only after that long without a single token (the
+  wait for the first token, i.e. prompt processing, included), never while
+  it keeps generating, so long thinking is not cut off. Worker calls keep
+  the plain total limit; their answers are capped at 512 tokens anyway.
 - **Progress**: streaming clients see the orchestrator's reasoning and lines
   like `→ mi8: translate …` / `← mi8: done in 14.2 s` as
   `reasoning_content` (the panel shows them in the Thinking block); the
