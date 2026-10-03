@@ -70,6 +70,23 @@ func (f *fakeOrchestrator) requests() []map[string]any {
 
 const twoTasks = `{"tasks":[{"worker":"w1","task":"say a"},{"worker":"w2","task":"say b"}]}`
 
+// borgTargets resolves "pool/borg" as a Super Borg pool over every node.
+type borgTargets struct{ sb Superborg }
+
+func (b borgTargets) Resolve(name string) (Target, bool) {
+	if name != "pool/borg" {
+		return Target{}, false
+	}
+	sb := b.sb
+	return Target{Label: name, Superborg: &sb}, true
+}
+
+func (borgTargets) Models() []ModelEntry { return nil }
+
+func setBorg(g *Gateway, sb Superborg) { g.SetTargets(borgTargets{sb}) }
+
+const borgChat = `{"model":"pool/borg","messages":[{"role":"user","content":"x"}]}`
+
 func superborgGW(t *testing.T, orch *fakeOrchestrator, workers ...string) (*Gateway, http.Handler) {
 	backends := []Backend{{NodeID: "o", Alias: "boss", Model: "big", URL: orch.server(t).URL}}
 	for _, w := range workers {
@@ -79,7 +96,7 @@ func superborgGW(t *testing.T, orch *fakeOrchestrator, workers ...string) (*Gate
 	g.SetModelInfo(func(id string) (ModelInfo, bool) {
 		return map[string]ModelInfo{"big": {SizeBytes: 5e9, Params: "8B"}, "small": {SizeBytes: 5e8, Params: "0.5B", Tags: []string{"fast"}}}[id], true
 	})
-	g.SetSuperborg(&Superborg{})
+	setBorg(g, Superborg{})
 	return g, h
 }
 
@@ -99,7 +116,7 @@ type completion struct {
 func TestSuperborgDelegatesInParallelAndAnswers(t *testing.T) {
 	orch := &fakeOrchestrator{calls: twoTasks}
 	g, h := superborgGW(t, orch, "w1", "w2")
-	w := post(h, `{"model":"whatever","messages":[{"role":"system","content":"Be nice."},{"role":"user","content":"x"}]}`)
+	w := post(h, `{"model":"pool/borg","messages":[{"role":"system","content":"Be nice."},{"role":"user","content":"x"}]}`)
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
@@ -116,7 +133,7 @@ func TestSuperborgDelegatesInParallelAndAnswers(t *testing.T) {
 			t.Errorf("reasoning %q lacks %q", msg.ReasoningContent, s)
 		}
 	}
-	if c.Model != KindSuperborg || w.Header().Get("X-PhoneBorg-Node") != "o" {
+	if c.Model != "pool/borg" || w.Header().Get("X-PhoneBorg-Node") != "o" {
 		t.Errorf("model %q, node %q", c.Model, w.Header().Get("X-PhoneBorg-Node"))
 	}
 	if c.Usage.PromptTokens != 2*10+2*5 { // two orchestrator rounds, two worker calls
@@ -150,7 +167,7 @@ func TestSuperborgDelegatesInParallelAndAnswers(t *testing.T) {
 func TestSuperborgStreams(t *testing.T) {
 	orch := &fakeOrchestrator{calls: twoTasks}
 	_, h := superborgGW(t, orch, "w1", "w2")
-	w := post(h, `{"model":"x","stream":true,"messages":[{"role":"user","content":"x"}]}`)
+	w := post(h, `{"model":"pool/borg","stream":true,"messages":[{"role":"user","content":"x"}]}`)
 	body := w.Body.String()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("status %d, type %q: %s", w.Code, w.Header().Get("Content-Type"), body)
@@ -165,7 +182,7 @@ func TestSuperborgStreams(t *testing.T) {
 func TestSuperborgSimpleQuestionNoDelegation(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	_, h := superborgGW(t, orch, "w1")
-	w := post(h, chat)
+	w := post(h, borgChat)
 	var c completion
 	_ = json.Unmarshal(w.Body.Bytes(), &c)
 	if w.Code != 200 || c.Choices[0].Message.Content != "final: " || len(orch.requests()) != 1 {
@@ -176,7 +193,7 @@ func TestSuperborgSimpleQuestionNoDelegation(t *testing.T) {
 func TestSuperborgLastRoundHasNoTools(t *testing.T) {
 	orch := &fakeOrchestrator{calls: `{"worker":"w1","task":"again"}`, always: true} // bare task, delegates every time it may
 	_, h := superborgGW(t, orch, "w1")
-	if w := post(h, chat); w.Code != 200 {
+	if w := post(h, borgChat); w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
 	reqs := orch.requests()
@@ -191,7 +208,7 @@ func TestSuperborgLastRoundHasNoTools(t *testing.T) {
 func TestSuperborgClientToolsGoStraightToOrchestrator(t *testing.T) {
 	orch := &fakeOrchestrator{calls: twoTasks}
 	_, h := superborgGW(t, orch, "w1")
-	w := post(h, `{"model":"x","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"read"}}]}`)
+	w := post(h, `{"model":"pool/borg","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"read"}}]}`)
 	if w.Code != 200 || w.Header().Get("X-PhoneBorg-Node") != "o" {
 		t.Fatalf("status %d node %q: %s", w.Code, w.Header().Get("X-PhoneBorg-Node"), w.Body)
 	}
@@ -209,8 +226,8 @@ func TestSuperborgWorkerFailureRetriesElsewhere(t *testing.T) {
 		Backend{NodeID: "o", Model: "big", URL: orch.server(t).URL, Speed: 9},
 		Backend{NodeID: "bad", Model: "small", URL: broken.URL},
 		Backend{NodeID: "good", Model: "small", URL: fakeLlama(t, "good").URL})
-	g.SetSuperborg(&Superborg{Orchestrator: "o"})
-	w := post(h, chat)
+	setBorg(g, Superborg{Orchestrator: "o"})
+	w := post(h, borgChat)
 	var c completion
 	_ = json.Unmarshal(w.Body.Bytes(), &c)
 	if w.Code != 200 || c.Choices[0].Message.Content != "final: [good] hi from good" {
@@ -224,8 +241,8 @@ func TestSuperborgOrchestratorFailover(t *testing.T) {
 	g, h := newGW(t, AllowAll{},
 		Backend{NodeID: "dead", Model: "m", URL: dead.server(t).URL},
 		Backend{NodeID: "alive", Model: "m", URL: alive.server(t).URL})
-	g.SetSuperborg(&Superborg{Orchestrator: "dead"})
-	w := post(h, chat)
+	setBorg(g, Superborg{Orchestrator: "dead"})
+	w := post(h, borgChat)
 	if w.Code != 200 || w.Header().Get("X-PhoneBorg-Node") != "alive" || len(alive.requests()) != 1 {
 		t.Fatalf("status %d node %q: %s", w.Code, w.Header().Get("X-PhoneBorg-Node"), w.Body)
 	}
@@ -240,26 +257,35 @@ func TestSuperborgPickOrchestrator(t *testing.T) {
 		return ModelInfo{SizeBytes: map[string]int64{"small": 1, "mid": 5, "big": 9}[id]}, true
 	})
 	for cfg, want := range map[string]string{"": "b", "oneplus": "b", "c": "c", "gone": "b"} {
-		if o, ok := g.pickOrchestrator(Superborg{Orchestrator: cfg}, nil); !ok || o.NodeID != want {
+		if o, ok := g.pickOrchestrator(Superborg{Orchestrator: cfg}, g.routable(), nil); !ok || o.NodeID != want {
 			t.Errorf("orchestrator %q: got %s, want %s", cfg, o.NodeID, want)
 		}
 	}
-	o, workers, _ := g.SuperborgPlan(Superborg{})
+	setBorg(g, Superborg{})
+	o, workers, _ := g.SuperborgPlan("pool/borg")
 	if o.NodeID != "b" || len(workers) != 2 || workers[0].NodeID != "a" {
 		t.Errorf("plan: %s %v", o.NodeID, workers)
 	}
 }
 
-func TestSuperborgModelList(t *testing.T) {
-	orch := &fakeOrchestrator{}
-	g, _ := superborgGW(t, orch, "w1")
-	e := g.ModelEntries()
-	if len(e) != 1 || e[0].ID != KindSuperborg || e[0].Nodes != 2 || e[0].Description != "orchestrator boss (big)" {
-		t.Errorf("entries = %+v", e)
+func TestSuperborgPoolLeavesOtherTargetsAlone(t *testing.T) {
+	orch := &fakeOrchestrator{calls: twoTasks}
+	g, h := superborgGW(t, orch, "w1")
+	// A plain model id is routed as always; the orchestrator is not involved.
+	w := post(h, `{"model":"small","messages":[{"role":"user","content":"x"}]}`)
+	if w.Code != 200 || w.Header().Get("X-PhoneBorg-Node") != "w1-id" || len(orch.requests()) != 0 {
+		t.Fatalf("status %d node %q: %s", w.Code, w.Header().Get("X-PhoneBorg-Node"), w.Body)
 	}
-	g.SetSuperborg(nil)
-	if e := g.ModelEntries(); len(e) < 3 {
-		t.Errorf("normal mode entries = %+v", e)
+	// No special /v1/models listing: every served model and "auto" stay.
+	ids := map[string]bool{}
+	for _, e := range g.ModelEntries() {
+		ids[e.ID] = true
+	}
+	if !ids["big"] || !ids["small"] || !ids["auto"] {
+		t.Errorf("entries %v", ids)
+	}
+	if _, _, ok := g.SuperborgPlan("pool/none"); ok {
+		t.Error("plan for a pool that does not exist")
 	}
 }
 
@@ -295,8 +321,8 @@ func slowStream(t *testing.T, n int, gap, stall time.Duration) *httptest.Server 
 func TestSuperborgOrchestratorRunsWhileGenerating(t *testing.T) {
 	g, h := newGW(t, AllowAll{}, Backend{NodeID: "o", Model: "m", URL: slowStream(t, 6, 100*time.Millisecond, 0).URL})
 	g.SetUpstreamTimeout(250 * time.Millisecond) // shorter than the 600 ms stream, longer than any gap
-	g.SetSuperborg(&Superborg{})
-	w := post(h, chat)
+	setBorg(g, Superborg{})
+	w := post(h, borgChat)
 	var c completion
 	_ = json.Unmarshal(w.Body.Bytes(), &c)
 	if w.Code != 200 || c.Choices[0].Message.Content != "t0 t1 t2 t3 t4 t5 " {
@@ -307,9 +333,9 @@ func TestSuperborgOrchestratorRunsWhileGenerating(t *testing.T) {
 func TestSuperborgOrchestratorStopsWhenSilent(t *testing.T) {
 	g, h := newGW(t, AllowAll{}, Backend{NodeID: "o", Model: "m", URL: slowStream(t, 1, 0, 2*time.Second).URL})
 	g.SetUpstreamTimeout(250 * time.Millisecond)
-	g.SetSuperborg(&Superborg{})
+	setBorg(g, Superborg{})
 	start := time.Now()
-	w := post(h, `{"model":"x","stream":true,"messages":[{"role":"user","content":"x"}]}`)
+	w := post(h, `{"model":"pool/borg","stream":true,"messages":[{"role":"user","content":"x"}]}`)
 	if d := time.Since(start); d > time.Second || !strings.Contains(w.Body.String(), "no output from the node within the upstream timeout") {
 		t.Fatalf("after %v: %s", d, w.Body)
 	}

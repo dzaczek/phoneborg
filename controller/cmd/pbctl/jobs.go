@@ -14,7 +14,7 @@ import (
 // jobsCmd manages Super Borg jobs (ADR-021):
 //
 //	jobs
-//	jobs new [title=T] <goal...>
+//	jobs new [title=T] [pool=P] <goal...>
 //	jobs show|cancel|rm|result <id>
 //	jobs say <id> <text...>
 //	jobs doc <id> <name>
@@ -46,8 +46,14 @@ func jobsCmd(c *client, o *out, args []string) error {
 	switch {
 	case sub == "new" && len(rest) > 0:
 		var req controller.JobCreate
-		if t, ok := strings.CutPrefix(rest[0], "title="); ok {
-			req.Title, rest = t, rest[1:]
+		for len(rest) > 0 {
+			if t, ok := strings.CutPrefix(rest[0], "title="); ok {
+				req.Title, rest = t, rest[1:]
+			} else if p, ok := strings.CutPrefix(rest[0], "pool="); ok {
+				req.Pool, rest = p, rest[1:]
+			} else {
+				break
+			}
 		}
 		req.Goal = strings.Join(rest, " ")
 		raw, err := c.do(http.MethodPost, "/admin/jobs", req)
@@ -58,7 +64,11 @@ func jobsCmd(c *client, o *out, args []string) error {
 		if err := json.Unmarshal(raw, &j); err != nil {
 			return err
 		}
-		fmt.Fprintf(o.w, "job %s queued: %s\nfollow it with: pbctl jobs show %s\n", j.ID, j.Title, j.ID)
+		where := j.Pool
+		if where == "" {
+			where = "the whole cluster"
+		}
+		fmt.Fprintf(o.w, "job %s queued on %s: %s\nfollow it with: pbctl jobs show %s\n", j.ID, where, j.Title, j.ID)
 		return nil
 	case sub == "show" && len(rest) == 1:
 		raw, err := c.do(http.MethodGet, "/admin/jobs/"+pathEscape(rest[0]), nil)
@@ -105,7 +115,7 @@ func showJob(o *out, raw []byte) error {
 	if err := json.Unmarshal(raw, &j); err != nil {
 		return err
 	}
-	fmt.Fprintf(o.w, "%s  %s  [%s]  %d steps\n", j.ID, j.Title, j.Status, j.Steps)
+	fmt.Fprintf(o.w, "%s  %s  [%s]  %d steps  %s\n", j.ID, j.Title, j.Status, j.Steps, j.Pool)
 	if j.Question != "" {
 		fmt.Fprintf(o.w, "waiting: %s\n", j.Question)
 	}

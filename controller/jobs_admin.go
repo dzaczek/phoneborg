@@ -24,6 +24,9 @@ type JobsOptions struct {
 type JobCreate struct {
 	Title string `json:"title"`
 	Goal  string `json:"goal"`
+	// Pool is the Super Borg pool to run on ("pool/<name>" or "<name>");
+	// "" = the first Super Borg pool by name, or the whole cluster if none.
+	Pool string `json:"pool,omitempty"`
 }
 
 // JobMessage is the body of POST /admin/jobs/{id}/messages.
@@ -60,7 +63,12 @@ func (s *Server) adminCreateJob(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "goal is required")
 		return
 	}
-	job := s.jobs.Create(c.Title, c.Goal, PanelPrincipal)
+	pool, err := s.jobPool(c.Pool)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	job := s.jobs.Create(c.Title, c.Goal, PanelPrincipal, pool)
 	s.audit(r, "job_create", nil, "job", job.ID, "title", job.Title)
 	writeJSON(w, http.StatusCreated, job)
 }
@@ -130,6 +138,24 @@ func (s *Server) adminDeleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// jobPool resolves a job's pool: a named Super Borg pool, or by default the
+// first one by name; "" (the whole cluster) when there is none.
+func (s *Server) jobPool(name string) (string, error) {
+	name = strings.TrimPrefix(name, poolPrefix)
+	for _, p := range s.pools.list() { // sorted by name
+		if p.Routing != RoutingSuperborg {
+			continue
+		}
+		if name == "" || p.Name == name {
+			return poolPrefix + p.Name, nil
+		}
+	}
+	if name == "" {
+		return "", nil
+	}
+	return "", fmt.Errorf("no Super Borg pool %q (a pool with routing %q)", name, RoutingSuperborg)
 }
 
 func jobError(w http.ResponseWriter, err error) {

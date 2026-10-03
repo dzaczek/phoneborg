@@ -124,7 +124,7 @@ func TestJobRunsPlanDelegateFinish(t *testing.T) {
 	orch := &scriptedOrch{calls: storyScript}
 	g, j, prompts := newJobsEnv(t, dir, orch, "w1", "w2")
 	runJobs(t, j)
-	s := j.Create("", "Write a story about a cat in 2 chapters", "panel")
+	s := j.Create("", "Write a story about a cat in 2 chapters", "panel", "")
 	job := waitStatus(t, j, s.ID, JobDone)
 
 	if job.Title != "Write a story about a cat in 2 chapters" || job.Steps != 5 || job.Summary != "Done." ||
@@ -194,7 +194,7 @@ func TestJobAskUserAndSay(t *testing.T) {
 	}}
 	_, j, _ := newJobsEnv(t, "", orch, "w1")
 	runJobs(t, j)
-	s := j.Create("t", "goal", "")
+	s := j.Create("t", "goal", "", "")
 	job := waitStatus(t, j, s.ID, JobWaiting)
 	if job.Question != "How long?" || job.Principal != "job" {
 		t.Fatalf("job %+v", job)
@@ -216,7 +216,7 @@ func TestJobStepBudgetAndCancel(t *testing.T) {
 	orch := &scriptedOrch{calls: []string{`{"name":"read_doc","arguments":{"name":"nothing"}}`}}
 	_, j, _ := newJobsEnv(t, "", orch)
 	runJobs(t, j)
-	s := j.Create("loop", "goal", "")
+	s := j.Create("loop", "goal", "", "")
 	job := waitStatus(t, j, s.ID, JobWaiting)
 	if job.Steps != jobMaxStepsPerRun || !strings.Contains(job.Question, "Step budget") {
 		t.Fatalf("job %+v", job)
@@ -232,7 +232,7 @@ func TestJobStepBudgetAndCancel(t *testing.T) {
 func TestJobRequeuedAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	_, j, _ := newJobsEnv(t, dir, &scriptedOrch{calls: storyScript})
-	s := j.Create("t", "goal", "") // not run: no runner
+	s := j.Create("t", "goal", "", "") // not run: no runner
 	path := filepath.Join(dir, s.ID+".json")
 	data, _ := os.ReadFile(path)
 	_ = os.WriteFile(path, []byte(strings.Replace(string(data), `"status":"queued"`, `"status":"running"`, 1)), 0o600)
@@ -247,16 +247,16 @@ func TestJobRequeuedAfterRestart(t *testing.T) {
 func TestSuperborgChatStartsJob(t *testing.T) {
 	orch := &scriptedOrch{calls: []string{`{"name":"start_job","arguments":{"title":"Story"}}`}}
 	g, j, _ := newJobsEnv(t, "", orch, "w1")
-	g.SetSuperborg(&Superborg{})
+	setBorg(g, Superborg{})
 	mux := http.NewServeMux()
 	g.Register(mux)
-	w := post(mux, `{"model":"x","messages":[{"role":"user","content":"Write a story in 20 chapters"}]}`)
+	w := post(mux, `{"model":"pool/borg","messages":[{"role":"user","content":"Write a story in 20 chapters"}]}`)
 	list := j.List()
 	if w.Code != 200 || len(list) != 1 || list[0].Title != "Story" || !strings.Contains(w.Body.String(), "Started job **Story** (`"+list[0].ID) {
 		t.Fatalf("status %d, jobs %+v: %s", w.Code, list, w.Body)
 	}
 	job, _ := j.Get(list[0].ID)
-	if job.Goal != "Write a story in 20 chapters" {
+	if job.Goal != "Write a story in 20 chapters" || job.Pool != "pool/borg" {
 		t.Errorf("goal %q", job.Goal)
 	}
 	tools := fmt.Sprint(orch.requests()[0]["tools"])
@@ -283,9 +283,9 @@ func TestPlanTasksReplacesUndoneTasks(t *testing.T) {
 		`{"name":"ask_user","arguments":{"question":"ok now?"}}`,
 	}}
 	g, j, _ := newJobsEnv(t, "", orch)
-	g.SetSuperborg(&Superborg{Thinking: true})
+	setBorg(g, Superborg{Thinking: true})
 	runJobs(t, j)
-	s := j.Create("t", "goal", "")
+	s := j.Create("t", "goal", "", "pool/borg")
 	job := waitStatus(t, j, s.ID, JobWaiting)
 	// Without a new message the plan cannot change: plan_tasks is not even offered.
 	if len(job.Tasks) != 2 || !strings.Contains(job.Recent[2].Result, "the plan is already set") {
@@ -326,7 +326,7 @@ func TestJobRepeatedCallIsRejected(t *testing.T) {
 	}}
 	_, j, _ := newJobsEnv(t, "", orch)
 	runJobs(t, j)
-	s := j.Create("t", "goal", "")
+	s := j.Create("t", "goal", "", "")
 	job := waitStatus(t, j, s.ID, JobWaiting)
 	if !strings.Contains(job.Recent[1].Result, "you just made exactly this call") {
 		t.Errorf("recent %+v", job.Recent)
@@ -341,7 +341,7 @@ func TestJobLanguageDuplicatesAndTinyWorkers(t *testing.T) {
 	}}
 	g, j, prompts := newJobsEnv(t, "", orch, "w1", "w2")
 	runJobs(t, j)
-	s := j.Create("t", "Write a story", "")
+	s := j.Create("t", "Write a story", "", "")
 	job := waitStatus(t, j, s.ID, JobWaiting)
 	names := map[string]bool{}
 	for _, d := range job.Docs {
@@ -361,8 +361,8 @@ func TestJobLanguageDuplicatesAndTinyWorkers(t *testing.T) {
 	g.SetModelInfo(func(id string) (ModelInfo, bool) {
 		return ModelInfo{Params: map[string]string{"big": "8B", "small": "630M"}[id]}, true
 	})
-	o, _ := g.pickOrchestrator(Superborg{}, nil)
-	if w := g.jobWorkers(o); len(w) != 0 {
+	o, _ := g.pickOrchestrator(Superborg{}, g.routable(), nil)
+	if w := g.jobWorkers(o, g.routable()); len(w) != 0 {
 		t.Errorf("tiny workers offered: %v", w)
 	}
 }
@@ -384,7 +384,7 @@ func TestJobWaitsWhenOrchestratorCannotCallTools(t *testing.T) {
 	g, _ := newGW(t, AllowAll{}, Backend{NodeID: "o", Alias: "mi8", Model: "gemma", URL: s.URL})
 	j := NewJobs(g, "", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	runJobs(t, j)
-	id := j.Create("t", "goal", "").ID
+	id := j.Create("t", "goal", "", "").ID
 	job := waitStatus(t, j, id, JobWaiting)
 	if job.Steps != jobMaxNoTool || !strings.Contains(job.Question, "mi8 (gemma) made no tool call in 3 steps") {
 		t.Fatalf("steps %d, question %q", job.Steps, job.Question)
@@ -412,7 +412,7 @@ func TestJobDelegateFastestFreeAndMissingContext(t *testing.T) {
 	})
 	j := NewJobs(g, "", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	runJobs(t, j)
-	job := waitStatus(t, j, j.Create("t", "goal", "").ID, JobWaiting)
+	job := waitStatus(t, j, j.Create("t", "goal", "", "").ID, JobWaiting)
 
 	if !strings.Contains(job.Recent[1].Result, "ch_01: not started: document outline does not exist yet") {
 		t.Errorf("missing context not refused: %+v", job.Recent[1])
@@ -432,5 +432,14 @@ func TestJobDelegateFastestFreeAndMissingContext(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(orch.requests()[0]["tools"]), "worker:map") {
 		t.Error("delegate still asks the orchestrator for a worker")
+	}
+}
+
+func TestJobInUnknownPoolFails(t *testing.T) {
+	_, j, _ := newJobsEnv(t, "", &scriptedOrch{calls: storyScript}, "w1")
+	runJobs(t, j)
+	job := waitStatus(t, j, j.Create("t", "goal", "", "pool/nope").ID, JobWaiting)
+	if !strings.Contains(job.Question, "not a Super Borg pool: pool/nope") || job.Steps != 0 {
+		t.Errorf("question %q, steps %d", job.Question, job.Steps)
 	}
 }

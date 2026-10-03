@@ -15,7 +15,6 @@ import { h, fill, int, tps, ago } from '../dom.js';
 import { confirmDialog, field } from '../ui.js';
 
 const GROUPS = [
-  { kind: 'superborg', label: 'Super Borg' },
   { kind: 'model', label: 'Models' },
   { kind: 'auto', label: 'Auto' },
   { kind: 'pool', label: 'Pools' },
@@ -111,7 +110,6 @@ function splitThinkTag(raw) {
 }
 
 function modelLabel(m) {
-  if (m.kind === 'superborg') return `superborg — ${m.description || 'whole cluster'} (${m.nodes} nodes)`;
   if (m.kind === 'node') return `${m.id} — ${m.model || 'no model'}${m.ready === false ? ' (not ready)' : ''}`;
   return `${m.id} (${m.nodes} node${m.nodes === 1 ? '' : 's'})`;
 }

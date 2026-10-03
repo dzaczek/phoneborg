@@ -14,17 +14,21 @@ const quiet = (e) => { if (e.status !== 401 && e.status !== 503) errorToast(e); 
 
 let selected = ''; // kept across view re-creation
 
-function newJobDialog() {
+function newJobDialog(pools) {
+  const pool = h('select', { name: 'pool' },
+    pools.length ? pools.map((p) => h('option', { value: 'pool/' + p.name }, 'pool/' + p.name))
+      : h('option', { value: '' }, 'whole cluster (no Super Borg pool yet)'));
   const title = h('input', { name: 'title', maxlength: 80, placeholder: '(optional) e.g. The magic castle' });
   const goal = h('textarea', { name: 'goal', rows: 6, required: true,
     placeholder: 'What should the cluster produce? e.g. Write a story for a 5-year-old about a magic castle: 20 chapters of about 3 minutes of reading each.' });
   return formDialog({
     title: 'New job',
     submit: 'Start',
-    fields: [field('Title', title), field('Goal', goal,
+    fields: [field('Title', title), field('Super Borg pool', pool, 'The pool whose phones run the job: one orchestrator, the rest as workers. Create one in Pools with routing "superborg".'),
+      field('Goal', goal,
       'The orchestrator plans tasks, writes key documents itself and delegates the rest to the other phones. Follow it here.')],
     onSubmit: async () => {
-      const job = await api('POST', '/admin/jobs', { title: title.value.trim(), goal: goal.value.trim() });
+      const job = await api('POST', '/admin/jobs', { title: title.value.trim(), goal: goal.value.trim(), pool: pool.value });
       selected = job.id;
       toast(`Job ${job.title} queued.`);
       refreshNow();
@@ -101,6 +105,7 @@ function jobDetail(job, messageBox) {
       job.error ? h('p', null, badge('error', 'bad'), ' ', job.error) : null,
       job.summary ? h('p', null, job.summary) : null,
       h('dl.kv', null,
+        h('dt', null, 'Pool'), h('dd', null, job.pool || 'whole cluster'),
         h('dt', null, 'Goal'), h('dd', { style: 'white-space:pre-wrap' }, job.goal),
         (job.messages || []).length ? [h('dt', null, 'Your messages'), h('dd', null, job.messages.map((m) => h('div', null, '• ' + m)))] : null,
         h('dt', null, 'Steps'), h('dd', null, String(job.steps)),
@@ -112,7 +117,8 @@ function jobDetail(job, messageBox) {
 }
 
 export default function jobsView() {
-  const newBtn = h('button.primary', { type: 'button', onclick: () => newJobDialog() }, 'New job');
+  let borgPools = [];
+  const newBtn = h('button.primary', { type: 'button', onclick: () => newJobDialog(borgPools) }, 'New job');
   const listEl = h('div', null, h('p.muted', null, 'Loading…'));
   const detailEl = h('div');
   const text = h('textarea', { rows: 2, placeholder: 'Instruction for this job, e.g. "make the chapters shorter" or "continue"', 'aria-label': 'Message to the job' });
@@ -143,6 +149,8 @@ export default function jobsView() {
       fill(detailEl);
       return;
     }
+    const pools = await getOptional('/admin/pools');
+    borgPools = ((pools && pools.pools) || []).filter((p) => p.routing === 'superborg');
     const jobs = res.jobs || [];
     if (!jobs.some((j) => j.id === selected)) selected = jobs.length ? jobs[0].id : '';
     fill(listEl, h('div.card.section', null, table(['Job', 'Status', 'Tasks', 'Steps', 'Updated'], jobs.map((j) => [

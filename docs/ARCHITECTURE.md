@@ -16,7 +16,7 @@ into [DECISIONS.md](DECISIONS.md). For measurements, see
 - [Performance tiers and resident bytes](#performance-tiers-and-resident-bytes)
 - [Persistence](#persistence)
 - [Ports](#ports)
-- [Super Borg mode](#super-borg-mode)
+- [Super Borg pools](#super-borg-pools)
 - [Super Borg jobs](#super-borg-jobs)
 - [Production deployment](#production-deployment)
 - [Security model](#security-model)
@@ -62,7 +62,7 @@ on the host (ADR-003, ADR-006).
 | Registry | `controller/registry.go` | Nodes by id, inventory, last heartbeat, lifecycle state, drain flags and aliases (kept by node id, so they survive re-registration). |
 | Gateway | `controller/gateway` | OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/models`. Authenticator, target resolution, `Picker`s (`Affinity`, `LeastInflight`, `Spread`), failover, reaping, token and usage accounting, prewarm. |
 | Super Borg jobs | `controller/gateway/jobs.go`, `controller/jobs_admin.go` | Background jobs for long, multi-step work: task list, document workspace, stateless orchestrator steps, persisted per job (ADR-021). |
-| Super Borg | `controller/gateway/superborg.go`, `controller/superborg.go` | Cluster-wide mode: one model `superborg`; an orchestrator node delegates subtasks to the other nodes through a `delegate` tool, the gateway runs them in parallel (ADR-020). |
+| Super Borg | `controller/gateway/superborg.go`, `controller/pools.go` | Pools with routing `superborg`: the pool answers as one model; an orchestrator member delegates subtasks to the other members through a `delegate` tool, the gateway runs them in parallel (ADR-020, ADR-022). |
 | Admin API | `controller/admin.go`, `models_admin.go`, `pools.go`, `external.go` | `/admin/...` JSON API behind a bearer token: nodes, drain, keys, stats, gateway settings, models, placement, pools, aliases, prewarm, external nodes (ADR-008). |
 | External nodes | `controller/external.go` | Operator-added OpenAI-compatible servers (LM Studio, oMLX, Ollama, llama-server on a Mac or PC): health and model polling, self-tests, backends for the gateway (ADR-016). |
 | Catalog | `controller/models` | Downloads GGUF files (`hf://`, `https://`, `file://`), resumes, hashes, reads GGUF metadata, computes RAM estimate and `resident_bytes` (ADR-011, ADR-012 update). |
@@ -164,11 +164,11 @@ once.
 
 ```text
  request ─► authenticate (open: anonymous │ keys: 401 without a valid key)
-        ─► Super Borg mode on? ─► orchestrator loop (see Super Borg mode); "model" is ignored
         ─► resolve "model":
              <model id>        ready nodes serving it
              auto              any ready node
-             pool/<name>       eligible pool members  (pool picker: spread │ affinity)
+             pool/<name>       eligible pool members  (pool picker: spread │ affinity;
+                               routing superborg ─► orchestrator loop, see Super Borg pools)
              node/<alias|id>   exactly that node      (no picker, no failover; 503 node_unavailable)
                                (an external node's name, or ext:<name>, too)
              unknown pool/node 404 model_not_found
@@ -292,7 +292,7 @@ With `-state-dir DIR` the controller keeps:
 | `DIR/usage.json` | usage totals per key and node since first use | every 30 s and on SIGINT/SIGTERM; a corrupt file stops startup |
 | `DIR/models.json` | model catalog | on change |
 | `DIR/placement.json` | placement policies and the default model | on change |
-| `DIR/routing.json` | node aliases, pools, per-node measured bandwidth, Super Borg settings | on change (atomic, mode 0600) |
+| `DIR/routing.json` | node aliases, pools (Super Borg pools included), per-node measured bandwidth | on change (atomic, mode 0600) |
 | `DIR/jobs/<id>.json` | Super Borg jobs: goal, messages, tasks, documents, events | after every step (atomic, mode 0600) |
 | `DIR/external.json` | external nodes with their API keys and self-test results | on change (atomic, mode 0600) |
 | `DIR/models/` | downloaded GGUF files (`-models-dir` overrides) | by the catalog |
@@ -323,19 +323,18 @@ on the `controller-state` volume.
 | 3000 | host | Grafana (compose) |
 | 5555, 5556 | host | adb of the emulated phones `phone-low`, `phone-mid` (compose) |
 
-## Super Borg mode
+## Super Borg pools
 
-While Super Borg mode is on (`PUT /admin/superborg`, `pbctl superborg on`,
-the panel's Pools view), the cluster is a single model. `/v1/models`,
-`/api/tags` and the panel's Chat list only `superborg`, and every chat
-request goes through this loop, whatever its `model` (ADR-020):
+A pool with routing `superborg` (ADR-022) is a single model made of its
+members. A chat request to it runs this loop; other targets are routed as
+usual (ADR-020):
 
 ```text
  chat request ─► client brings its own tools, or /v1/completions?
                    yes ─► forward unchanged to the orchestrator (agents keep their tool loop)
-              ─► orchestrator = configured alias/id if ready,
-                                else the ready node serving the largest catalog model
-                 workers      = every other ready, not hot node (phones and external nodes)
+              ─► orchestrator = configured alias/id if a ready member,
+                                else the member serving the largest catalog model
+                 workers      = every other ready, not hot member (phones and external nodes)
               ─► system prompt: rules + worker roster (name, model, params, tags, tok/s),
                                 sorted and stable so llama-server keeps it in its prefix cache;
                                 merged into the client's own system message
@@ -445,7 +444,7 @@ reach it only over USB.
   resumes it from the partial file (HTTP Range) once it has re-registered.
 - **Cooling and power.** A phone at or above `-thermal-limit-c` gets no new
   sessions, but an explicitly chosen node (`node/<alias>`, the configured
-  Super Borg orchestrator) still serves; a hot phone throttles hard (the
+  orchestrator of a Super Borg pool) still serves; a hot phone throttles hard (the
   OnePlus 10 Pro dropped from ~3.7 to ~1 tok/s at 79 °C). Keep phones
   charged and ventilated.
 

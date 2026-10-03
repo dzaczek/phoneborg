@@ -42,12 +42,9 @@ commands:
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
-  superborg                   Super Borg mode: one model, an orchestrator delegating to the other phones (ADR-020)
-  superborg on [orchestrator=<node>|auto] [thinking=on|off]
-                              switch it on (clients can no longer choose a node)
-  superborg off               back to normal routing
   jobs                        Super Borg jobs: long multi-step work in the background (ADR-021)
-  jobs new [title=T] <goal>   start a job
+  jobs new [title=T] [pool=P] <goal>
+                              start a job on Super Borg pool P (default: the first one)
   jobs show <id>              tasks, documents and the latest events
   jobs say <id> <text>        send an instruction (resumes a waiting, done or cancelled job)
   jobs doc <id> <name>        print one document
@@ -72,7 +69,8 @@ commands:
                               show the plan a change would give, apply nothing
   pools                       pools (model pool/<name>) with member eligibility
   pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5]
-            [routing=spread|affinity] [desc="..."]
+            [routing=spread|affinity|superborg] [orchestrator=<node>|auto]
+            [thinking=on|off] [desc="..."]
                               create a pool or change the given fields ("-" clears a list)
   pools rm <name>             remove a pool
   external                    external engine nodes (LM Studio, oMLX, Ollama, llama-server)
@@ -201,8 +199,6 @@ func dispatch(c *client, o *out, args []string) error {
 		return showGateway(o, raw, err)
 	case cmd == "jobs":
 		return jobsCmd(c, o, rest)
-	case cmd == "superborg":
-		return superborgCmd(c, o, rest)
 	case cmd == "served" && len(rest) == 0:
 		return served(c, o)
 	case cmd == "models":

@@ -65,8 +65,7 @@ type Server struct {
 	ext     *externals // external engine nodes (ADR-016)
 	devices *devices   // USB device auto-detection, reported by pcprov (ADR-019)
 
-	superborg atomic.Pointer[SuperborgSettings] // Super Borg mode (ADR-020), persisted in routing.json
-	jobs      *gateway.Jobs                     // Super Borg jobs (ADR-021)
+	jobs *gateway.Jobs // Super Borg jobs (ADR-021)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -158,10 +157,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	if len(gwOpts.Routing.State.Performance) > 0 {
 		s.perf.load(gwOpts.Routing.State.Performance)
 	}
-	sb := SuperborgSettings{}
-	if gwOpts.Routing.State.Superborg != nil {
-		sb = *gwOpts.Routing.State.Superborg
-	}
+	migrated := migrateSuperborg(gwOpts.Routing.State, s.pools.byName)
 	reg.onTransition = func(_ string, from, to proto.NodeState) {
 		s.transitions.WithLabelValues(string(from), string(to)).Inc()
 	}
@@ -174,7 +170,12 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), s.ext.backends()...)
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
-	s.applySuperborg(sb)
+	if migrated {
+		if err := s.saveRouting(); err != nil {
+			log.Warn("cannot store the migrated superborg pool", "err", err)
+		}
+		log.Info("migrated the cluster-wide Super Borg mode to pool/superborg (ADR-022)")
+	}
 	s.jobs = gateway.NewJobs(s.gw, gwOpts.Jobs.Dir, gwOpts.Jobs.State, log)
 	s.gw.SetJobs(s.jobs)
 	s.promReg.MustRegister(&jobsCollector{j: s.jobs})

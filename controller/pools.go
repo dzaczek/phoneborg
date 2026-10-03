@@ -25,6 +25,9 @@ import (
 const (
 	RoutingSpread   = "spread"   // least in-flight, then fastest; no session pinning
 	RoutingAffinity = "affinity" // the gateway's normal policy
+	// RoutingSuperborg makes the pool a Super Borg pool (ADR-022): an
+	// orchestrator member delegates subtasks to the other members.
+	RoutingSuperborg = gateway.KindSuperborg
 )
 
 // Eligibility reasons of pool members.
@@ -50,7 +53,14 @@ type Pool struct {
 	Nodes       []string `json:"nodes"`       // aliases or node ids; empty = any
 	Classes     []string `json:"classes"`     // device classes; empty = any
 	MinGenTPS   float64  `json:"min_gen_tps"` // self-test generation tok/s; 0 = no limit
-	Routing     string   `json:"routing"`     // RoutingSpread (default) or RoutingAffinity
+	Routing     string   `json:"routing"`     // RoutingSpread (default), RoutingAffinity or RoutingSuperborg
+	// Orchestrator (alias or node id; "" = the member serving the largest
+	// model) and Thinking configure a Super Borg pool; ignored otherwise.
+	Orchestrator string `json:"orchestrator,omitempty"`
+	Thinking     bool   `json:"thinking,omitempty"`
+	// ActiveOrchestrator is computed in responses for Super Borg pools: the
+	// node that orchestrates now, "" when no member is ready.
+	ActiveOrchestrator string `json:"active_orchestrator,omitempty"`
 	// Members is computed in responses and ignored in requests.
 	Members []PoolMember `json:"members,omitempty"`
 }
@@ -92,7 +102,33 @@ type RoutingState struct {
 	Aliases     map[string]string      `json:"aliases"`
 	Pools       []Pool                 `json:"pools"`
 	Performance map[string]models.Perf `json:"performance,omitempty"`
-	Superborg   *SuperborgSettings     `json:"superborg,omitempty"` // ADR-020
+	// Superborg is the cluster-wide Super Borg mode of ADR-020, read only to
+	// migrate it into a "superborg" pool (ADR-022) and never written.
+	Superborg *legacySuperborg `json:"superborg,omitempty"`
+}
+
+// legacySuperborg is the old cluster-wide Super Borg setting (ADR-020).
+type legacySuperborg struct {
+	Enabled      bool   `json:"enabled"`
+	Orchestrator string `json:"orchestrator"`
+	Thinking     bool   `json:"thinking"`
+}
+
+// migrateSuperborg turns the old cluster-wide Super Borg setting into a
+// "superborg" pool over every node, unless a pool of that name exists. It
+// reports whether it added the pool.
+func migrateSuperborg(st RoutingState, pools map[string]Pool) bool {
+	if st.Superborg == nil {
+		return false
+	}
+	if _, ok := pools[RoutingSuperborg]; ok {
+		return false
+	}
+	pools[RoutingSuperborg] = Pool{Name: RoutingSuperborg, Routing: RoutingSuperborg,
+		Description:  "Super Borg: an orchestrator phone delegating to the others (migrated from the cluster-wide mode)",
+		Orchestrator: st.Superborg.Orchestrator, Thinking: st.Superborg.Thinking,
+		Models: []string{}, Nodes: []string{}, Classes: []string{}}
+	return true
 }
 
 // RoutingOptions configures aliases and pools.
@@ -140,7 +176,8 @@ type pools struct {
 
 // normPool validates a pool definition and fills defaults. Members are dropped.
 func normPool(p Pool) (Pool, error) {
-	p.Members = nil
+	p.Members, p.ActiveOrchestrator = nil, ""
+	p.Orchestrator = strings.TrimSpace(p.Orchestrator)
 	if !nameRE.MatchString(p.Name) {
 		return p, errors.New("pool name must match ^[a-z0-9][a-z0-9-]{0,31}$")
 	}
@@ -178,9 +215,9 @@ func normPool(p Pool) (Pool, error) {
 	switch p.Routing {
 	case "":
 		p.Routing = RoutingSpread
-	case RoutingSpread, RoutingAffinity:
+	case RoutingSpread, RoutingAffinity, RoutingSuperborg:
 	default:
-		return p, fmt.Errorf("routing must be %q or %q", RoutingSpread, RoutingAffinity)
+		return p, fmt.Errorf("routing must be %q, %q or %q", RoutingSpread, RoutingAffinity, RoutingSuperborg)
 	}
 	return p, nil
 }
@@ -212,7 +249,7 @@ func (s *Server) saveRouting() error {
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}, Performance: s.perf.snapshot(), Superborg: s.superborg.Load()}
+	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}, Performance: s.perf.snapshot()}
 	for _, p := range ps.byName {
 		st.Pools = append(st.Pools, p)
 	}
@@ -281,6 +318,11 @@ func poolMembers(p Pool, nodes []proto.Node, drained map[string]bool, thermalLim
 func (s *Server) withMembers(p Pool) Pool {
 	nodes, drained := s.reg.View()
 	p.Members = append(poolMembers(p, nodes, drained, s.ThermalLimitC()), externalMembers(p, s.ext.list(nil, nil))...)
+	if p.Routing == RoutingSuperborg {
+		if orch, _, ok := s.gw.SuperborgPlanFor(poolTarget(p)); ok {
+			p.ActiveOrchestrator = orch.NodeID
+		}
+	}
 	return p
 }
 
@@ -296,6 +338,21 @@ func eligible(members []PoolMember) int {
 	return len(ids)
 }
 
+// poolTarget is the gateway target of a pool with computed members.
+func poolTarget(p Pool) gateway.Target {
+	tgt := gateway.Target{Label: poolPrefix + p.Name, Nodes: map[string]bool{}, Models: map[string]bool{}}
+	for _, m := range p.Members {
+		if m.Eligible {
+			tgt.Nodes[m.NodeID] = true
+			tgt.Models[m.Model] = true // external nodes serve several models
+		}
+	}
+	if p.Routing == RoutingSuperborg {
+		tgt.Superborg = &gateway.Superborg{Orchestrator: p.Orchestrator, Thinking: p.Thinking}
+	}
+	return tgt
+}
+
 // serverTargets resolves pools and node aliases for the gateway.
 type serverTargets struct{ s *Server }
 
@@ -306,13 +363,7 @@ func (t serverTargets) Resolve(name string) (gateway.Target, bool) {
 		if !ok {
 			return gateway.Target{}, false
 		}
-		tgt := gateway.Target{Label: name, Nodes: map[string]bool{}, Models: map[string]bool{}}
-		for _, m := range s.withMembers(p).Members {
-			if m.Eligible {
-				tgt.Nodes[m.NodeID] = true
-				tgt.Models[m.Model] = true // external nodes serve several models
-			}
-		}
+		tgt := poolTarget(s.withMembers(p))
 		if p.Routing == RoutingSpread {
 			tgt.Picker = s.spread
 		}

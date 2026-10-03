@@ -1510,3 +1510,42 @@ document can be read, redone or steered by a message while the job runs.
 The quality of planning and writing is still that of the small models; the
 mechanism only stops it from falling apart. Jobs compete with chat traffic
 for the same phones, and only one runs at a time.
+
+## ADR-022: Super Borg as a pool routing instead of a cluster-wide mode
+
+**Problem.** ADR-020 made Super Borg a switch for the whole cluster: while
+on, `/v1/models` listed only `superborg` and every request went to the
+orchestrator. That does not scale to a large fleet, where some phones
+should form a Super Borg and others serve agents such as opencode, and it
+broke those agents outright: `pbctl opencode sync` reads `/v1/models` and
+would have dropped every pool and `node/<alias>` agent, and opencode
+subagents aimed at `pool/fast` all landed on the orchestrator.
+
+**Alternatives.**
+1. Keep the mode and add exceptions (explicit targets bypass it).
+2. Make Super Borg a routing of pools: `routing: "superborg"`, with the
+   orchestrator and thinking settings on the pool.
+
+**Trade-offs.** (1) keeps one switch but needs rules for which targets
+bypass it and still hides models from `/v1/models` while on. (2) removes the
+global state altogether: a fleet is split by pool membership, every model
+stays listed, and several Super Borgs can coexist. Its cost is a migration
+of the old setting and a pool to choose for jobs.
+
+**Decision.** (2).
+
+- `Pool` gains `routing: "superborg"`, `orchestrator` and `thinking`; the
+  pools API reports `active_orchestrator`. The gateway's `Target` carries
+  the settings, and a chat request to such a pool runs the ADR-020 loop
+  with the orchestrator and workers taken from the pool's eligible members
+  only. Raw completions and requests with client tools go to the
+  orchestrator member.
+- `/admin/superborg`, `pbctl superborg` and the panel's Super Borg card are
+  removed. On startup an old `superborg` setting in `routing.json` becomes a
+  pool named `superborg` over every node with the same orchestrator and
+  thinking, and is no longer written.
+- Jobs (ADR-021) run on a Super Borg pool: `pool` in `POST /admin/jobs`,
+  `pbctl jobs new pool=`, a choice in the Jobs view; the default is the
+  first Super Borg pool by name, and the whole cluster if there is none.
+  `start_job` from a pool's chat uses that pool. A job whose pool is no
+  longer a Super Borg pool waits with a message instead of retrying.

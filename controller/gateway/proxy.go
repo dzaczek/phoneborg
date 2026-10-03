@@ -63,7 +63,6 @@ type Gateway struct {
 	picker    atomic.Pointer[Picker]
 	targets   atomic.Pointer[Targets]
 	modelInfo atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
-	superborg atomic.Pointer[Superborg]     // nil = Super Borg mode off (ADR-020)
 	jobs      atomic.Pointer[Jobs]          // nil = no Super Borg jobs (ADR-021)
 	timeout   atomic.Int64                  // upstream timeout, ns
 	backends  BackendSource
@@ -339,24 +338,6 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		return
 	}
 
-	if sb := g.superborg.Load(); sb != nil {
-		// Super Borg mode (ADR-020): the cluster is one model, the client
-		// does not choose a node.
-		g.mTargets.WithLabelValues(KindSuperborg).Inc()
-		if !superborgDirect(r.URL.Path, meta) {
-			g.serveSuperborg(w, r, *sb, body, meta, principal, reqID)
-			return
-		}
-		orch, ok := g.pickOrchestrator(*sb, nil)
-		if !ok {
-			g.mRejected.WithLabelValues("model_not_found").Inc()
-			g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusServiceUnavailable)})
-			openAIError(w, http.StatusServiceUnavailable, "server_error", "model_not_found", "no ready nodes")
-			return
-		}
-		g.serveTarget(w, r, Target{Label: KindSuperborg, Nodes: map[string]bool{orch.NodeID: true}}, body, meta, principal, reqID)
-		return
-	}
 	tgt, err := g.Resolve(meta.Model)
 	if err != nil {
 		g.mRejected.WithLabelValues("model_not_found").Inc()
@@ -365,6 +346,17 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		return
 	}
 	g.mTargets.WithLabelValues(tgt.Label).Inc()
+	if tgt.Superborg != nil { // a Super Borg pool (ADR-022)
+		if !superborgDirect(r.URL.Path, meta) {
+			g.serveSuperborg(w, r, tgt, body, meta, principal, reqID)
+			return
+		}
+		// Raw completions and clients with their own tools go to the
+		// pool's orchestrator, the node best at tool calls.
+		if orch, ok := g.pickOrchestrator(*tgt.Superborg, tgt.filter(g.routable()), nil); ok {
+			tgt = Target{Label: tgt.Label, Nodes: map[string]bool{orch.NodeID: true}}
+		}
+	}
 	g.serveTarget(w, r, tgt, body, meta, principal, reqID)
 }
 
@@ -648,14 +640,6 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 // routing state.
 func (g *Gateway) ModelEntries() []ModelEntry {
 	routable := g.routable()
-	if sb := g.superborg.Load(); sb != nil {
-		// Super Borg mode (ADR-020): one model, the whole cluster.
-		e := ModelEntry{ID: KindSuperborg, Object: "model", OwnedBy: "phoneborg", Kind: KindSuperborg, Nodes: len(routable)}
-		if orch, ok := g.pickOrchestrator(*sb, nil); ok {
-			e.Description = "orchestrator " + workerName(orch) + " (" + orch.Model + ")"
-		}
-		return []ModelEntry{e}
-	}
 	seen := map[string]int{}
 	for _, b := range routable {
 		seen[b.Model]++

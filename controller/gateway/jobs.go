@@ -85,20 +85,23 @@ type jobStep struct {
 
 // Job is a Super Borg job and everything it produced.
 type Job struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Goal      string    `json:"goal"`
-	Messages  []string  `json:"messages"` // later user messages, oldest first
-	Principal string    `json:"principal"`
-	Status    string    `json:"status"`
-	Question  string    `json:"question,omitempty"` // why it waits
-	Error     string    `json:"error,omitempty"`
-	Tasks     []JobTask `json:"tasks"`
-	Docs      []JobDoc  `json:"docs"`
-	Result    []string  `json:"result,omitempty"` // documents forming the result, in order
-	Summary   string    `json:"summary,omitempty"`
-	Steps     int       `json:"steps"`
-	Recent    []jobStep `json:"recent"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Goal      string   `json:"goal"`
+	Messages  []string `json:"messages"` // later user messages, oldest first
+	Principal string   `json:"principal"`
+	// Pool is the Super Borg pool ("pool/<name>") whose nodes run the job;
+	// "" = every ready node of the cluster.
+	Pool     string    `json:"pool,omitempty"`
+	Status   string    `json:"status"`
+	Question string    `json:"question,omitempty"` // why it waits
+	Error    string    `json:"error,omitempty"`
+	Tasks    []JobTask `json:"tasks"`
+	Docs     []JobDoc  `json:"docs"`
+	Result   []string  `json:"result,omitempty"` // documents forming the result, in order
+	Summary  string    `json:"summary,omitempty"`
+	Steps    int       `json:"steps"`
+	Recent   []jobStep `json:"recent"`
 	// PlannedAt is len(Messages) when the plan was last set: plan_tasks is
 	// offered again only with no plan or after a new user message.
 	PlannedAt int `json:"planned_at"`
@@ -119,6 +122,7 @@ type Job struct {
 type JobSummary struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
+	Pool      string    `json:"pool,omitempty"`
 	Status    string    `json:"status"`
 	Question  string    `json:"question,omitempty"`
 	Steps     int       `json:"steps"`
@@ -225,12 +229,12 @@ func (j *Jobs) next() string {
 }
 
 // Create queues a new job.
-func (j *Jobs) Create(title, goal, principal string) JobSummary {
+func (j *Jobs) Create(title, goal, principal, pool string) JobSummary {
 	if principal == "" {
 		principal = jobPrincipalDefault
 	}
 	now := j.g.now()
-	job := &Job{ID: newID(), Title: strings.TrimSpace(title), Goal: strings.TrimSpace(goal), Principal: principal,
+	job := &Job{ID: newID(), Title: strings.TrimSpace(title), Goal: strings.TrimSpace(goal), Principal: principal, Pool: pool,
 		Status: JobQueued, Tasks: []JobTask{}, Docs: []JobDoc{}, Messages: []string{}, Created: now, Updated: now}
 	if job.Title == "" {
 		job.Title = clip(strings.Join(strings.Fields(job.Goal), " "), 60)
@@ -424,6 +428,12 @@ func (j *Jobs) run(ctx context.Context, id string) {
 			pause := jobErrorPause
 			j.mu.Lock()
 			j.event(job, "error", err.Error())
+			if errors.Is(err, errBadPool) { // a configuration error, not worth retrying
+				job.Status, job.Question = JobWaiting, err.Error()
+				j.saveLocked(job)
+				j.mu.Unlock()
+				return
+			}
 			if errors.Is(err, errNoNode) {
 				pause = jobNoNodeRetry
 			} else if failures++; failures >= jobMaxErrors {
@@ -446,7 +456,24 @@ func (j *Jobs) run(ctx context.Context, id string) {
 	}
 }
 
-var errNoNode = errors.New("no ready node to orchestrate; retrying")
+var (
+	errNoNode  = errors.New("no ready node to orchestrate; retrying")
+	errBadPool = errors.New("not a Super Borg pool")
+)
+
+// jobPool returns the Super Borg settings and ready nodes of a job's pool:
+// a Super Borg pool target, or "" for the whole cluster with automatic
+// orchestrator choice.
+func (g *Gateway) jobPool(name string) (Superborg, []Backend, error) {
+	if name == "" {
+		return Superborg{}, g.routable(), nil
+	}
+	tgt, err := g.Resolve(name)
+	if err != nil || tgt.Superborg == nil {
+		return Superborg{}, nil, fmt.Errorf("%w: %s (set the pool's routing to \"superborg\", then send a message)", errBadPool, name)
+	}
+	return *tgt.Superborg, tgt.filter(g.routable()), nil
+}
 
 // jobSink records the orchestrator's streamed text of one step.
 type jobSink struct{ b strings.Builder }
@@ -455,15 +482,18 @@ func (s *jobSink) send(_, text string) { s.b.WriteString(text) }
 
 // step runs one orchestrator call and executes its tool calls.
 func (j *Jobs) step(ctx context.Context, job *Job) error {
-	sb := Superborg{}
-	if cur := j.g.superborg.Load(); cur != nil {
-		sb = *cur
+	j.mu.Lock()
+	poolName := job.Pool
+	j.mu.Unlock()
+	sb, pool, err := j.g.jobPool(poolName)
+	if err != nil {
+		return err
 	}
-	orch, ok := j.g.pickOrchestrator(sb, nil)
+	orch, ok := j.g.pickOrchestrator(sb, pool, nil)
 	if !ok {
 		return errNoNode
 	}
-	workers := j.g.jobWorkers(orch)
+	workers := j.g.jobWorkers(orch, pool)
 	j.mu.Lock()
 	prompt := jobPrompt(job, len(workers))
 	principal := job.Principal
@@ -834,7 +864,7 @@ func (j *Jobs) saveLocked(job *Job) {
 }
 
 func summarize(job *Job) JobSummary {
-	s := JobSummary{ID: job.ID, Title: job.Title, Status: job.Status, Question: job.Question, Steps: job.Steps,
+	s := JobSummary{ID: job.ID, Title: job.Title, Pool: job.Pool, Status: job.Status, Question: job.Question, Steps: job.Steps,
 		Tasks: len(job.Tasks), Docs: len(job.Docs), Created: job.Created, Updated: job.Updated}
 	for _, t := range job.Tasks {
 		if t.Status == "done" {
@@ -850,9 +880,9 @@ const jobMinWorkerParams = 1.5e9
 
 // jobWorkers are the Super Borg workers whose catalog parameter count is
 // unknown or at least jobMinWorkerParams.
-func (g *Gateway) jobWorkers(orch Backend) []Backend {
+func (g *Gateway) jobWorkers(orch Backend, pool []Backend) []Backend {
 	var out []Backend
-	for _, w := range g.superborgWorkers(orch) {
+	for _, w := range g.superborgWorkers(orch, pool) {
 		mi, _ := g.modelInfoFor(w.Model)
 		if n, ok := parseParams(mi.Params); !ok || n >= jobMinWorkerParams {
 			out = append(out, w)

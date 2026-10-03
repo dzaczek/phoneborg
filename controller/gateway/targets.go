@@ -40,6 +40,9 @@ type Target struct {
 	// Picker overrides the gateway's routing policy; nil = the policy set
 	// with SetPicker.
 	Picker Picker
+	// Superborg makes a pool a Super Borg pool (ADR-022): chat requests run
+	// the orchestrator loop over the pool's nodes instead of a picker.
+	Superborg *Superborg
 }
 
 // allows reports whether b may serve the target (model and node filters).

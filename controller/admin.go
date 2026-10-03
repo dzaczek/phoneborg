@@ -186,9 +186,6 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	s.registerDevicesAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
-	s.registerSuperborgAdmin(func(pattern, action string, fn http.HandlerFunc) {
-		mux.Handle(pattern, s.adminAuth(action, fn))
-	})
 	s.registerJobsAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})

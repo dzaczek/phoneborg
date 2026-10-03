@@ -76,7 +76,15 @@ func listPools(c *client, o *out) error {
 		if p.MinGenTPS > 0 {
 			minTPS = strconv.FormatFloat(p.MinGenTPS, 'f', -1, 64)
 		}
-		rows = append(rows, []string{"pool/" + p.Name, p.Routing, strconv.Itoa(eligibleNodes(p.Members)), orAny(p.Models), orAny(p.Nodes), orAny(p.Classes),
+		routing := p.Routing
+		if p.Routing == controller.RoutingSuperborg {
+			orch := p.ActiveOrchestrator
+			if orch == "" {
+				orch = "none ready"
+			}
+			routing += " (orchestrator " + orch + ")"
+		}
+		rows = append(rows, []string{"pool/" + p.Name, routing, strconv.Itoa(eligibleNodes(p.Members)), orAny(p.Models), orAny(p.Nodes), orAny(p.Classes),
 			minTPS, dash(p.Description)})
 	}
 	o.table("POOL\tROUTING\tELIGIBLE\tMODELS\tNODES\tCLASSES\tMIN TOK/S\tDESCRIPTION", rows)
@@ -125,7 +133,8 @@ func eligibleNodes(members []controller.PoolMember) int {
 }
 
 // applyPoolSet applies "models=a,b nodes=x,y classes=s,m min_tps=5
-// routing=spread desc=text" to p; "-" clears a list.
+// routing=spread orchestrator=n thinking=on desc=text" to p; "-" clears a
+// list.
 func applyPoolSet(p *controller.Pool, kvs []string) error {
 	for _, kv := range kvs {
 		k, v, ok := strings.Cut(kv, "=")
@@ -147,10 +156,20 @@ func applyPoolSet(p *controller.Pool, kvs []string) error {
 			p.MinGenTPS = f
 		case "routing":
 			p.Routing = v
+		case "orchestrator": // Super Borg pools
+			if v == "auto" {
+				v = ""
+			}
+			p.Orchestrator = v
+		case "thinking":
+			if v != "on" && v != "off" {
+				return fmt.Errorf("thinking must be on or off, got %q", v)
+			}
+			p.Thinking = v == "on"
 		case "desc", "description":
 			p.Description = v
 		default:
-			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, desc)", k)
+			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, desc)", k)
 		}
 	}
 	p.Members = nil

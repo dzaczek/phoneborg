@@ -12,15 +12,16 @@ import (
 	"unicode/utf8"
 )
 
-// Super Borg mode (ADR-020): the whole cluster answers as one model. Every
-// chat request, whatever its "model", goes to an orchestrator node, which
-// may call the delegate tool to run self-contained subtasks on the other
-// ready nodes (workers) in parallel; the gateway runs those calls, feeds the
-// results back and streams the orchestrator's final answer to the client.
+// Super Borg pools (ADR-020, ADR-022): a pool with routing "superborg"
+// answers as one model. A chat request to it goes to an orchestrator node of
+// the pool, which may call the delegate tool to run self-contained subtasks
+// on the pool's other ready nodes (workers) in parallel; the gateway runs
+// those calls, feeds the results back and streams the orchestrator's final
+// answer to the client. Other pools and nodes are not affected.
 
 const (
-	// KindSuperborg is the kind and id of the single /v1/models entry in
-	// Super Borg mode.
+	// KindSuperborg labels Super Borg responses (X-PhoneBorg-Mode) and is
+	// the pool routing value that enables it.
 	KindSuperborg = "superborg"
 	// superborgMaxRounds bounds the delegation rounds per request; the
 	// round after the last one is sent without tools, so it must answer.
@@ -33,10 +34,10 @@ const (
 	superborgResultMaxBytes = 3000
 )
 
-// Superborg configures Super Borg mode; a nil *Superborg is off.
+// Superborg configures a Super Borg pool (Target.Superborg).
 type Superborg struct {
 	// Orchestrator is the alias or node id of the orchestrator node; "" or a
-	// node that is not ready = the ready node serving the largest model.
+	// node that is not ready = the pool's ready node serving the largest model.
 	Orchestrator string
 	// Thinking lets the orchestrator reason (enable_thinking) before it
 	// plans or answers; off is much faster on phones. A client's own
@@ -44,18 +45,28 @@ type Superborg struct {
 	Thinking bool
 }
 
-// SetSuperborg switches Super Borg mode on (sb != nil) or off (nil).
-// Requests already running are not affected.
-func (g *Gateway) SetSuperborg(sb *Superborg) { g.superborg.Store(sb) }
-
-// SuperborgPlan returns the orchestrator and workers a Super Borg request
-// would use right now; ok is false when no node is ready.
-func (g *Gateway) SuperborgPlan(sb Superborg) (orch Backend, workers []Backend, ok bool) {
-	orch, ok = g.pickOrchestrator(sb, nil)
-	if !ok {
+// SuperborgPlan returns the orchestrator and workers a request to the Super
+// Borg pool target would use right now; ok is false when target is not a
+// Super Borg pool or none of its nodes is ready.
+func (g *Gateway) SuperborgPlan(target string) (orch Backend, workers []Backend, ok bool) {
+	tgt, err := g.Resolve(target)
+	if err != nil {
 		return Backend{}, nil, false
 	}
-	return orch, g.superborgWorkers(orch), true
+	return g.SuperborgPlanFor(tgt)
+}
+
+// SuperborgPlanFor is SuperborgPlan for an already resolved target (the
+// controller computes pool members itself; resolving again would recurse).
+func (g *Gateway) SuperborgPlanFor(tgt Target) (orch Backend, workers []Backend, ok bool) {
+	if tgt.Superborg == nil {
+		return Backend{}, nil, false
+	}
+	pool := tgt.filter(g.routable())
+	if orch, ok = g.pickOrchestrator(*tgt.Superborg, pool, nil); !ok {
+		return Backend{}, nil, false
+	}
+	return orch, g.superborgWorkers(orch, pool), true
 }
 
 // workerName is how the orchestrator addresses a node.
@@ -66,12 +77,12 @@ func workerName(b Backend) string {
 	return b.NodeID
 }
 
-// pickOrchestrator returns the configured orchestrator if it is ready and
-// untried, else the untried ready node serving the largest model (catalog
-// size, then speed).
-func (g *Gateway) pickOrchestrator(sb Superborg, tried map[string]bool) (Backend, bool) {
+// pickOrchestrator returns, among the pool's ready nodes, the configured
+// orchestrator if it is untried, else the untried node serving the largest
+// model (catalog size, then speed).
+func (g *Gateway) pickOrchestrator(sb Superborg, pool []Backend, tried map[string]bool) (Backend, bool) {
 	var cands []Backend
-	for _, b := range g.routable() {
+	for _, b := range pool {
 		if tried[b.NodeID] {
 			continue
 		}
@@ -100,12 +111,12 @@ func (g *Gateway) pickOrchestrator(sb Superborg, tried map[string]bool) (Backend
 	return cands[0], true
 }
 
-// superborgWorkers are the ready, not overheating nodes other than the
-// orchestrator, sorted by name so the roster prompt stays byte-identical
-// (and cached by llama-server) while the cluster does not change.
-func (g *Gateway) superborgWorkers(orch Backend) []Backend {
+// superborgWorkers are the pool's ready, not overheating nodes other than
+// the orchestrator, sorted by name so the roster prompt stays byte-identical
+// (and cached by llama-server) while the pool does not change.
+func (g *Gateway) superborgWorkers(orch Backend, pool []Backend) []Backend {
 	var out []Backend
-	for _, b := range g.routable() {
+	for _, b := range pool {
 		if b.NodeID != orch.NodeID && !b.Hot {
 			out = append(out, b)
 		}
@@ -194,7 +205,8 @@ func superborgDirect(path string, meta requestMeta) bool {
 
 // serveSuperborg runs one Super Borg request; body is the client's request
 // (a JSON object) and meta its parsed fields.
-func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Superborg, body []byte, meta requestMeta, p Principal, reqID string) {
+func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, tgt Target, body []byte, meta requestMeta, p Principal, reqID string) {
+	sb := *tgt.Superborg
 	var req map[string]json.RawMessage
 	var msgs []map[string]any
 	if json.Unmarshal(body, &req) != nil || json.Unmarshal(mustRaw(req["messages"]), &msgs) != nil || len(msgs) == 0 {
@@ -202,14 +214,14 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 		openAIError(w, http.StatusBadRequest, "invalid_request_error", "", "messages must be a non-empty array of message objects")
 		return
 	}
-	orch, ok := g.pickOrchestrator(sb, nil)
+	orch, ok := g.pickOrchestrator(sb, tgt.filter(g.routable()), nil)
 	if !ok {
 		g.mRejected.WithLabelValues("model_not_found").Inc()
-		g.cfg.Usage.Record(UsageEvent{Principal: p.Name, Model: KindSuperborg, Code: "503"})
-		openAIError(w, http.StatusServiceUnavailable, "server_error", "model_not_found", "no ready nodes")
+		g.cfg.Usage.Record(UsageEvent{Principal: p.Name, Model: tgt.Label, Code: "503"})
+		openAIError(w, http.StatusServiceUnavailable, "server_error", "model_not_found", tgt.Label+" has no ready node")
 		return
 	}
-	workers := g.superborgWorkers(orch)
+	workers := g.superborgWorkers(orch, tgt.filter(g.routable()))
 	log := g.log.With("request_id", reqID, "mode", KindSuperborg)
 	log.Info("superborg request", "orchestrator", orch.NodeID, "workers", len(workers))
 
@@ -231,7 +243,7 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 		}
 	}
 
-	em := newSBEmitter(w, meta.Stream, reqID, g.now().Unix())
+	em := newSBEmitter(w, meta.Stream, reqID, g.now().Unix(), tgt.Label)
 	w.Header().Set("X-PhoneBorg-Mode", KindSuperborg)
 	w.Header().Set("X-PhoneBorg-Node", orch.NodeID) // the orchestrator; headers go out with the first chunk
 	tried := map[string]bool{}
@@ -246,10 +258,11 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 			tried[orch.NodeID] = true
 			g.markDown(orch.NodeID)
 			log.Warn("orchestrator failed, trying another node", "node_id", orch.NodeID, "err", err)
-			if orch, ok = g.pickOrchestrator(sb, tried); !ok {
+			pool := tgt.filter(g.routable())
+			if orch, ok = g.pickOrchestrator(sb, pool, tried); !ok {
 				break
 			}
-			workers = g.superborgWorkers(orch)
+			workers = g.superborgWorkers(orch, pool)
 			w.Header().Set("X-PhoneBorg-Node", orch.NodeID)
 			build(final)
 			out, err = g.orchestrateOnce(r, orch, req, em, p, reqID)
@@ -265,7 +278,7 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 			break
 		}
 		if c, ok := findCall(out.calls, "start_job"); ok {
-			em.send("content", g.startJobFromChat(msgs, c, p))
+			em.send("content", g.startJobFromChat(msgs, c, p, tgt.Label))
 			break
 		}
 		extra = append(extra, map[string]any{"role": "assistant", "content": out.content, "tool_calls": out.calls})
@@ -290,7 +303,7 @@ func findCall(calls []toolCall, name string) (toolCall, bool) {
 // startJobFromChat creates a job from the conversation: its goal is the
 // user's last message verbatim (the orchestrator's restatement could drop
 // details), its title the one the orchestrator chose. It returns the reply.
-func (g *Gateway) startJobFromChat(msgs []map[string]any, c toolCall, p Principal) string {
+func (g *Gateway) startJobFromChat(msgs []map[string]any, c toolCall, p Principal, pool string) string {
 	var args struct{ Title string }
 	_ = json.Unmarshal([]byte(c.Function.Arguments), &args)
 	goal := ""
@@ -301,7 +314,7 @@ func (g *Gateway) startJobFromChat(msgs []map[string]any, c toolCall, p Principa
 			}
 		}
 	}
-	job := g.jobs.Load().Create(args.Title, goal, p.Name)
+	job := g.jobs.Load().Create(args.Title, goal, p.Name, pool)
 	return fmt.Sprintf("\n\nStarted job **%s** (`%s`). The cluster works on it in the background: plan, documents, "+
 		"progress and the result are in the panel's Jobs view (#/jobs), or `pbctl jobs show %s`. "+
 		"Send follow-up instructions there.", job.Title, job.ID, job.ID)
@@ -698,6 +711,7 @@ func mustRaw(r json.RawMessage) []byte {
 // It is safe for concurrent use (workers report progress in parallel).
 type sbEmitter struct {
 	mu        sync.Mutex
+	model     string // the pool the client asked for, echoed as "model"
 	w         http.ResponseWriter
 	stream    bool
 	id        string
@@ -707,8 +721,8 @@ type sbEmitter struct {
 	reasoning strings.Builder
 }
 
-func newSBEmitter(w http.ResponseWriter, stream bool, reqID string, created int64) *sbEmitter {
-	return &sbEmitter{w: w, stream: stream, id: "chatcmpl-" + reqID, created: created}
+func newSBEmitter(w http.ResponseWriter, stream bool, reqID string, created int64, model string) *sbEmitter {
+	return &sbEmitter{w: w, stream: stream, id: "chatcmpl-" + reqID, created: created, model: model}
 }
 
 // started reports whether anything reached the client.
@@ -741,7 +755,7 @@ func (e *sbEmitter) chunk(delta map[string]any, finish *string, u *usage) {
 		e.w.WriteHeader(http.StatusOK)
 		e.begun = true
 	}
-	ev := map[string]any{"id": e.id, "object": "chat.completion.chunk", "created": e.created, "model": KindSuperborg,
+	ev := map[string]any{"id": e.id, "object": "chat.completion.chunk", "created": e.created, "model": e.model,
 		"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
 	if u != nil {
 		ev["usage"] = u.openAI()
@@ -768,7 +782,7 @@ func (e *sbEmitter) finish(u usage) {
 	e.w.Header().Set("Content-Type", "application/json")
 	e.w.WriteHeader(http.StatusOK)
 	e.begun = true
-	_ = json.NewEncoder(e.w).Encode(map[string]any{"id": e.id, "object": "chat.completion", "created": e.created, "model": KindSuperborg,
+	_ = json.NewEncoder(e.w).Encode(map[string]any{"id": e.id, "object": "chat.completion", "created": e.created, "model": e.model,
 		"choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": stop}}, "usage": u.openAI()})
 }
 
