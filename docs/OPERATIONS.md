@@ -21,6 +21,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Super Borg pools](#super-borg-pools)
 - [Super Borg jobs](#super-borg-jobs)
 - [External nodes (Mac / PC)](#external-nodes-mac--pc)
+- [Admin tokens](#admin-tokens)
 - [API keys](#api-keys)
 - [Access control](#access-control)
 - [Draining a phone for maintenance](#draining-a-phone-for-maintenance)
@@ -61,7 +62,8 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | Flag | Default | Meaning |
 |---|---|---|
 | `-listen` | `:18080` | HTTP listen address |
-| `-admin-token-file` | none | admin token file (≥ 16 characters, `#` comments allowed); none = admin API disabled |
+| `-admin-token-file` | none | admin token file (≥ 16 characters, `#` comments allowed); this token is named `admin`; none = admin API disabled |
+| `-admin-tokens-file` | `<state-dir>/admin-tokens` | named admin tokens, one per operator or device, as SHA-256 hashes; managed with `pbctl admin-tokens` (see [Admin tokens](#admin-tokens)) |
 | `-api-keys-file` | none | API keys file; none = open gateway (dev only). Reloaded on SIGHUP. |
 | `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `devices.json`, `jobs/`, `models/` |
 | `-models-dir` | `<state-dir>/models` | where catalog model files are stored |
@@ -206,7 +208,7 @@ use it on localhost or a trusted network.
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
 | Jobs | [Super Borg jobs](#super-borg-jobs): New job, the job list (live), and for the selected job its goal, your messages, tasks, documents (click to read, rendered as Markdown), progress log, a message box, **Preview result** (the assembled result rendered in the panel), **Download .md**, Cancel and Delete. |
 | Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; a Super Borg pool shows its delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
-| API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. |
+| API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. Below them, **Admin tokens**: the named tokens for this panel and pbctl; create (shown once) and revoke. |
 | Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
 
 Chat goes through `POST /admin/chat/completions` and `GET /admin/chat/models`
@@ -352,6 +354,8 @@ bin/pbctl nodes
 | `pbctl keys` | key names, creation time and usage (never the keys) |
 | `pbctl keys create <name>` | create a key, printed once |
 | `pbctl keys revoke <name>` | revoke all keys of `<name>` |
+| `pbctl admin-tokens` | admin tokens: `admin` (from `-admin-token-file`) and the named ones |
+| `pbctl admin-tokens create <name>` / `revoke <name>` | create a named admin token (printed once) / revoke it |
 | `pbctl gateway` | current gateway settings |
 | `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
 | `pbctl stats` | uptime, cluster summary, usage by key and node |
@@ -882,6 +886,26 @@ How they behave:
   "reviewer": { "model": "phoneborg/pool/fast", "mode": "subagent" }
 }
 ```
+
+## Admin tokens
+
+The token in `-admin-token-file` is the `admin` token; `pcprov` and scripts
+read it from that file. Give every other operator or device its own named
+token, so the audit log shows who changed what:
+
+```sh
+pbctl admin-tokens create laptop     # prints the token once: sign in to the panel with it
+pbctl admin-tokens                   # admin (-admin-token-file) and the named tokens
+pbctl admin-tokens revoke laptop     # stops working at once
+```
+
+The same is in the panel under API keys → Admin tokens. Every admin change
+is logged with the token's name, e.g.
+`"msg":"admin action","principal":"laptop","action":"placement_set"`, next
+to the client address. Named tokens are stored as SHA-256 hashes in
+`-admin-tokens-file` (default `<state-dir>/admin-tokens`, mode 0600); the
+token itself is shown only when it is created. All admin tokens have the
+same rights (ADR-026).
 
 ## API keys
 

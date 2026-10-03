@@ -1,4 +1,6 @@
-// API keys: list with usage, create (the key is shown once), revoke.
+// API keys: list with usage, create (the key is shown once), revoke. Below
+// them, named admin tokens (ADR-026): one per operator or device, so the
+// audit log says who did what.
 import { api, get } from '../api.js';
 import { h, fill, table, badge, int, tps, ago } from '../dom.js';
 import { toast, errorToast, confirmDialog, modal, field } from '../ui.js';
@@ -15,6 +17,35 @@ async function copy(input) {
     input.select();
     toast('Press Ctrl+C (or Cmd+C) to copy the selected key.');
   }
+}
+
+function showCreatedToken(t) {
+  return modal((close) => {
+    const input = h('input', { readonly: true, value: t.token, 'aria-label': 'New admin token', spellcheck: 'false' });
+    return h('div.dlg', null,
+      h('h2', null, `Admin token ${t.name}`),
+      h('div.banner.warn', null, h('strong', null, 'Copy this token now. '), 'It is shown only once; the controller stores only its hash. ' +
+        'Sign in to the panel or set PHONEBORG_ADMIN_TOKEN with it on that device.'),
+      h('div.secret', null, input, h('button.primary', { type: 'button', onclick: () => copy(input) }, 'Copy')),
+      t.persisted ? null : h('p.muted.small', null, 'No -admin-tokens-file or -state-dir: the token is lost on restart.'),
+      h('div.row.end', null, h('button', { type: 'button', onclick: () => close() }, 'Done')));
+  });
+}
+
+async function revokeToken(name) {
+  const ok = await confirmDialog({
+    title: `Revoke admin token ${name}?`,
+    body: ['Panels and tools using it are signed out at their next request.'],
+    confirm: 'Revoke', danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api('DELETE', '/admin/tokens/' + encodeURIComponent(name));
+    toast(`${name}: revoked.`);
+  } catch (e) {
+    if (e.status !== 401 && e.status !== 503) errorToast(e);
+  }
+  refreshNow();
 }
 
 function showCreated(k) {
@@ -71,7 +102,29 @@ export default function keysView() {
 
   const info = h('div');
   const list = h('div.card', null, h('p.empty', null, 'Loading…'));
-  const el = h('section', null, h('div.page-head', null, h('h1', null, 'API keys')), info, list, form);
+
+  const tokName = h('input', { name: 'token-name', required: true, placeholder: 'laptop', autocomplete: 'off', spellcheck: 'false', maxlength: 32 });
+  const tokCreate = h('button.primary', { type: 'submit' }, 'Create admin token');
+  const tokForm = h('form', null, field('Name', tokName, 'One token per operator or device, e.g. laptop. Lowercase letters, digits and hyphens.'), tokCreate);
+  tokForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    tokCreate.disabled = true;
+    try {
+      const t = await api('POST', '/admin/tokens', { name: tokName.value.trim() });
+      tokName.value = '';
+      refreshNow();
+      await showCreatedToken(t);
+    } catch (ex) {
+      if (ex.status !== 401 && ex.status !== 503) errorToast(ex);
+    } finally {
+      tokCreate.disabled = false;
+    }
+  });
+  const tokList = h('div');
+  const tokens = h('div.card.section', null, h('h2', null, 'Admin tokens'),
+    h('p.muted', null, 'Tokens for this panel and pbctl. The audit log names the token behind every change.'), tokList, tokForm);
+
+  const el = h('section', null, h('div.page-head', null, h('h1', null, 'API keys')), info, list, form, tokens);
 
   async function refresh() {
     const res = await get('/admin/keys');
@@ -89,6 +142,11 @@ export default function keysView() {
     ]);
     fill(list, table(COLS, rows, 'No API keys yet.'),
       h('p.muted.small.section', null, 'Usage is the persisted total when the controller runs with -state-dir, otherwise since start.'));
+    const toks = await get('/admin/tokens').catch(() => null);
+    fill(tokList, toks ? table(['Name', 'Source', 'Created', { label: 'Actions', num: true }], toks.tokens.map((t) => [
+      h('strong', null, t.name), t.primary ? h('span.mono', null, '-admin-token-file') : 'named', t.primary ? '–' : ago(t.created),
+      h('td.actions', null, t.primary ? null : h('button.small.danger', { type: 'button', onclick: () => revokeToken(t.name), 'data-focus-key': t.name + ':tok-revoke' }, 'Revoke')),
+    ]), 'No admin tokens.') : h('p.muted', null, 'This controller has no named admin tokens.'));
   }
 
   return { title: 'API keys', el, live: true, refresh };

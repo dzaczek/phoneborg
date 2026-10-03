@@ -1626,3 +1626,33 @@ the main agent when to use the subagents, `ask_cluster` and jobs, so it
 delegates without being reminded; a hand-edited copy is kept. The admin
 token gives the agent the admin API's power over jobs; a scoped token is
 future work.
+
+## ADR-026: Named admin tokens
+
+**Problem.** ADR-008 has one admin token. With the panel open on a laptop
+and `pbctl` on the server sharing it, the audit log could only say
+`"principal":"admin"` and an address: a placement change that cleared every
+policy could not be told apart from a script on the server by anything but
+the IP.
+
+**Alternatives.**
+1. Several tokens in `-admin-token-file`, one per line with a name.
+2. Keep that file as it is and add named tokens, managed through the admin
+   API, in a separate hashed file.
+
+**Trade-offs.** (1) changes a file that `pcprov` and scripts read as "the
+first line is the token", and stores the secrets in plain text. (2) leaves
+that contract alone, stores only hashes like API keys, and lets an operator
+issue and revoke tokens from the panel or `pbctl` without editing files.
+
+**Decision.** (2). The `-admin-token-file` token is named `admin`. Named
+tokens (`^[a-z0-9][a-z0-9-]{0,31}$`) live in `-admin-tokens-file`
+(default `<state-dir>/admin-tokens`, else memory only) as
+`<name> sha256:<hex> <created>` lines, created with
+`POST /admin/tokens` (the token is returned once), listed with
+`GET /admin/tokens` and revoked with `DELETE /admin/tokens/{name}`; `admin`
+cannot be revoked there. Authentication compares the request's token with
+every hash in constant time and records the token's name as the request's
+principal, which the audit log and the debug log of reads show. `pbctl
+admin-tokens` and the panel's API keys view manage them. All tokens keep
+the single admin role; scopes are future work.

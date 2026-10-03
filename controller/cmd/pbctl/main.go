@@ -34,6 +34,9 @@ commands:
   drain <id>                  stop sending new requests to a node (ext:<name> for external nodes)
   undrain <id>                put a drained node back into rotation
   forget <id>                 remove a node (it re-registers if alive)
+  admin-tokens                named admin tokens, one per operator or device (ADR-026)
+  admin-tokens create <name>  create one (printed once); the audit log names it
+  admin-tokens revoke <name>  revoke one ("admin", from -admin-token-file, cannot be)
   keys                        list API keys with usage
   keys create <name>          create an API key (printed once)
   keys revoke <name>          revoke all keys of <name>
@@ -202,6 +205,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return jobsCmd(c, o, rest)
 	case cmd == "mcp":
 		return mcpCmd(c, o, rest)
+	case cmd == "admin-tokens":
+		return adminTokensCmd(c, o, rest)
 	case cmd == "served" && len(rest) == 0:
 		return served(c, o)
 	case cmd == "models":

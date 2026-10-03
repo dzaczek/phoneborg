@@ -296,6 +296,7 @@ With `-state-dir DIR` the controller keeps:
 | `DIR/models.json` | model catalog | on change |
 | `DIR/placement.json` | placement policies and the default model | on change |
 | `DIR/routing.json` | node aliases, pools (Super Borg pools included), per-node measured bandwidth | on change (atomic, mode 0600) |
+| `DIR/admin-tokens` | named admin tokens as SHA-256 hashes (`-admin-tokens-file` overrides) | on create/revoke (atomic, mode 0600) |
 | `DIR/jobs/<id>.json` | Super Borg jobs: goal, messages, tasks, documents, events | after every step (atomic, mode 0600) |
 | `DIR/external.json` | external nodes with their API keys and self-test results | on change (atomic, mode 0600) |
 | `DIR/models/` | downloaded GGUF files (`-models-dir` overrides) | by the catalog |
@@ -460,7 +461,7 @@ no TLS anywhere yet.
 | Surface | Protection |
 |---|---|
 | Gateway `/v1/chat/completions`, `/v1/completions`, `/v1/models` | open (served as `anonymous`) without `-api-keys-file`; with it, `Authorization: Bearer <key>` or `x-api-key` is required. Keys are stored as SHA-256 hashes; plaintext is shown once at creation (ADR-008). |
-| Admin API `/admin/...` | disabled (503) unless `-admin-token-file` is set; then a bearer token of ≥ 16 characters, compared by hash in constant time. Every call is counted in `phoneborg_admin_actions_total`, every change logged. |
+| Admin API `/admin/...` | disabled (503) unless `-admin-token-file` is set; then a bearer token: that file's token (`admin`, ≥ 16 characters) or a named token from `-admin-tokens-file` (ADR-026), all compared by hash in constant time. Every call is counted in `phoneborg_admin_actions_total`, every change logged with the token's name. |
 | Web panel `/ui/` | static files, no data; it uses the admin token (kept in the tab's `sessionStorage`). Strict CSP, no external resources (ADR-013). |
 | Node protocol `/v1/register`, `/v1/benchmark`, `/v1/heartbeat` | **unauthenticated** in v0: phones reach it only through `adb reverse` on the adb host (ADR-002, ADR-003). |
 | `/v1/nodes`, `/status`, `/metrics`, `/healthz` | **unauthenticated**, read-only |
@@ -480,7 +481,8 @@ localhost or a trusted network and do not expose it to untrusted networks.
   `pcprov watch` re-provisions when the phone is plugged in (ADR-001).
 - One model per phone; no model split across phones.
 - CPU only (static musl llama.cpp, no GPU/NPU backends, ADR-005).
-- One admin role, no per-operator identity; keys have no scopes, expiry or
+- One admin role: named admin tokens (ADR-026) identify who acted but all
+  have the same rights; keys have no scopes, expiry or
   quotas (ADR-008).
 - Drain flags and runtime gateway settings are lost on controller restart.
 - Hugging Face gated repositories and split GGUF files are not supported

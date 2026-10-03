@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,9 +54,9 @@ type Server struct {
 	// whenever s.keys.Enforced() (ADR-017).
 	accessModeCfg string
 
-	adminEnabled   bool
-	adminTokenHash [sha256.Size]byte
-	mAdmin         *prometheus.CounterVec
+	adminEnabled bool
+	adminTokens  *adminTokens // the -admin-token-file token and named ones (ADR-026)
+	mAdmin       *prometheus.CounterVec
 
 	catalog *models.Catalog
 	place   *placement
@@ -120,17 +119,17 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		catalog:       gwOpts.Models.Catalog,
 		place: &placement{planner: gwOpts.Models.Planner, path: gwOpts.Models.PlacementFile,
 			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
-		perf:           newNodePerf(),
-		ext:            newExternals(gwOpts.External, log),
-		devices:        newDevices(gwOpts.Devices.File, gwOpts.Devices.AutoProvision),
-		keys:           gwOpts.Keys,
-		usage:          gwOpts.Usage,
-		least:          &gateway.LeastInflight{},
-		spread:         &gateway.Spread{},
-		pools:          &pools{path: gwOpts.Routing.File, byName: map[string]Pool{}},
-		policy:         PolicyAffinity,
-		adminEnabled:   admin.Token != "",
-		adminTokenHash: sha256.Sum256([]byte(admin.Token)),
+		perf:         newNodePerf(),
+		ext:          newExternals(gwOpts.External, log),
+		devices:      newDevices(gwOpts.Devices.File, gwOpts.Devices.AutoProvision),
+		keys:         gwOpts.Keys,
+		usage:        gwOpts.Usage,
+		least:        &gateway.LeastInflight{},
+		spread:       &gateway.Spread{},
+		pools:        &pools{path: gwOpts.Routing.File, byName: map[string]Pool{}},
+		policy:       PolicyAffinity,
+		adminEnabled: admin.Token != "",
+		adminTokens:  newAdminTokens(admin),
 		mAdmin: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "phoneborg_admin_actions_total", Help: "Admin API calls by action and result (ok, error, unauthorized)."},
 			[]string{"action", "result"}),

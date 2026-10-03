@@ -2,8 +2,6 @@ package controller
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +32,10 @@ const (
 // AdminOptions configures the admin API.
 type AdminOptions struct {
 	Token string // empty disables /admin/
+	// TokensFile stores named admin tokens (ADR-026); "" = memory only.
+	TokensFile string
+	// Tokens are the named tokens loaded with LoadAdminTokens.
+	Tokens map[string]NamedAdminToken
 }
 
 // LoadAdminToken reads the admin token: the first line of path that is not
@@ -194,6 +196,9 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	s.registerJobsAdmin(func(pattern, action string, fn http.HandlerFunc) {
 		mux.Handle(pattern, s.adminAuth(action, fn))
 	})
+	s.registerTokenAdmin(func(pattern, action string, fn http.HandlerFunc) {
+		mux.Handle(pattern, s.adminAuth(action, fn))
+	})
 	// Unknown admin paths also need the token, so they reveal nothing.
 	mux.Handle("/admin/", s.adminAuth("unknown", http.NotFound))
 }
@@ -217,14 +222,15 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *Server) adminAuth(action string, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		h := sha256.Sum256([]byte(strings.TrimSpace(tok)))
-		if tok == "" || subtle.ConstantTimeCompare(h[:], s.adminTokenHash[:]) != 1 {
+		name, ok := s.adminTokens.match(tok)
+		if !ok {
 			s.mAdmin.WithLabelValues(action, "unauthorized").Inc()
 			s.log.Warn("admin auth failed", "action", action, "remote_addr", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="phoneborg-admin"`)
 			httpError(w, http.StatusUnauthorized, "invalid or missing admin token")
 			return
 		}
+		r = withAdminPrincipal(r, name)
 		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
 		next(sw, r)
 		result := "ok"
@@ -233,14 +239,14 @@ func (s *Server) adminAuth(action string, next http.HandlerFunc) http.Handler {
 		}
 		s.mAdmin.WithLabelValues(action, result).Inc()
 		if r.Method == http.MethodGet {
-			s.log.Debug("admin read", "principal", "admin", "action", action, "status", sw.code)
+			s.log.Debug("admin read", "principal", name, "action", action, "status", sw.code)
 		}
 	})
 }
 
 // audit logs a state-changing admin action. Never pass secrets in attrs.
 func (s *Server) audit(r *http.Request, action string, err error, attrs ...any) {
-	attrs = append([]any{"principal", "admin", "action", action, "remote_addr", r.RemoteAddr}, attrs...)
+	attrs = append([]any{"principal", adminPrincipal(r), "action", action, "remote_addr", r.RemoteAddr}, attrs...)
 	if err != nil {
 		s.log.Warn("admin action failed", append(attrs, "err", err)...)
 		return
