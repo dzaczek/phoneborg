@@ -125,8 +125,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 	c := &client{base: strings.TrimRight(firstNonEmpty(*baseURL, getenv("PHONEBORG_URL"), "http://127.0.0.1:18080"), "/"),
-		apiKey: getenv("PHONEBORG_API_KEY"), http: &http.Client{Timeout: 30 * time.Second}}
-	c.token = getenv("PHONEBORG_ADMIN_TOKEN")
+		apiKey: strings.TrimSpace(getenv("PHONEBORG_API_KEY")), http: &http.Client{Timeout: 30 * time.Second}}
+	// Trimmed: a token read from a file (e.g. opencode's {file:...}) often
+	// ends in a newline, which is not allowed in a header.
+	c.token = strings.TrimSpace(getenv("PHONEBORG_ADMIN_TOKEN"))
 	if *tokenFile != "" {
 		tok, err := controller.LoadAdminToken(*tokenFile)
 		if err != nil {

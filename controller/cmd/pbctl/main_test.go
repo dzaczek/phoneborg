@@ -132,3 +132,11 @@ func TestParseGatewaySet(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenFromEnvIsTrimmed(t *testing.T) {
+	ts := newController(t)
+	env := map[string]string{"PHONEBORG_URL": ts.URL, "PHONEBORG_ADMIN_TOKEN": token + "\n"}
+	if _, stderr, code := pbctl(t, env, "nodes"); code != 0 {
+		t.Fatalf("token with a trailing newline: %d %s", code, stderr)
+	}
+}
