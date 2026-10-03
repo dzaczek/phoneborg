@@ -826,3 +826,44 @@ func TestOpencodeThroughPbctl(t *testing.T) {
 		t.Errorf("stdout: %s", stdout)
 	}
 }
+
+func TestOpencodeInitAddsMCPServerAndSmallModel(t *testing.T) {
+	ts := newFakeServer(t, baseFakeState())
+	c := fakeClient(ts.URL)
+	dir := t.TempDir()
+	o := &out{w: new(strings.Builder)}
+	if err := opencodeInit(c, o, []string{"-dir", dir, "-small-model"}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() map[string]json.RawMessage {
+		data, err := os.ReadFile(filepath.Join(dir, "opencode.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(data, &root); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	root := read()
+	var mcp map[string]ocMCPServer
+	if err := json.Unmarshal(root["mcp"], &mcp); err != nil {
+		t.Fatal(err)
+	}
+	s := mcp["phoneborg"]
+	if s.Type != "local" || len(s.Command) != 2 || s.Command[1] != "mcp" || !s.Enabled ||
+		s.Environment["PHONEBORG_URL"] != ts.URL || s.Environment["PHONEBORG_ADMIN_TOKEN"] != "{env:PHONEBORG_ADMIN_TOKEN}" {
+		t.Errorf("mcp server %+v", s)
+	}
+	if string(root["small_model"]) != `"phoneborg/pool/fast"` {
+		t.Errorf("small_model %s", root["small_model"])
+	}
+	// sync refreshes the provider block and keeps the rest.
+	if _, err := runOpenCodeSync(c, dir); err != nil {
+		t.Fatal(err)
+	}
+	if root = read(); root["mcp"] == nil || root["small_model"] == nil || root["provider"] == nil {
+		t.Errorf("sync dropped keys: %v", root)
+	}
+}

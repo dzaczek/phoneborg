@@ -428,6 +428,71 @@ func mergeProviderBlockJSON(data []byte, provider string, block ocProviderBlock)
 	return append(out, '\n'), nil
 }
 
+// ocMCPServer is opencode's "mcp.<name>" entry for a local MCP server.
+type ocMCPServer struct {
+	Type        string            `json:"type"`
+	Command     []string          `json:"command"`
+	Enabled     bool              `json:"enabled"`
+	Environment map[string]string `json:"environment"`
+}
+
+// buildMCPServer runs this pbctl as the MCP server (ADR-025). The admin
+// token is never written: opencode substitutes {env:...} at start.
+func buildMCPServer(controllerURL string) ocMCPServer {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "pbctl"
+	}
+	return ocMCPServer{Type: "local", Command: []string{exe, "mcp"}, Enabled: true,
+		Environment: map[string]string{"PHONEBORG_URL": controllerURL, "PHONEBORG_ADMIN_TOKEN": "{env:PHONEBORG_ADMIN_TOKEN}"}}
+}
+
+// addConfigExtras adds the MCP server as mcp.<provider> and, if asked, a
+// small_model on the cluster to a plain JSON config, leaving keys that are
+// already set alone. A JSONC or unreadable file is not touched: the
+// snippet is printed instead.
+func addConfigExtras(path, provider string, mcp ocMCPServer, smallModel string, o *out) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var root map[string]json.RawMessage
+	if isJSONCConfig(path, data) || json.Unmarshal(data, &root) != nil {
+		snippet, _ := json.MarshalIndent(map[string]any{provider: mcp}, "", "  ")
+		fmt.Fprintf(o.w, "add the MCP server to %s under \"mcp\":\n%s\n", path, snippet)
+		return nil
+	}
+	if root == nil {
+		root = map[string]json.RawMessage{}
+	}
+	changed := false
+	servers := map[string]json.RawMessage{}
+	if raw, ok := root["mcp"]; ok {
+		if err := json.Unmarshal(raw, &servers); err != nil {
+			return fmt.Errorf("parse mcp block: %w", err)
+		}
+	}
+	if _, ok := servers[provider]; !ok {
+		servers[provider], _ = json.Marshal(mcp)
+		root["mcp"], _ = json.Marshal(servers)
+		changed = true
+		fmt.Fprintf(o.w, "added MCP server mcp.%s (%s mcp)\n", provider, mcp.Command[0])
+	}
+	if _, ok := root["small_model"]; smallModel != "" && !ok {
+		root["small_model"], _ = json.Marshal(smallModel)
+		changed = true
+		fmt.Fprintf(o.w, "set small_model to %s\n", smallModel)
+	}
+	if !changed {
+		return nil
+	}
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	return gateway.WriteFileAtomic(path, append(out, '\n'), 0o644)
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -451,8 +516,8 @@ func printProviderBlockToPaste(o *out, provider string, block ocProviderBlock, p
 // file that lacks the provider (or, with force, replace it); otherwise
 // (JSONC, or already configured without force) leave the file untouched and
 // print the block to paste. managed is true only when this call created the
-// file from scratch.
-func opencodeWriteConfig(dir, provider string, block ocProviderBlock, force bool, o *out) (path string, managed bool, err error) {
+// file from scratch; wrote when it created or changed it.
+func opencodeWriteConfig(dir, provider string, block ocProviderBlock, force bool, o *out) (path string, managed, wrote bool, err error) {
 	jsonPath := filepath.Join(dir, "opencode.json")
 	jsoncPath := filepath.Join(dir, "opencode.jsonc")
 	jsonExists, jsoncExists := fileExists(jsonPath), fileExists(jsoncPath)
@@ -461,14 +526,14 @@ func opencodeWriteConfig(dir, provider string, block ocProviderBlock, force bool
 		wrapper := ocProviderWrapper{Provider: map[string]ocProviderBlock{provider: block}}
 		data, err := json.MarshalIndent(wrapper, "", "  ")
 		if err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		data = append(data, '\n')
 		if err := gateway.WriteFileAtomic(jsonPath, data, 0o644); err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		fmt.Fprintf(o.w, "wrote %s\n", jsonPath)
-		return jsonPath, true, nil
+		return jsonPath, true, true, nil
 	}
 
 	path = jsoncPath
@@ -477,41 +542,41 @@ func opencodeWriteConfig(dir, provider string, block ocProviderBlock, force bool
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 
 	if isJSONCConfig(path, data) {
 		printProviderBlockToPaste(o, provider, block, path)
-		return path, false, nil
+		return path, false, false, nil
 	}
 
 	hasProvider, err := plainJSONHasProviderKey(data, provider)
 	if err != nil {
 		// Malformed despite having no comments: be safe, don't touch it.
 		printProviderBlockToPaste(o, provider, block, path)
-		return path, false, nil
+		return path, false, false, nil
 	}
 	if hasProvider && !force {
 		printProviderBlockToPaste(o, provider, block, path)
-		return path, false, nil
+		return path, false, false, nil
 	}
 
 	merged, err := mergeProviderBlockJSON(data, provider, block)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if err := backupFile(path); err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if err := gateway.WriteFileAtomic(path, merged, 0o644); err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	verb := "merged provider block into"
 	if hasProvider {
 		verb = "replaced provider block in"
 	}
 	fmt.Fprintf(o.w, "%s %s (backup at %s.bak)\n", verb, path, path)
-	return path, false, nil
+	return path, false, true, nil
 }
 
 // ---- agent file rendering ----
@@ -827,12 +892,12 @@ func syncManagedConfig(dir string, manifest *ocManifest, block ocProviderBlock) 
 	if h, ok := manifest.Files[manifest.ConfigPath]; ok && sha256Hex(data) != h {
 		return false, fmt.Sprintf("%s was edited by hand; not updating its model list", manifest.ConfigPath), nil
 	}
-	wrapper := ocProviderWrapper{Provider: map[string]ocProviderBlock{manifest.Provider: block}}
-	newData, err := json.MarshalIndent(wrapper, "", "  ")
+	// Replace only the provider block: init may have added the MCP server
+	// and small_model next to it.
+	newData, err := mergeProviderBlockJSON(data, manifest.Provider, block)
 	if err != nil {
 		return false, "", err
 	}
-	newData = append(newData, '\n')
 	if string(newData) == string(data) {
 		return false, "", nil
 	}
@@ -922,6 +987,9 @@ func ensureFastPool(c *client, o *out) error {
 
 // ---- commands ----
 
+// poolPrefixFast is the cluster target small_model points at.
+const poolPrefixFast = "pool/fast"
+
 func opencodeInit(c *client, o *out, args []string) error {
 	fs := flag.NewFlagSet("opencode init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -930,6 +998,7 @@ func opencodeInit(c *client, o *out, args []string) error {
 	baseURL := fs.String("base-url", "", "gateway base URL (default: controller URL + /v1)")
 	force := fs.Bool("force", false, "replace an existing provider block in plain JSON")
 	readTools := fs.Bool("read-tools", false, "allow read, grep and glob tools instead of none (~1k extra prompt tokens per call)")
+	smallModel := fs.Bool("small-model", false, "set opencode's small_model (session titles) to <provider>/pool/fast if unset")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("opencode init: %w", err)
 	}
@@ -952,9 +1021,21 @@ func opencodeInit(c *client, o *out, args []string) error {
 	}
 
 	block := buildProviderBlock(url, state.Models, state.Nodes)
-	configPath, managed, err := opencodeWriteConfig(*dir, *provider, block, *force, o)
+	configPath, managed, wrote, err := opencodeWriteConfig(*dir, *provider, block, *force, o)
 	if err != nil {
 		return err
+	}
+	small := ""
+	if *smallModel {
+		small = *provider + "/" + poolPrefixFast
+	}
+	if wrote { // a config left alone stays untouched
+		if err := addConfigExtras(configPath, *provider, buildMCPServer(c.base), small, o); err != nil {
+			return err
+		}
+	} else {
+		snippet, _ := json.MarshalIndent(map[string]any{*provider: buildMCPServer(c.base)}, "", "  ")
+		fmt.Fprintf(o.w, "to use the cluster as MCP tools, add under \"mcp\":\n%s\n", snippet)
 	}
 
 	manifest := ocManifest{Version: 1, Provider: *provider, BaseURL: url, ReadTools: *readTools,

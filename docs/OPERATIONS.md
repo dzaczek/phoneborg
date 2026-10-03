@@ -355,6 +355,7 @@ bin/pbctl nodes
 | `pbctl gateway` | current gateway settings |
 | `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
 | `pbctl stats` | uptime, cluster summary, usage by key and node |
+| `pbctl mcp` | serve the cluster as MCP tools on stdin/stdout ([details](#the-cluster-as-mcp-tools)) |
 | `pbctl jobs` | Super Borg jobs: status, steps, tasks done/total |
 | `pbctl jobs new [title=T] [pool=P] <goal>` | start a job on Super Borg pool P (default: the first one) |
 | `pbctl jobs show <id>` | tasks, documents and the latest events |
@@ -400,7 +401,7 @@ bin/pbctl nodes
 
 | Command | What |
 |---|---|
-| `pbctl opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools]` | write `opencode.json` and `.opencode/agent/` subagents; `-dir` default `.`, `-provider` default `phoneborg`, `-base-url` default controller URL + `/v1` |
+| `pbctl opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools] [-small-model]` | write `opencode.json` (provider, MCP server) and `.opencode/agent/` subagents; `-dir` default `.`, `-provider` default `phoneborg`, `-base-url` default controller URL + `/v1`; `-small-model` sets `small_model` to `<provider>/pool/fast` if unset |
 | `pbctl opencode sync [-dir D]` | regenerate from the current cluster (idempotent) |
 | `pbctl opencode watch [-dir D] [-interval 15s]` | loop `sync`, logging only changes |
 | `pbctl opencode status [-dir D]` | managed agents vs. cluster state |
@@ -1071,6 +1072,57 @@ subagent, including in parallel:
 ```text
 use @borg-review and @borg-summarize in parallel on the diff and the PR description
 ```
+
+### The cluster as MCP tools
+
+`pbctl mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdin/stdout (ADR-025). `pbctl opencode init` adds it to a new or
+merged `opencode.json` as `mcp.phoneborg` (a config it leaves alone gets
+the snippet printed instead):
+
+```json
+"mcp": {
+  "phoneborg": {
+    "type": "local",
+    "command": ["/usr/local/bin/pbctl", "mcp"],
+    "enabled": true,
+    "environment": {"PHONEBORG_URL": "http://10.10.100.81:18080", "PHONEBORG_ADMIN_TOKEN": "{env:PHONEBORG_ADMIN_TOKEN}"}
+  }
+}
+```
+
+The token is never written to the file: opencode substitutes it from its
+own environment. An agent on any model (e.g. Claude) then gets these tools:
+
+| Tool | What it does |
+|---|---|
+| `cluster_status` | phones (state, model, tok/s) and pools |
+| `ask_cluster` | one prompt to `auto`, a pool or a node; the answer (up to 35 min) |
+| `job_start` | start a [Super Borg job](#super-borg-jobs) (goal, optional title and pool) |
+| `job_status` | tasks done, documents, the question it waits on, latest events |
+| `job_message` | send an instruction to a job (resumes it) |
+| `job_result` | the assembled result as Markdown |
+| `jobs_list` | all jobs |
+
+`ask_cluster` goes through the gateway like any request (an API key from
+`PHONEBORG_API_KEY` if the gateway needs one); the job tools use the admin
+API. Any MCP client that runs local stdio servers can use the same command.
+
+`pbctl opencode init -small-model` also sets opencode's `small_model`
+(session titles and other small calls) to `phoneborg/pool/fast` if it is
+not set, so those calls do not queue behind a phone serving the main agent.
+`pbctl opencode sync` refreshes only the provider block and keeps `mcp` and
+`small_model`.
+
+### Agents on phones
+
+opencode's build agent sends ~11.7k prompt tokens and the phones have a 16k
+context, so a primary agent with tools on a phone leaves ~4k for the
+conversation and compacts almost every turn. Use a primary model elsewhere
+(an API model, or an [external node](#external-nodes-mac--pc) with a large
+context) and the phones as subagents and MCP tools. Requests with tools go
+only to [tool-capable models](#tool-capable-routing), and long agent prompts
+are covered by the [first-token timeout](#gateway-settings).
 
 Spreading over phones gives parallelism; pool membership decides quality
 (measured: 9.9 s on `pool/fast` vs 23.8 s on one phone, but fewer correct

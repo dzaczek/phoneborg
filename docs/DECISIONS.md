@@ -1594,3 +1594,32 @@ for Super Borg orchestrator calls is gone; they follow the same rule.
 the first-token timeout bounds the whole request. A streaming node is never
 stopped while it produces tokens; generation is bounded by its context
 size and the client's own cancel.
+
+## ADR-025: The cluster as MCP tools (`pbctl mcp`)
+
+**Problem.** Super Borg jobs (ADR-021) are reachable from the panel and
+`pbctl`, but an agent that a user works with, such as opencode on a strong
+API model, cannot hand work to the phones except as chat completions on a
+provider, which offers no way to start, steer or collect long jobs.
+
+**Alternatives.**
+1. An MCP endpoint on the controller (Streamable HTTP).
+2. A local MCP server over stdio in `pbctl`, talking to the controller's
+   existing APIs.
+
+**Trade-offs.** (1) needs a new authenticated HTTP surface, sessions and
+SSE on the controller. (2) reuses the admin API, its token and the
+gateway, adds no network surface, and is how opencode and most MCP clients
+run tools anyway; its cost is that every client host needs `pbctl` and the
+admin token in its environment.
+
+**Decision.** (2). `pbctl mcp` speaks MCP (JSON-RPC 2.0, newline-delimited;
+revisions 2025-06-18, 2025-03-26 and 2024-11-05) with tools
+`cluster_status`, `ask_cluster`, `job_start`, `job_status`, `job_message`,
+`job_result` and `jobs_list`. Tool failures are tool results with
+`isError`, not protocol errors, so the model can read them.
+`pbctl opencode init` writes `mcp.phoneborg` with the absolute pbctl path
+and `{env:PHONEBORG_ADMIN_TOKEN}`, never the token itself; `sync` replaces
+only the provider block now, so `mcp` and `small_model` survive. The admin
+token gives the agent the admin API's power over jobs; a scoped token is
+future work.

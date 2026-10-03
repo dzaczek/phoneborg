@@ -79,8 +79,9 @@ commands:
                               (without key-file the current key is kept; key-file=- removes it)
   external rm <name>          remove an external node
   external selftest <name>    measure each of its models' tok/s
-  opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools]
-                              generate opencode.json + .opencode/agent subagents for the phone cluster
+  mcp                         serve the cluster as MCP tools on stdin/stdout (ask, Super Borg jobs); ADR-025
+  opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools] [-small-model]
+                              generate opencode.json (provider, MCP server) + .opencode/agent subagents
   opencode sync [-dir D]      regenerate agents/config from the current cluster state (idempotent)
   opencode watch [-dir D] [-interval 15s]
                               loop opencode sync until interrupted, logging changes only
@@ -199,6 +200,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return showGateway(o, raw, err)
 	case cmd == "jobs":
 		return jobsCmd(c, o, rest)
+	case cmd == "mcp":
+		return mcpCmd(c, o, rest)
 	case cmd == "served" && len(rest) == 0:
 		return served(c, o)
 	case cmd == "models":
