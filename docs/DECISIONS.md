@@ -1549,3 +1549,23 @@ of the old setting and a pool to choose for jobs.
   first Super Borg pool by name, and the whole cluster if there is none.
   `start_job` from a pool's chat uses that pool. A job whose pool is no
   longer a Super Borg pool waits with a message instead of retrying.
+
+## ADR-023: Route tool requests to tool-capable models
+
+**Problem.** Agent clients (opencode with tools) send `tools`. A pool such
+as `pool/fast` mixes models that call tools well (Qwen3) with ones that do
+not: Gemma 3n answers with the text `tool_code …` instead of a tool call,
+which breaks the agent. The same failure made a Super Borg job loop when
+Gemma became the automatic orchestrator.
+
+**Decision.** Tool capability is catalog data, not code: models that call
+tools reliably carry the tag `tools` (`pbctl models tag`). The gateway keeps
+only tool-capable candidates for requests that offer tools, inside the
+named target; with none it falls back to every candidate, so untagged
+clusters are unaffected, and `node/<alias>` is never filtered. The Super
+Borg orchestrator's automatic choice ranks tool-capable models first.
+Counted in `phoneborg_gateway_tool_requests_total{result}`.
+
+**Consequences.** Model names stay out of the code (AGENTS.md); the operator
+must tag new models. A wrong tag shows up as a failing agent, a missing one
+as a `fallback` count.

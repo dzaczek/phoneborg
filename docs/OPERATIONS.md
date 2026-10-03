@@ -17,6 +17,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [pbctl reference](#pbctl-reference)
 - [Models and placement](#models-and-placement)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
+- [Tool-capable routing](#tool-capable-routing)
 - [Super Borg pools](#super-borg-pools)
 - [Super Borg jobs](#super-borg-jobs)
 - [External nodes (Mac / PC)](#external-nodes-mac--pc)
@@ -633,6 +634,24 @@ curl -X POST http://127.0.0.1:18080/admin/prewarm \
 # {"results":[{"node_id":"mi8-6f3a","alias":"phone-01","ok":true,"ms":4210,"error":""}, ...]}
 ```
 
+## Tool-capable routing
+
+Requests that offer `tools` (agents such as opencode with tools enabled)
+are routed only to nodes whose model carries the catalog tag **`tools`**,
+within whatever target they name (`auto`, a model id, a pool). Models that
+cannot call tools reliably (Gemma, for one, writes `tool_code` as text) are
+skipped for them; plain requests still use every node. If no eligible node
+has the tag, routing falls back to all of them, so an untagged cluster
+behaves as before. `node/<alias>` is always honoured as given. The same
+tag makes a model preferred as the automatic orchestrator of a Super Borg
+pool.
+
+```sh
+pbctl models tag qwen3-4b-instruct-2507-q4_k_m general,tools   # mark a model as tool-capable
+```
+
+Metric: `phoneborg_gateway_tool_requests_total{result="capable|fallback"}`.
+
 ## Super Borg pools
 
 A pool with routing **`superborg`** answers as one model (ADR-020, ADR-022).
@@ -663,8 +682,9 @@ a pool named `superborg` over every node, with the same orchestrator and
 thinking.
 
 - **Orchestrator choice**: the configured alias or node id, if it is a
-  ready member; otherwise (`auto`) the member serving the largest catalog
-  model. Give it a model with good tool calling, e.g.
+  ready member; otherwise (`auto`) a member whose model is tagged `tools`
+  (see [Tool-capable routing](#tool-capable-routing)), then the one serving
+  the largest catalog model. Give it a model with good tool calling, e.g.
   Qwen3 (pin it with `pbctl placement set qwen3-8b-q4_k_m pin=oneplus`). If it
   fails before answering, the next-largest member takes over.
 - **Workers**: every other ready, not overheating member, phones and

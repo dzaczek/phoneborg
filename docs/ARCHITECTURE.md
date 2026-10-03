@@ -174,6 +174,8 @@ once.
              unknown pool/node 404 model_not_found
         ─► routable = ACTIVE + runtime ready + not drained + not switching
                       (+ ACTIVE external nodes, one backend per model)
+        ─► request offers tools? keep only nodes whose model has the catalog tag "tools"
+                                 (none has it ─► keep all; node/<alias> is never filtered)
         ─► skip nodes at their max_concurrency (external nodes); none left ─► 503 busy
         ─► context filter: estimated tokens (body bytes / 4) > every node's context
                             ─► 400 context_length_exceeded; smaller nodes are skipped

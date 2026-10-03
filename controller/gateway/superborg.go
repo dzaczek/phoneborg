@@ -78,8 +78,10 @@ func workerName(b Backend) string {
 }
 
 // pickOrchestrator returns, among the pool's ready nodes, the configured
-// orchestrator if it is untried, else the untried node serving the largest
-// model (catalog size, then speed).
+// orchestrator if it is untried, else the untried node best suited: a model
+// tagged for tool calls first (the loop is driven by tools; Gemma, say,
+// writes "tool_code" as text instead), then the largest model (catalog
+// size), then speed.
 func (g *Gateway) pickOrchestrator(sb Superborg, pool []Backend, tried map[string]bool) (Backend, bool) {
 	var cands []Backend
 	for _, b := range pool {
@@ -99,6 +101,9 @@ func (g *Gateway) pickOrchestrator(sb Superborg, pool []Backend, tried map[strin
 		return mi.SizeBytes
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
+		if ti, tj := g.canCallTools(cands[i]), g.canCallTools(cands[j]); ti != tj {
+			return ti
+		}
 		si, sj := size(cands[i]), size(cands[j])
 		if si != sj {
 			return si > sj

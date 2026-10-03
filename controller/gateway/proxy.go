@@ -92,6 +92,7 @@ type Gateway struct {
 	mSuperborg   *prometheus.CounterVec
 	mDelegations *prometheus.CounterVec
 	mJobSteps    *prometheus.CounterVec
+	mToolRouting *prometheus.CounterVec
 }
 
 func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, reg prometheus.Registerer, log *slog.Logger) *Gateway {
@@ -142,6 +143,9 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 		mJobSteps: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "phoneborg_superborg_job_steps_total", Help: "Super Borg job orchestrator steps, by tool called (ADR-021)."},
 			[]string{"tool"}),
+		mToolRouting: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "phoneborg_gateway_tool_requests_total", Help: "Requests with tools: routed to tool-capable models (capable) or, with none eligible, to any (fallback)."},
+			[]string{"result"}),
 	}
 	if g.cfg.Usage == nil {
 		g.cfg.Usage = noUsage{}
@@ -149,7 +153,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.SetPicker(picker)
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
 	g.prewarmTimeout = PrewarmTimeout
-	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations, g.mJobSteps)
+	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations, g.mJobSteps, g.mToolRouting)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
 	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy", "remote_requires_api_key"} {
 		g.mRejected.WithLabelValues(reason)
@@ -213,6 +217,36 @@ type requestMeta struct {
 	Messages []json.RawMessage `json:"messages"`
 	Tools    json.RawMessage   `json:"tools"`
 	Prompt   json.RawMessage   `json:"prompt"` // /v1/completions
+}
+
+// hasTools reports whether the request offers the model tools.
+func (m requestMeta) hasTools() bool {
+	t := bytes.TrimSpace(m.Tools)
+	return len(t) > 0 && !bytes.Equal(t, []byte("null")) && !bytes.Equal(t, []byte("[]"))
+}
+
+// ToolsTag is the catalog tag of models that call tools reliably.
+const ToolsTag = "tools"
+
+// toolCapable returns the backends whose model carries ToolsTag.
+func (g *Gateway) toolCapable(bs []Backend) []Backend {
+	var out []Backend
+	for _, b := range bs {
+		if g.canCallTools(b) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func (g *Gateway) canCallTools(b Backend) bool {
+	mi, _ := g.modelInfoFor(b.Model)
+	for _, t := range mi.Tags {
+		if t == ToolsTag {
+			return true
+		}
+	}
+	return false
 }
 
 // affinityKey hashes the prompt prefix that repeats across a session's
@@ -363,7 +397,26 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 // serveTarget routes a parsed request to tgt's backends, with failover.
 func (g *Gateway) serveTarget(w http.ResponseWriter, r *http.Request, tgt Target, body []byte, meta requestMeta, principal Principal, reqID string) {
 	log := g.log.With("request_id", reqID, "path", r.URL.Path)
-	all := tgt.filter(g.routable())
+	// Requests with tools go to models that can call them (catalog tag
+	// "tools"); without any such candidate routing is unchanged.
+	wantTools := tgt.Node == "" && meta.hasTools()
+	eligible := func() []Backend {
+		all := tgt.filter(g.routable())
+		if wantTools {
+			if capable := g.toolCapable(all); len(capable) > 0 {
+				return capable
+			}
+		}
+		return all
+	}
+	all := eligible()
+	if wantTools {
+		result := "capable"
+		if len(g.toolCapable(all)) == 0 {
+			result = "fallback"
+		}
+		g.mToolRouting.WithLabelValues(result).Inc()
+	}
 	if tgt.Node != "" && len(all) == 0 {
 		g.mRejected.WithLabelValues("node_unavailable").Inc()
 		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusServiceUnavailable)})
@@ -406,7 +459,7 @@ func (g *Gateway) serveTarget(w http.ResponseWriter, r *http.Request, tgt Target
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// Re-read backends each attempt: nodes may have joined or left
 		// (e.g. reaped as SUSPECT) since the request arrived.
-		cands := g.candidates(tgt.filter(g.routable()), tried, est)
+		cands := g.candidates(eligible(), tried, est)
 		if len(cands) == 0 {
 			break
 		}
