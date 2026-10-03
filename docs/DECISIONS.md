@@ -1620,6 +1620,9 @@ revisions 2025-06-18, 2025-03-26 and 2024-11-05) with tools
 `isError`, not protocol errors, so the model can read them.
 `pbctl opencode init` writes `mcp.phoneborg` with the absolute pbctl path
 and `{env:PHONEBORG_ADMIN_TOKEN}`, never the token itself; `sync` replaces
-only the provider block now, so `mcp` and `small_model` survive. The admin
+only the provider block now, so `mcp` and `small_model` survive. It also
+writes `.opencode/phoneborg.md`, listed under `instructions`, which tells
+the main agent when to use the subagents, `ask_cluster` and jobs, so it
+delegates without being reminded; a hand-edited copy is kept. The admin
 token gives the agent the admin API's power over jobs; a scoped token is
 future work.

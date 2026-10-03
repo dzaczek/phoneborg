@@ -867,3 +867,46 @@ func TestOpencodeInitAddsMCPServerAndSmallModel(t *testing.T) {
 		t.Errorf("sync dropped keys: %v", root)
 	}
 }
+
+func TestOpencodeInstructionsFile(t *testing.T) {
+	ts := newFakeServer(t, baseFakeState())
+	c := fakeClient(ts.URL)
+	dir := t.TempDir()
+	o := &out{w: new(strings.Builder)}
+	if err := opencodeInit(c, o, []string{"-dir", dir}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ocInstructionsPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{ocGeneratedMarker, "# PhoneBorg cluster", "- @borg-fast:", "ask_cluster", "job_start"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("instructions lack %q", want)
+		}
+	}
+	cfg, _ := os.ReadFile(filepath.Join(dir, "opencode.json"))
+	var root struct{ Instructions []string }
+	if err := json.Unmarshal(cfg, &root); err != nil || len(root.Instructions) != 1 || root.Instructions[0] != ocInstructionsPath {
+		t.Fatalf("instructions in config: %v %v", root.Instructions, err)
+	}
+	// A hand edit survives sync, with a warning.
+	if err := os.WriteFile(path, []byte("my own notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runOpenCodeSync(c, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "my own notes\n" || !strings.Contains(strings.Join(res.Warnings, " "), "edited by hand") {
+		t.Errorf("hand edit overwritten or not reported: %q %v", data, res.Warnings)
+	}
+}
+
+func TestRenderInstructionsNamesSuperborgPools(t *testing.T) {
+	s := renderInstructions([]ocAgentSpec{{Name: "phone-poco", Description: "Runs on poco."}}, []string{"pool/borg"})
+	if !strings.Contains(s, "- @phone-poco: Runs on poco.") || !strings.Contains(s, "on a Super Borg pool (pool/borg)") {
+		t.Errorf("instructions:\n%s", s)
+	}
+}

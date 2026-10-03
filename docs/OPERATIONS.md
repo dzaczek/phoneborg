@@ -1108,11 +1108,20 @@ own environment. An agent on any model (e.g. Claude) then gets these tools:
 `PHONEBORG_API_KEY` if the gateway needs one); the job tools use the admin
 API. Any MCP client that runs local stdio servers can use the same command.
 
+`init` also writes `.opencode/phoneborg.md` and lists it under the config's
+`instructions`, so opencode's main agent knows when to delegate without
+being told each time: which subagents exist (one per phone, with its
+model), when to use `ask_cluster`, that long multi-part work goes to
+`job_start` on the Super Borg pool and is checked later rather than waited
+for, and that phones only see what is sent to them, may be wrong and must
+not get secrets. `sync` regenerates it when phones or pools change; a copy
+edited by hand is left alone, with a warning.
+
 `pbctl opencode init -small-model` also sets opencode's `small_model`
 (session titles and other small calls) to `phoneborg/pool/fast` if it is
 not set, so those calls do not queue behind a phone serving the main agent.
-`pbctl opencode sync` refreshes only the provider block and keeps `mcp` and
-`small_model`.
+`pbctl opencode sync` refreshes only the provider block (and the
+instructions file) and keeps `mcp`, `instructions` and `small_model`.
 
 ### Agents on phones
 
