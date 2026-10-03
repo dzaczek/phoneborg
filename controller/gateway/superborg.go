@@ -359,9 +359,7 @@ type orchestration struct {
 // relaying its text to the client as it arrives and collecting tool calls.
 func (g *Gateway) orchestrateOnce(r *http.Request, orch Backend, req map[string]json.RawMessage, em textSink, p Principal, reqID string) (orchestration, error) {
 	sw := &sseCollector{header: http.Header{}, em: em}
-	// Idle timeout: a thinking 8B model on a phone can generate for longer
-	// than the upstream timeout; it is only stopped when it goes silent.
-	err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), orch, mustJSON(req), true, true, p, reqID)
+	err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), orch, mustJSON(req), true, p, reqID)
 	if err != nil {
 		return orchestration{}, err
 	}
@@ -631,8 +629,8 @@ func (g *Gateway) leastBusy(workers []Backend, used map[string]bool) Backend {
 
 // runSubtask sends one task (msgs) to b; if b fails before answering, it
 // is retried once on the least busy other worker. It returns the worker that
-// answered (or failed last). The call streams with an idle timeout, so a
-// slow phone writing a long text is not cut off while it generates.
+// answered (or failed last). The call streams, so the upstream timeout is
+// an idle limit and a slow phone writing a long text is not cut off.
 func (g *Gateway) runSubtask(r *http.Request, workers []Backend, b Backend, msgs []map[string]string, maxTokens int, p Principal, reqID string) (Backend, string, usage, error) {
 	body := mustJSON(map[string]any{
 		"model":                b.Model,
@@ -646,7 +644,7 @@ func (g *Gateway) runSubtask(r *http.Request, workers []Backend, b Backend, msgs
 	for attempt := 0; attempt < 2; attempt++ {
 		tried[b.NodeID] = true
 		sw := &sseCollector{header: http.Header{}, em: discard{}}
-		err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), b, body, true, true, p, reqID)
+		err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), b, body, true, p, reqID)
 		if err == nil && sw.status == http.StatusOK {
 			if !sw.sawEvent {
 				sw.whole(bytes.TrimSpace(sw.line))

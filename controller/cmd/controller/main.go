@@ -36,7 +36,8 @@ func main() {
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token; empty = admin API disabled")
 	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json, external.json, devices.json, jobs/); empty = keep it in memory only")
 	modelsDir := flag.String("models-dir", "", "directory for model files served to nodes; default <state-dir>/models, or a temporary directory without -state-dir")
-	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
+	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "longest silence from a node once its response has started (between streamed chunks); ADR-024")
+	firstTokenTimeout := flag.Duration("first-token-timeout", 30*time.Minute, "longest wait for a node's first response byte, i.e. prompt processing (slow on phones for 10k-token agent prompts); 0 = -upstream-timeout; ADR-024")
 	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
 	minPredictedTokS := flag.Float64("min-predicted-tok-s", 3, "minimum predicted generation tok/s (ADR-015) below which the planner will not place a model on a node; a policy's own min_tok_s overrides it; unknown predictions never exclude")
 	gatewayAccess := flag.String("gateway-access", gateway.AccessLocal, "who may use the inference/listing endpoints (/v1/chat/completions, /v1/completions, /v1/models, /api/*) without an API key: \"local\" (trusted peers only), \"keys\" (nobody, same as enforced keys) or \"open\" (anyone, today's behaviour); ADR-017")
@@ -155,7 +156,7 @@ func main() {
 		AccessMode:     *gatewayAccess,
 		TrustedCIDRs:   trustedCIDRList,
 		TrustedProxies: trustedProxyList,
-		Config:         gateway.Config{UpstreamTimeout: *upstreamTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
+		Config:         gateway.Config{UpstreamTimeout: *upstreamTimeout, FirstTokenTimeout: *firstTokenTimeout, MaxAttempts: 2, Cooldown: 30 * time.Second},
 	}, admin, log)
 
 	go func() {

@@ -249,7 +249,7 @@ func TestAdminGatewaySettings(t *testing.T) {
 	e := newEnv(t, testToken, nil)
 	var gs GatewaySettings
 	e.admin(http.MethodGet, "/admin/gateway", "", 200, &gs)
-	if gs != (GatewaySettings{Policy: "affinity", AffinitySpill: 2, UpstreamTimeout: "5s", AuthMode: "open", Access: "open"}) {
+	if gs != (GatewaySettings{Policy: "affinity", AffinitySpill: 2, UpstreamTimeout: "5s", FirstTokenTimeout: "5s", AuthMode: "open", Access: "open"}) {
 		t.Fatalf("defaults = %+v", gs)
 	}
 	for _, bad := range []string{
@@ -257,6 +257,7 @@ func TestAdminGatewaySettings(t *testing.T) {
 		`{"affinity_spill":0}`,
 		`{"upstream_timeout":"soon"}`,
 		`{"upstream_timeout":"10ms"}`,
+		`{"first_token_timeout":"25h"}`,
 		`{"policy":"least_inflight","upstream_timeout":"x"}`, // all-or-nothing
 		`{"polcy":"affinity"}`,
 		`{"auth_mode":"maybe"}`,
@@ -269,8 +270,12 @@ func TestAdminGatewaySettings(t *testing.T) {
 	if gs.Policy != "affinity" || gs.UpstreamTimeout != "5s" || gs.ThermalLimitC != 0 {
 		t.Fatalf("rejected update changed settings: %+v", gs)
 	}
+	e.admin(http.MethodPut, "/admin/gateway", `{"first_token_timeout":"30m"}`, 200, &gs)
+	if gs.FirstTokenTimeout != "30m0s" || gs.UpstreamTimeout != "5s" {
+		t.Fatalf("first-token timeout not applied: %+v", gs)
+	}
 	e.admin(http.MethodPut, "/admin/gateway", `{"policy":"least_inflight","affinity_spill":3,"upstream_timeout":"10m"}`, 200, &gs)
-	if gs != (GatewaySettings{Policy: "least_inflight", AffinitySpill: 3, UpstreamTimeout: "10m0s", AuthMode: "open", Access: "open"}) {
+	if gs != (GatewaySettings{Policy: "least_inflight", AffinitySpill: 3, UpstreamTimeout: "10m0s", FirstTokenTimeout: "30m0s", AuthMode: "open", Access: "open"}) {
 		t.Fatalf("updated = %+v", gs)
 	}
 	if _, ok := e.srv.gw.Picker().(*gateway.LeastInflight); !ok || e.srv.gw.UpstreamTimeout() != 10*time.Minute {

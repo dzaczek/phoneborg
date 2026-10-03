@@ -107,11 +107,14 @@ type CreatedKey struct {
 
 // GatewaySettings are the gateway's runtime settings (GET/PUT /admin/gateway).
 type GatewaySettings struct {
-	Policy          string  `json:"policy"`
-	AffinitySpill   int     `json:"affinity_spill"`
-	UpstreamTimeout string  `json:"upstream_timeout"`
-	AuthMode        string  `json:"auth_mode"`
-	ThermalLimitC   float64 `json:"thermal_limit_c"`
+	Policy          string `json:"policy"`
+	AffinitySpill   int    `json:"affinity_spill"`
+	UpstreamTimeout string `json:"upstream_timeout"`
+	// FirstTokenTimeout is the effective wait for a node's first response
+	// byte (ADR-024).
+	FirstTokenTimeout string  `json:"first_token_timeout"`
+	AuthMode          string  `json:"auth_mode"`
+	ThermalLimitC     float64 `json:"thermal_limit_c"`
 	// Access is the effective -gateway-access mode ("local", "keys" or
 	// "open"): "keys" whenever key authentication is enforced, whichever way
 	// it got enforced (ADR-017).
@@ -120,11 +123,13 @@ type GatewaySettings struct {
 
 // GatewayUpdate is the body of PUT /admin/gateway; nil fields are unchanged.
 type GatewayUpdate struct {
-	Policy          *string  `json:"policy,omitempty"`
-	AffinitySpill   *int     `json:"affinity_spill,omitempty"`
-	UpstreamTimeout *string  `json:"upstream_timeout,omitempty"`
-	AuthMode        *string  `json:"auth_mode,omitempty"`
-	ThermalLimitC   *float64 `json:"thermal_limit_c,omitempty"`
+	Policy          *string `json:"policy,omitempty"`
+	AffinitySpill   *int    `json:"affinity_spill,omitempty"`
+	UpstreamTimeout *string `json:"upstream_timeout,omitempty"`
+	// FirstTokenTimeout: a duration between 1s and 24h.
+	FirstTokenTimeout *string  `json:"first_token_timeout,omitempty"`
+	AuthMode          *string  `json:"auth_mode,omitempty"`
+	ThermalLimitC     *float64 `json:"thermal_limit_c,omitempty"`
 }
 
 // ClusterSummary is part of GET /admin/stats.
@@ -443,7 +448,8 @@ func (s *Server) gatewaySettings() GatewaySettings {
 	policy := s.policy
 	s.settingsMu.Unlock()
 	return GatewaySettings{Policy: policy, AffinitySpill: s.affinity.SpillThreshold(),
-		UpstreamTimeout: s.gw.UpstreamTimeout().String(), AuthMode: s.authMode(), ThermalLimitC: s.ThermalLimitC(),
+		UpstreamTimeout: s.gw.UpstreamTimeout().String(), FirstTokenTimeout: s.gw.FirstTokenTimeout().String(),
+		AuthMode: s.authMode(), ThermalLimitC: s.ThermalLimitC(),
 		Access: s.accessMode()}
 }
 
@@ -466,6 +472,9 @@ func (s *Server) adminSetGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.UpstreamTimeout != nil {
 		attrs = append(attrs, "upstream_timeout", *u.UpstreamTimeout)
+	}
+	if u.FirstTokenTimeout != nil {
+		attrs = append(attrs, "first_token_timeout", *u.FirstTokenTimeout)
 	}
 	if u.AuthMode != nil {
 		attrs = append(attrs, "auth_mode", *u.AuthMode)
@@ -508,6 +517,14 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 		}
 		timeout = d
 	}
+	var firstToken time.Duration
+	if u.FirstTokenTimeout != nil {
+		d, err := time.ParseDuration(*u.FirstTokenTimeout)
+		if err != nil || d < time.Second || d > 24*time.Hour {
+			return http.StatusBadRequest, errors.New("first_token_timeout must be a duration between 1s and 24h, e.g. \"30m\"")
+		}
+		firstToken = d
+	}
 	if u.AuthMode != nil {
 		switch *u.AuthMode {
 		case "keys":
@@ -534,6 +551,9 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 	}
 	if timeout > 0 {
 		s.gw.SetUpstreamTimeout(timeout)
+	}
+	if firstToken > 0 {
+		s.gw.SetFirstTokenTimeout(firstToken)
 	}
 	if u.ThermalLimitC != nil {
 		s.SetThermalLimitC(*u.ThermalLimitC)

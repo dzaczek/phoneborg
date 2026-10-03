@@ -187,7 +187,8 @@ once.
              LeastInflight:      fewest in-flight requests
              Spread (pools):     fewest in-flight, then fastest, then rotation; no pins
              hot nodes get no new sessions unless every candidate is hot
-        ─► forward over adb forward (timeout -upstream-timeout, default 120 s)
+        ─► forward over adb forward (until the first byte: -first-token-timeout, default 30 min;
+                                    after it: -upstream-timeout of silence, default 120 s)
              refused / 5xx before any byte sent ─► retry once on another node,
                                                     avoid the failed node for 30 s
              all attempts failed ─► 502 backends_failed
@@ -364,9 +365,10 @@ usual (ADR-020):
   node in the same order (largest model) takes over, with a roster rebuilt
   for the new set of workers. After output has started, an error ends the
   stream with a bracketed message.
-- Orchestrator calls use `-upstream-timeout` as an idle limit (reset on
-  every response chunk), so a thinking model that keeps generating for
-  more than the timeout is not cut off; worker calls keep the total limit.
+- Like every call, orchestrator and worker calls wait up to
+  `-first-token-timeout` for the first byte, then at most
+  `-upstream-timeout` of silence, so a model that keeps generating is not
+  cut off (ADR-024).
 - Thinking (`enable_thinking`) is off for the orchestrator by default and
   always off for workers: on phones every token costs, and worker results
   become the orchestrator's prompt, processed at roughly 10–20 tok/s.

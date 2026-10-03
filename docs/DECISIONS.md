@@ -1569,3 +1569,28 @@ Counted in `phoneborg_gateway_tool_requests_total{result}`.
 **Consequences.** Model names stay out of the code (AGENTS.md); the operator
 must tag new models. A wrong tag shows up as a failing agent, a missing one
 as a `fallback` count.
+
+## ADR-024: Separate limits for prompt processing and generation
+
+**Problem.** `-upstream-timeout` bounded a whole proxied request. On phones
+two different waits hide in it: prompt processing (no output at all; an
+opencode build-agent prompt of ~11.7k tokens takes 10–15 minutes at
+12–17 tok/s) and generation (steady output that can run long, e.g. a
+thinking model). Any single limit either cuts off long agent prompts or
+lets a stuck node hang a client for the same long time once it streams.
+ADR-020 had already turned the limit into an idle limit for Super Borg
+orchestrator calls only.
+
+**Decision.** Every forwarded call has two limits: until the node's first
+response byte, `-first-token-timeout` (default 30 min, `first_token_timeout`
+in `PUT /admin/gateway`); after it, `-upstream-timeout` is the longest
+silence between chunks, reset on every chunk. A first-token timeout before
+any byte reached the client is a retryable failure, so the request may
+still go to another node. 0 means "same as the upstream timeout", so code
+and tests that set only one limit keep their behaviour. The special case
+for Super Borg orchestrator calls is gone; they follow the same rule.
+
+**Consequences.** A non-streaming response arrives in one piece, so for it
+the first-token timeout bounds the whole request. A streaming node is never
+stopped while it produces tokens; generation is bounded by its context
+size and the client's own cancel.

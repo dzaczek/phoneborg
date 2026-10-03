@@ -16,6 +16,7 @@ export default function proxyView() {
       h('option', { value: 'least_inflight' }, 'least_inflight: plain load balancing'));
     const spill = h('input', { type: 'number', name: 'spill', min: 1, max: 1000, required: true, value: String(s.affinity_spill) });
     const timeout = h('input', { name: 'timeout', required: true, value: s.upstream_timeout, spellcheck: 'false' });
+    const firstToken = h('input', { name: 'first_token_timeout', required: true, value: s.first_token_timeout || '', spellcheck: 'false' });
     const thermal = h('input', { type: 'number', name: 'thermal', min: 0, max: 150, step: 'any', required: true, value: String(s.thermal_limit_c) });
     const err = h('p.form-error', { role: 'alert', hidden: true });
     const save = h('button.primary', { type: 'submit' }, 'Save');
@@ -24,7 +25,8 @@ export default function proxyView() {
       h('h2', null, 'Routing'),
       field('Policy', policy, 'affinity sends requests that share a prompt prefix to the same phone, so its prompt cache is reused; it moves a session only when that phone is busy, hot or gone.'),
       field('Affinity spill', spill, 'Extra in-flight requests a pinned phone may have over the least busy one before a session spills to another phone (1–1000).'),
-      field('Upstream timeout', timeout, 'Longest a single proxied request may run, e.g. 600s or 15m (1s–24h). Applies to requests that start afterwards.'),
+      field('Upstream timeout', timeout, 'Longest silence from a node once its answer has started (between streamed chunks), e.g. 600s (1s–24h). A node that keeps generating is never cut off.'),
+      field('First-token timeout', firstToken, 'Longest wait for a node to start answering, i.e. prompt processing, e.g. 30m (1s–24h). Agent prompts of 10k+ tokens take a phone many minutes.'),
       field('Thermal limit (°C)', thermal, 'Phones at or above this temperature get no new sessions until they cool down. 0 disables it.'),
       err,
       h('div.row', null, save, h('span.muted.small', null, 'Changes apply at once and are not saved: after a restart the controller uses its flags again.')));
@@ -35,6 +37,7 @@ export default function proxyView() {
       if (policy.value !== current.policy) u.policy = policy.value;
       if (Number(spill.value) !== current.affinity_spill) u.affinity_spill = Number(spill.value);
       if (timeout.value.trim() !== current.upstream_timeout) u.upstream_timeout = timeout.value.trim();
+      if (firstToken.value.trim() !== current.first_token_timeout) u.first_token_timeout = firstToken.value.trim();
       if (Number(thermal.value) !== current.thermal_limit_c) u.thermal_limit_c = Number(thermal.value);
       if (!Object.keys(u).length) { toast('Nothing changed.'); return; }
       save.disabled = true;

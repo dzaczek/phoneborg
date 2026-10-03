@@ -26,10 +26,15 @@ import (
 type BackendSource func() []Backend
 
 type Config struct {
-	UpstreamTimeout time.Duration // whole request, including generation; see SetUpstreamTimeout
-	MaxAttempts     int           // distinct backends tried per request
-	Cooldown        time.Duration // how long a failed backend is avoided
-	Usage           UsageRecorder // optional usage accounting
+	UpstreamTimeout time.Duration // longest silence once the response started; see SetUpstreamTimeout
+	// FirstTokenTimeout bounds the wait for the first response byte: prompt
+	// processing, slow on phones for agent prompts of 10k+ tokens. After
+	// that UpstreamTimeout is the longest silence between response chunks.
+	// 0 = UpstreamTimeout.
+	FirstTokenTimeout time.Duration
+	MaxAttempts       int           // distinct backends tried per request
+	Cooldown          time.Duration // how long a failed backend is avoided
+	Usage             UsageRecorder // optional usage accounting
 }
 
 // UsageEvent is one outcome for usage accounting: a finished request, or a
@@ -59,17 +64,18 @@ type noUsage struct{}
 func (noUsage) Record(UsageEvent) {}
 
 type Gateway struct {
-	auth      Authenticator
-	picker    atomic.Pointer[Picker]
-	targets   atomic.Pointer[Targets]
-	modelInfo atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
-	jobs      atomic.Pointer[Jobs]          // nil = no Super Borg jobs (ADR-021)
-	timeout   atomic.Int64                  // upstream timeout, ns
-	backends  BackendSource
-	cfg       Config
-	log       *slog.Logger
-	client    *http.Client
-	now       func() time.Time
+	auth       Authenticator
+	picker     atomic.Pointer[Picker]
+	targets    atomic.Pointer[Targets]
+	modelInfo  atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
+	jobs       atomic.Pointer[Jobs]          // nil = no Super Borg jobs (ADR-021)
+	timeout    atomic.Int64                  // upstream timeout, ns
+	firstToken atomic.Int64                  // first-token timeout, ns; 0 = timeout
+	backends   BackendSource
+	cfg        Config
+	log        *slog.Logger
+	client     *http.Client
+	now        func() time.Time
 
 	prewarmTimeout time.Duration
 
@@ -152,6 +158,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	}
 	g.SetPicker(picker)
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
+	g.SetFirstTokenTimeout(cfg.FirstTokenTimeout)
 	g.prewarmTimeout = PrewarmTimeout
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations, g.mJobSteps, g.mToolRouting)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
@@ -176,6 +183,18 @@ func (g *Gateway) Picker() Picker { return *g.picker.Load() }
 
 // SetUpstreamTimeout changes the timeout of requests that start afterwards.
 func (g *Gateway) SetUpstreamTimeout(d time.Duration) { g.timeout.Store(int64(d)) }
+
+// SetFirstTokenTimeout changes the first-token timeout of requests that
+// start afterwards; 0 = the upstream timeout.
+func (g *Gateway) SetFirstTokenTimeout(d time.Duration) { g.firstToken.Store(int64(d)) }
+
+// FirstTokenTimeout returns the effective first-token timeout.
+func (g *Gateway) FirstTokenTimeout() time.Duration {
+	if d := time.Duration(g.firstToken.Load()); d > 0 {
+		return d
+	}
+	return g.UpstreamTimeout()
+}
 
 // UpstreamTimeout returns the timeout applied to new requests.
 func (g *Gateway) UpstreamTimeout() time.Duration { return time.Duration(g.timeout.Load()) }
@@ -468,7 +487,7 @@ func (g *Gateway) serveTarget(w http.ResponseWriter, r *http.Request, tgt Target
 			b = picker.Pick(Request{Model: meta.Model, AffinityKey: meta.affinityKey(), PromptBytes: len(body)}, cands, g.inflightOf)
 		}
 		tried[b.NodeID] = true
-		err := g.forward(w, r, b, body, meta.Stream, false, principal, reqID)
+		err := g.forward(w, r, b, body, meta.Stream, principal, reqID)
 		if err == nil {
 			return
 		}
@@ -508,14 +527,17 @@ func (g *Gateway) rejectUnauthorized(w http.ResponseWriter, err error) {
 	openAIError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
 }
 
-// errIdleTimeout ends an idle-timed forward whose backend sent nothing for
-// the upstream timeout.
-var errIdleTimeout = errors.New("no output from the node within the upstream timeout")
+// Timeouts of forward (ADR-024).
+var (
+	errFirstTokenTimeout = errors.New("the node did not start answering within the first-token timeout")
+	errIdleTimeout       = errors.New("no output from the node within the upstream timeout")
+)
 
-// forward proxies body to b. The upstream timeout bounds the whole request,
-// or, with idle, only the silence between response chunks (and before the
-// first one), so a node that keeps generating is never cut off (ADR-020).
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, body []byte, stream, idle bool, p Principal, reqID string) error {
+// forward proxies body to b. The first-token timeout bounds the wait for the
+// first response byte (prompt processing); after it the upstream timeout is
+// the longest silence between chunks, so a node that keeps generating is
+// never cut off (ADR-020, ADR-024).
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, body []byte, stream bool, p Principal, reqID string) error {
 	g.addInflight(b.NodeID, 1)
 	defer g.addInflight(b.NodeID, -1)
 	start := g.now()
@@ -525,16 +547,17 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	a := &attempt{cancel: cancelCause}
 	g.track(b.NodeID, a, true)
 	defer g.track(b.NodeID, a, false)
-	ctx, cancel := context.WithTimeout(cctx, g.UpstreamTimeout())
-	alive := func() {}
-	if idle {
-		var cancelIdle context.CancelCauseFunc
-		ctx, cancelIdle = context.WithCancelCause(cctx)
-		timer := time.AfterFunc(g.UpstreamTimeout(), func() { cancelIdle(errIdleTimeout) })
-		cancel = func() { timer.Stop(); cancelIdle(nil) }
-		alive = func() { timer.Reset(g.UpstreamTimeout()) }
-	}
-	defer cancel()
+	ctx, cancelTimer := context.WithCancelCause(cctx)
+	var started atomic.Bool
+	timer := time.AfterFunc(g.FirstTokenTimeout(), func() {
+		if started.Load() {
+			cancelTimer(errIdleTimeout)
+		} else {
+			cancelTimer(errFirstTokenTimeout)
+		}
+	})
+	defer func() { timer.Stop(); cancelTimer(nil) }()
+	alive := func() { started.Store(true); timer.Reset(g.UpstreamTimeout()) }
 	if b.External {
 		// External servers host several models and need the real id, not
 		// "auto", "pool/..." or "node/..." (ADR-016).
@@ -556,6 +579,9 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 			g.mRequests.WithLabelValues(b.Model, b.NodeID, "499", p.Name).Inc()
 			g.cfg.Usage.Record(UsageEvent{Principal: p.Name, NodeID: b.NodeID, Model: b.Model, Code: "499"})
 			return nil // client went away
+		}
+		if cause := context.Cause(ctx); errors.Is(cause, errFirstTokenTimeout) {
+			err = cause
 		}
 		return fmt.Errorf("%w: %v", errRetryable, err)
 	}
@@ -643,7 +669,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	g.log.Info("request done", "request_id", reqID, "node_id", b.NodeID, "model", b.Model,
 		"principal", p.Name, "status", code, "stream", stream, "duration_ms", g.now().Sub(start).Milliseconds())
 	if copyErr != nil {
-		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) {
+		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) || errors.Is(cause, errFirstTokenTimeout) {
 			copyErr = cause
 		}
 		return fmt.Errorf("stream copy: %w", copyErr) // not retryable: bytes already sent

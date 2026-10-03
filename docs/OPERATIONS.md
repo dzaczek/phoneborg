@@ -66,7 +66,8 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `devices.json`, `jobs/`, `models/` |
 | `-models-dir` | `<state-dir>/models` | where catalog model files are stored |
 | `-backend-host` | `127.0.0.1` | host where the phones' adb forwards are reachable |
-| `-upstream-timeout` | `120s` | max duration of one proxied request |
+| `-upstream-timeout` | `120s` | longest silence from a node once its response has started (between streamed chunks); a node that keeps generating is never cut off |
+| `-first-token-timeout` | `30m` | longest wait for a node's first response byte, i.e. prompt processing; 0 = `-upstream-timeout` |
 | `-thermal-limit-c` | `75` | nodes at or above this temperature get no new sessions; 0 disables |
 | `-min-predicted-tok-s` | `3` | planner will not place a model where predicted tok/s is lower |
 | `-heartbeat-interval` | `5s` | heartbeat interval asked of nodes |
@@ -352,7 +353,7 @@ bin/pbctl nodes
 | `pbctl keys create <name>` | create a key, printed once |
 | `pbctl keys revoke <name>` | revoke all keys of `<name>` |
 | `pbctl gateway` | current gateway settings |
-| `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
+| `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
 | `pbctl stats` | uptime, cluster summary, usage by key and node |
 | `pbctl jobs` | Super Borg jobs: status, steps, tasks done/total |
 | `pbctl jobs new [title=T] [pool=P] <goal>` | start a job on Super Borg pool P (default: the first one) |
@@ -696,11 +697,9 @@ thinking.
   must answer without tools; each worker answer is capped at 512 tokens
   (they become the orchestrator's prompt, and phones process prompts at
   roughly 10–20 tok/s). Workers always run with thinking off.
-- **Timeouts**: for the orchestrator, `-upstream-timeout` is an idle
-  limit: it is stopped only after that long without a single token (the
-  wait for the first token, i.e. prompt processing, included), never while
-  it keeps generating, so long thinking is not cut off. Worker calls keep
-  the plain total limit; their answers are capped at 512 tokens anyway.
+- **Timeouts**: as for every request ([Gateway settings](#gateway-settings)),
+  the first-token timeout covers prompt processing and the upstream timeout
+  is the longest silence after that, so long thinking is not cut off.
 - **Progress**: streaming clients see the orchestrator's reasoning and lines
   like `→ mi8: translate …` / `← mi8: done in 14.2 s` as
   `reasoning_content` (the panel shows them in the Thinking block); the
@@ -986,12 +985,22 @@ node are retried elsewhere, so drain first if they should finish.
 pbctl gateway                                    # current settings
 pbctl gateway set policy=least_inflight          # plain load balancing
 pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 extra in-flight requests
-pbctl gateway set timeout=900s                   # for requests that start afterwards
+pbctl gateway set timeout=900s                   # silence limit once a response has started
+pbctl gateway set first_token_timeout=45m        # wait for the first token (prompt processing)
 pbctl gateway set thermal_limit=70               # phones at/above 70 °C get no new sessions; 0 disables
 ```
 
+Two time limits apply to every proxied call (ADR-024). Until the node sends
+its first byte, the **first-token timeout** applies: that wait is prompt
+processing, and an agent prompt of 10k+ tokens (opencode's build agent
+sends ~11.7k) takes a phone 10–15 minutes at 12–17 tok/s. From the first
+byte on, the **upstream timeout** is the longest silence between chunks, so
+a node that keeps generating is never cut off. A non-streaming response
+arrives in one piece, so for it the first-token timeout covers the whole
+request. Changes apply to requests that start afterwards.
+
 Changes apply at once and are not saved. After a restart the controller uses
-its flags again: policy `affinity` with `spill=2`, `-upstream-timeout`,
+its flags again: policy `affinity` with `spill=2`, `-upstream-timeout`, `-first-token-timeout`,
 `-thermal-limit-c` (default 75 °C). A hot phone gets no new sessions unless
 every ready phone is hot, and loses its pinned sessions to a cooler one
 (ADR-010).

@@ -40,7 +40,7 @@ commands:
   stats                       usage statistics and cluster summary
   gateway                     show gateway settings
   gateway set k=v ...         change settings: policy=affinity|least_inflight
-                              spill=<n> timeout=<duration> auth=keys
+                              spill=<n> timeout=<duration> first_token_timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
   jobs                        Super Borg jobs: long multi-step work in the background (ADR-021)
   jobs new [title=T] [pool=P] <goal>
@@ -233,6 +233,8 @@ func parseGatewaySet(kvs []string) (controller.GatewayUpdate, error) {
 			u.AffinitySpill = &n
 		case "timeout":
 			u.UpstreamTimeout = &v
+		case "first_token_timeout":
+			u.FirstTokenTimeout = &v
 		case "auth":
 			u.AuthMode = &v
 		case "thermal_limit":
@@ -242,7 +244,7 @@ func parseGatewaySet(kvs []string) (controller.GatewayUpdate, error) {
 			}
 			u.ThermalLimitC = &f
 		default:
-			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, auth, thermal_limit)", k)
+			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, first_token_timeout, auth, thermal_limit)", k)
 		}
 	}
 	return u, nil
@@ -548,7 +550,7 @@ func showGateway(o *out, raw []byte, err error) error {
 	}
 	o.table("SETTING\tVALUE", [][]string{
 		{"policy", g.Policy}, {"spill", strconv.Itoa(g.AffinitySpill)},
-		{"timeout", g.UpstreamTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit}})
+		{"timeout", g.UpstreamTimeout}, {"first_token_timeout", g.FirstTokenTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit}})
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -308,5 +309,33 @@ func TestAffinityUnpinAndPins(t *testing.T) {
 	}
 	if got := p.Pins(); got["a"] != 0 || got["b"] != pins["b"] {
 		t.Fatalf("after unpin: %v", got)
+	}
+}
+
+func TestFirstTokenTimeoutCoversSlowPromptProcessing(t *testing.T) {
+	// The node is silent for 300 ms (prompt processing), then streams.
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer slow.Close()
+	g, h := newGW(t, AllowAll{}, Backend{NodeID: "a", Model: "m", URL: slow.URL})
+	g.SetUpstreamTimeout(100 * time.Millisecond)
+	g.SetFirstTokenTimeout(time.Second)
+	if w := post(h, `{"model":"m","stream":true,"messages":[]}`); w.Code != 200 || !strings.Contains(w.Body.String(), "hi") {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	// With the first-token limit below the prompt time it fails, saying why.
+	g.SetFirstTokenTimeout(100 * time.Millisecond)
+	if g.FirstTokenTimeout() != 100*time.Millisecond {
+		t.Fatal("first-token timeout not set")
+	}
+	if w := post(h, `{"model":"m","stream":true,"messages":[]}`); w.Code != http.StatusBadGateway {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	g.SetFirstTokenTimeout(0)
+	if g.FirstTokenTimeout() != 100*time.Millisecond {
+		t.Errorf("0 should mean the upstream timeout, got %v", g.FirstTokenTimeout())
 	}
 }
