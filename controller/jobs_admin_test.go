@@ -13,8 +13,8 @@ func TestJobsAdmin(t *testing.T) {
 	var job gateway.JobSummary
 	e.admin(http.MethodPost, "/admin/jobs", `{"goal":" "}`, 400, nil)
 	e.admin(http.MethodPost, "/admin/jobs", `{"goal":"x","bogus":1}`, 400, nil)
-	e.admin(http.MethodPost, "/admin/jobs", `{"title":"Bajka","goal":"Napisz bajkę"}`, 201, &job)
-	if job.Title != "Bajka" || job.Status != gateway.JobQueued {
+	e.admin(http.MethodPost, "/admin/jobs", `{"title":"Story","goal":"Write a story"}`, 201, &job)
+	if job.Title != "Story" || job.Status != gateway.JobQueued {
 		t.Fatalf("created %+v", job)
 	}
 	var list JobList
@@ -23,14 +23,14 @@ func TestJobsAdmin(t *testing.T) {
 		t.Fatalf("list %+v", list)
 	}
 	var full gateway.Job
-	e.admin(http.MethodPost, "/admin/jobs/"+job.ID+"/messages", `{"text":"krócej"}`, 200, &full)
-	if full.Goal != "Napisz bajkę" || full.Principal != PanelPrincipal || len(full.Messages) != 1 {
+	e.admin(http.MethodPost, "/admin/jobs/"+job.ID+"/messages", `{"text":"shorter"}`, 200, &full)
+	if full.Goal != "Write a story" || full.Principal != PanelPrincipal || len(full.Messages) != 1 {
 		t.Fatalf("job %+v", full)
 	}
 	e.admin(http.MethodGet, "/admin/jobs/nope", "", 404, nil)
 	e.admin(http.MethodGet, "/admin/jobs/"+job.ID+"/docs/plan", "", 404, nil)
 	w := e.do(http.MethodGet, "/admin/jobs/"+job.ID+"/result", "", testToken)
-	if w.Code != 200 || w.Body.String() != "# Bajka\n\n" || !strings.Contains(w.Header().Get("Content-Disposition"), "job-"+job.ID+".md") {
+	if w.Code != 200 || w.Body.String() != "# Story\n\n" || !strings.Contains(w.Header().Get("Content-Disposition"), "job-"+job.ID+".md") {
 		t.Fatalf("result %d %q", w.Code, w.Body)
 	}
 	e.admin(http.MethodPost, "/admin/jobs/"+job.ID+"/cancel", "", 200, &full)

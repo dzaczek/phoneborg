@@ -1492,6 +1492,13 @@ assembles a result of any size outside the model.
   fail it; worker output 1200 tokens,
   injected context 12 kB, orchestrator output 3000 tokens. Orchestrator and
   worker calls stream with the idle timeout of ADR-020.
+- **Who and how many**: the gateway assigns delegated tasks to the fastest
+  free workers; the orchestrator only says what to do. Left to Qwen3-8B,
+  17 of 19 chapters of a story went to the first worker in its list (the
+  slowest phone). Each step lists as many next tasks as there are workers,
+  so parts are written in parallel, with the outline and part list as
+  shared context; a task that needs a planned document that does not exist
+  yet is refused.
 - **Entry points**: `POST /admin/jobs` and the rest of `/admin/jobs/...`,
   `pbctl jobs`, the panel's Jobs view, and a `start_job` tool in the Super
   Borg chat, which creates a job from the user's last message verbatim.

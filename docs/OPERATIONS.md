@@ -694,8 +694,8 @@ The setting is stored in `routing.json` and survives restarts.
 
 Manual test: with Super Borg on, ask in the panel Chat (model `superborg`)
 a simple question (answered directly, no `→` lines) and a composite one,
-e.g. "Napisz krótki wiersz o kocie po polsku, przetłumacz go na angielski i
-podaj 3 ciekawostki o kotach": the Thinking block shows the subtasks going
+e.g. "Write a short poem about a cat, translate it into German and give 3
+fun facts about cats": the Thinking block shows the subtasks going
 to different phones in parallel, then the final answer.
 
 ## Super Borg jobs
@@ -710,12 +710,12 @@ work in the background on the controller and keeps everything it produces:
 - a **progress log**, and the user's later instructions.
 
 ```sh
-pbctl jobs new title="Bajka" Napisz bajkę dla 5-latka o magicznym zamku: 20 rozdziałów po ok. 3 minuty czytania
+pbctl jobs new title="Magic castle" Write a story for a 5-year-old about a magic castle: 20 chapters of about 3 minutes of reading each
 pbctl jobs                       # all jobs: status, steps, tasks done/total
 pbctl jobs show <id>             # tasks, documents, last events
-pbctl jobs say <id> rozdziały krótsze, więcej humoru
+pbctl jobs say <id> make the chapters shorter and funnier
 pbctl jobs doc <id> chapter_03   # one document
-pbctl jobs result <id> > bajka.md
+pbctl jobs result <id> > story.md
 pbctl jobs cancel <id>           # stops; a later "say" resumes it
 pbctl jobs rm <id>
 ```
@@ -739,9 +739,13 @@ How a job runs:
   required`): `plan_tasks`, `write_doc`, `read_doc`, `delegate`,
   `ask_user` or `finish`. There is no growing chat history, so the prompt
   stays at a few thousand tokens however long the job runs.
-- `delegate` runs up to one task per worker in parallel. Each task names
-  the documents the worker needs as **context** (the gateway inserts their
-  text, at most 12 kB) and a **save_as** document for the result; the
+- `delegate` runs several tasks in parallel; every step offers the
+  orchestrator as many next tasks as there are workers. The **gateway picks
+  the workers**, the fastest free phone first (fewest requests in flight,
+  then measured tok/s), not the orchestrator. Each task names the documents
+  the worker needs as **context** (the gateway inserts their text, at most
+  12 kB) and a **save_as** document for the result; a task whose context
+  document is still to be written by the plan is refused, not started. The
   orchestrator gets only a short preview back. Worker answers are capped at
   1200 tokens and stream with an idle timeout, like the orchestrator.
 - A job **waits** after `ask_user`, after 80 steps in one run, or when the

@@ -15,9 +15,9 @@ const quiet = (e) => { if (e.status !== 401 && e.status !== 503) errorToast(e); 
 let selected = ''; // kept across view re-creation
 
 function newJobDialog() {
-  const title = h('input', { name: 'title', maxlength: 80, placeholder: '(optional) e.g. Bajka o zamku' });
+  const title = h('input', { name: 'title', maxlength: 80, placeholder: '(optional) e.g. The magic castle' });
   const goal = h('textarea', { name: 'goal', rows: 6, required: true,
-    placeholder: 'What should the cluster produce? e.g. Napisz bajkę dla 5-latka o magicznym zamku: 20 rozdziałów po ok. 3 minuty czytania.' });
+    placeholder: 'What should the cluster produce? e.g. Write a story for a 5-year-old about a magic castle: 20 chapters of about 3 minutes of reading each.' });
   return formDialog({
     title: 'New job',
     submit: 'Start',
@@ -115,7 +115,7 @@ export default function jobsView() {
   const newBtn = h('button.primary', { type: 'button', onclick: () => newJobDialog() }, 'New job');
   const listEl = h('div', null, h('p.muted', null, 'Loading…'));
   const detailEl = h('div');
-  const text = h('textarea', { rows: 2, placeholder: 'Instruction for this job, e.g. "rozdziały krótsze" or "continue"', 'aria-label': 'Message to the job' });
+  const text = h('textarea', { rows: 2, placeholder: 'Instruction for this job, e.g. "make the chapters shorter" or "continue"', 'aria-label': 'Message to the job' });
   const send = h('button.primary', { type: 'submit' }, 'Send');
   const messageBox = h('form.row', { onsubmit: async (e) => {
     e.preventDefault();

@@ -124,10 +124,10 @@ func TestJobRunsPlanDelegateFinish(t *testing.T) {
 	orch := &scriptedOrch{calls: storyScript}
 	g, j, prompts := newJobsEnv(t, dir, orch, "w1", "w2")
 	runJobs(t, j)
-	s := j.Create("", "Napisz bajkę o kocie w 2 rozdziałach", "panel")
+	s := j.Create("", "Write a story about a cat in 2 chapters", "panel")
 	job := waitStatus(t, j, s.ID, JobDone)
 
-	if job.Title != "Napisz bajkę o kocie w 2 rozdziałach" || job.Steps != 5 || job.Summary != "Done." ||
+	if job.Title != "Write a story about a cat in 2 chapters" || job.Steps != 5 || job.Summary != "Done." ||
 		!strings.Contains(job.Recent[3].Result, "compare the documents with the GOAL") {
 		t.Errorf("job %+v", job)
 	}
@@ -150,7 +150,7 @@ func TestJobRunsPlanDelegateFinish(t *testing.T) {
 		t.Errorf("worker prompts %q", *prompts)
 	}
 	res, _ := j.Result(s.ID)
-	if res != "# Napisz bajkę o kocie w 2 rozdziałach\n\ntext from w1\n\ntext from w2\n\n" {
+	if res != "# Write a story about a cat in 2 chapters\n\ntext from w1\n\ntext from w2\n\n" {
 		t.Errorf("result %q", res)
 	}
 
@@ -245,18 +245,18 @@ func TestJobRequeuedAfterRestart(t *testing.T) {
 }
 
 func TestSuperborgChatStartsJob(t *testing.T) {
-	orch := &scriptedOrch{calls: []string{`{"name":"start_job","arguments":{"title":"Bajka"}}`}}
+	orch := &scriptedOrch{calls: []string{`{"name":"start_job","arguments":{"title":"Story"}}`}}
 	g, j, _ := newJobsEnv(t, "", orch, "w1")
 	g.SetSuperborg(&Superborg{})
 	mux := http.NewServeMux()
 	g.Register(mux)
-	w := post(mux, `{"model":"x","messages":[{"role":"user","content":"Napisz bajkę w 20 rozdziałach"}]}`)
+	w := post(mux, `{"model":"x","messages":[{"role":"user","content":"Write a story in 20 chapters"}]}`)
 	list := j.List()
-	if w.Code != 200 || len(list) != 1 || list[0].Title != "Bajka" || !strings.Contains(w.Body.String(), "Started job **Bajka** (`"+list[0].ID) {
+	if w.Code != 200 || len(list) != 1 || list[0].Title != "Story" || !strings.Contains(w.Body.String(), "Started job **Story** (`"+list[0].ID) {
 		t.Fatalf("status %d, jobs %+v: %s", w.Code, list, w.Body)
 	}
 	job, _ := j.Get(list[0].ID)
-	if job.Goal != "Napisz bajkę w 20 rozdziałach" {
+	if job.Goal != "Write a story in 20 chapters" {
 		t.Errorf("goal %q", job.Goal)
 	}
 	tools := fmt.Sprint(orch.requests()[0]["tools"])
@@ -341,7 +341,7 @@ func TestJobLanguageDuplicatesAndTinyWorkers(t *testing.T) {
 	}}
 	g, j, prompts := newJobsEnv(t, "", orch, "w1", "w2")
 	runJobs(t, j)
-	s := j.Create("t", "Napisz bajkę", "")
+	s := j.Create("t", "Write a story", "")
 	job := waitStatus(t, j, s.ID, JobWaiting)
 	names := map[string]bool{}
 	for _, d := range job.Docs {
@@ -388,5 +388,49 @@ func TestJobWaitsWhenOrchestratorCannotCallTools(t *testing.T) {
 	job := waitStatus(t, j, id, JobWaiting)
 	if job.Steps != jobMaxNoTool || !strings.Contains(job.Question, "mi8 (gemma) made no tool call in 3 steps") {
 		t.Fatalf("steps %d, question %q", job.Steps, job.Question)
+	}
+}
+
+func TestJobDelegateFastestFreeAndMissingContext(t *testing.T) {
+	orch := &scriptedOrch{calls: []string{
+		`{"name":"plan_tasks","arguments":{"language":"Polish","tasks":[{"title":"Outline","doc":"outline"},{"title":"Ch 1","doc":"ch_01"},{"title":"Ch 2","doc":"ch_02"},{"title":"Ch 3","doc":"ch_03"}]}}`,
+		// Chapter 1 needs the outline, which does not exist yet: refused.
+		`{"name":"delegate","arguments":{"tasks":[{"task":"write","context":["outline"],"save_as":"ch_01"}]}}`,
+		`{"name":"write_doc","arguments":{"name":"outline","text":"o"}}`,
+		`{"name":"delegate","arguments":{"tasks":[{"worker":"slow","task":"a","context":["outline"],"save_as":"ch_01"},{"worker":"slow","task":"b","context":["outline"],"save_as":"ch_02"}]}}`,
+		`{"name":"ask_user","arguments":{"question":"q"}}`,
+	}}
+	var prompts []string
+	var mu sync.Mutex
+	g, _ := newGW(t, AllowAll{},
+		Backend{NodeID: "o", Model: "big", URL: orch.server(t).URL},
+		Backend{NodeID: "slow", Alias: "slow", Model: "small", Speed: 4, URL: recordingWorker(t, "slow", &prompts, &mu).URL},
+		Backend{NodeID: "fast", Alias: "fast", Model: "small", Speed: 8, URL: recordingWorker(t, "fast", &prompts, &mu).URL},
+		Backend{NodeID: "mid", Alias: "mid", Model: "small", Speed: 7, URL: recordingWorker(t, "mid", &prompts, &mu).URL})
+	g.SetModelInfo(func(id string) (ModelInfo, bool) {
+		return ModelInfo{SizeBytes: map[string]int64{"big": 9, "small": 1}[id]}, true
+	})
+	j := NewJobs(g, "", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runJobs(t, j)
+	job := waitStatus(t, j, j.Create("t", "goal", "").ID, JobWaiting)
+
+	if !strings.Contains(job.Recent[1].Result, "ch_01: not started: document outline does not exist yet") {
+		t.Errorf("missing context not refused: %+v", job.Recent[1])
+	}
+	// The orchestrator asked for "slow" twice; the two fastest free workers got the work.
+	authors := map[string]string{}
+	for _, d := range job.Docs {
+		authors[d.Name] = d.Author
+	}
+	if authors["ch_01"] != "fast" || authors["ch_02"] != "mid" {
+		t.Errorf("authors %v", authors)
+	}
+	// With 3 workers, a step offers the next 3 tasks together.
+	user := orch.requests()[1]["messages"].([]any)[1].(map[string]any)["content"].(string)
+	if !strings.Contains(user, "NEXT TASKS (3 workers are ready") || !strings.Contains(user, "3. Ch 2 → ch_02") || strings.Contains(user, "4. Ch 3") {
+		t.Errorf("prompt:\n%s", user)
+	}
+	if strings.Contains(fmt.Sprint(orch.requests()[0]["tools"]), "worker:map") {
+		t.Error("delegate still asks the orchestrator for a worker")
 	}
 }

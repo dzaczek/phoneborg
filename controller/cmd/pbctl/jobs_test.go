@@ -11,8 +11,8 @@ func TestJobsCommand(t *testing.T) {
 	if out, _, code := pbctl(t, env, "jobs"); code != 0 || !strings.Contains(out, "no jobs") {
 		t.Fatalf("empty list: %d %s", code, out)
 	}
-	out, stderr, code := pbctl(t, env, "jobs", "new", "title=Bajka", "Napisz", "bajkę")
-	if code != 0 || !strings.Contains(out, "queued: Bajka") {
+	out, stderr, code := pbctl(t, env, "jobs", "new", "title=Story", "Write", "a", "story")
+	if code != 0 || !strings.Contains(out, "queued: Story") {
 		t.Fatalf("new: %d %s %s", code, out, stderr)
 	}
 	id := strings.Fields(out)[1]
@@ -20,10 +20,10 @@ func TestJobsCommand(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"jobs"}, "Bajka"},
-		{[]string{"jobs", "say", id, "krócej", "proszę"}, "message sent"},
-		{[]string{"jobs", "show", id}, "krócej proszę"},
-		{[]string{"jobs", "result", id}, "# Bajka"},
+		{[]string{"jobs"}, "Story"},
+		{[]string{"jobs", "say", id, "shorter", "please"}, "message sent"},
+		{[]string{"jobs", "show", id}, "shorter please"},
+		{[]string{"jobs", "result", id}, "# Story"},
 		{[]string{"jobs", "cancel", id}, "cancelled"},
 		{[]string{"jobs", "rm", id}, "removed"},
 	} {

@@ -465,7 +465,7 @@ func (j *Jobs) step(ctx context.Context, job *Job) error {
 	}
 	workers := j.g.jobWorkers(orch)
 	j.mu.Lock()
-	prompt := jobPrompt(job)
+	prompt := jobPrompt(job, len(workers))
 	principal := job.Principal
 	planning := len(job.Tasks) == 0
 	allDone := !planning && !slices.ContainsFunc(job.Tasks, func(t JobTask) bool { return t.Status != "done" })
@@ -476,7 +476,7 @@ func (j *Jobs) step(ctx context.Context, job *Job) error {
 		"messages": mustJSON([]map[string]string{
 			{"role": "system", "content": j.g.jobSystem(workers)},
 			{"role": "user", "content": prompt}}),
-		"tools":       jobTools(workers, canPlan),
+		"tools":       jobTools(canPlan),
 		"tool_choice": json.RawMessage(`"required"`),
 		"stream":      json.RawMessage("true"),
 		"max_tokens":  mustJSON(jobOrchMaxTokens),
@@ -675,17 +675,24 @@ func (j *Jobs) delegate(r *http.Request, job *Job, workers []Backend, raw json.R
 	}
 	var tasks []jobSubtask
 	if err := json.Unmarshal(raw, &tasks); err != nil || len(tasks) == 0 {
-		return "error: delegate needs tasks: [{worker, task, context, save_as}]"
+		return "error: delegate needs tasks: [{task, context, save_as}]"
 	}
+	// The gateway, not the orchestrator, picks the workers: the fastest
+	// free one first. A small orchestrator picks by name and kept giving
+	// almost every chapter to the first worker in its list.
 	used := map[string]bool{}
 	assigned := make([]Backend, len(tasks))
 	msgs := make([][]map[string]string, len(tasks))
+	refused := make([]string, len(tasks))
 	j.mu.Lock()
 	for i, t := range tasks {
-		b, ok := findWorker(workers, t.Worker)
-		if !ok || used[b.NodeID] {
-			b = j.g.leastBusy(workers, used)
+		if missing := missingContext(job, t.Context); missing != "" {
+			// Tasks run in parallel now, so one may be sent before the
+			// document it builds on (e.g. a chapter before the outline).
+			refused[i] = fmt.Sprintf("%s: not started: document %s does not exist yet; write it first", docName(t.SaveAs), missing)
+			continue
 		}
+		b := j.g.fastestFree(workers, used)
 		used[b.NodeID] = true
 		assigned[i] = b
 		if tasks[i].SaveAs = docName(t.SaveAs); tasks[i].SaveAs == "" {
@@ -709,6 +716,10 @@ func (j *Jobs) delegate(r *http.Request, job *Job, workers []Backend, raw json.R
 	results := make([]string, len(tasks))
 	var wg sync.WaitGroup
 	for i := range tasks {
+		if refused[i] != "" {
+			results[i] = refused[i]
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -734,6 +745,44 @@ func (j *Jobs) delegate(r *http.Request, job *Job, workers []Backend, raw json.R
 	}
 	wg.Wait()
 	return strings.Join(results, "\n")
+}
+
+// missingContext returns the first context document that a task of the
+// job will produce but that does not exist yet, or "".
+func missingContext(job *Job, context []string) string {
+	for _, n := range context {
+		name := docName(n)
+		if findDoc(job, name) == nil && slices.ContainsFunc(job.Tasks, func(t JobTask) bool { return t.Doc == name }) {
+			return name
+		}
+	}
+	return ""
+}
+
+// fastestFree returns the worker not in used with the fewest in-flight
+// requests, then the highest speed; if every worker is used, the least busy
+// and fastest of all (llama-server queues the extra task).
+func (g *Gateway) fastestFree(workers []Backend, used map[string]bool) Backend {
+	best := -1
+	better := func(i int) bool {
+		if best < 0 {
+			return true
+		}
+		a, b := workers[i], workers[best]
+		if na, nb := g.inflightOf(a.NodeID), g.inflightOf(b.NodeID); na != nb {
+			return na < nb
+		}
+		return a.Speed > b.Speed
+	}
+	for pass := 0; pass < 2 && best < 0; pass++ {
+		for i, w := range workers {
+			if (pass == 0 && used[w.NodeID]) || !better(i) {
+				continue
+			}
+			best = i
+		}
+	}
+	return workers[best]
 }
 
 // putDoc creates or replaces a document and marks tasks producing it done;
@@ -844,14 +893,16 @@ func (g *Gateway) jobSystem(workers []Backend) string {
 		"outline (you: plot, characters, one line per chapter), chapter_01 … chapter_10 (workers, one chapter each). " +
 		"Each chapter or part is its own task and document: never one task for several chapters.\n" +
 		"2. Write short or key documents yourself with write_doc (the plan, the list of characters). " +
-		"Give longer, independent texts to workers with delegate, at most one task per worker per call; they run in parallel.\n" +
+		"Give longer texts to workers with delegate: send several tasks in one call (as many as there are workers); " +
+		"they run in parallel on the fastest free phones, which the gateway picks.\n" +
 		"3. Workers see only their task and the documents you list in context: always pass what they need " +
-		"(e.g. plan, characters, the previous chapter) and a save_as name. Make each task concrete: content, length, style.\n" +
+		"(e.g. the outline and the chapter list, so chapters written in parallel fit together) and a save_as name. " +
+		"Make each task concrete: content of that part, length, style.\n" +
 		"4. Tasks in one delegate call run at the same time: never let one need another's result.\n" +
-		"5. Models under 2B params are only fit for very simple tasks.\n" +
-		"6. Use read_doc to check a document when unsure; redo a bad one by delegating again with the same save_as.\n" +
-		"7. When every task is done, call finish with the documents that form the result, in order.\n" +
-		"8. Write everything in the language of the goal. Use ask_user only if the goal is truly unclear.\n")
+
+		"5. Use read_doc to check a document when unsure; redo a bad one by delegating again with the same save_as.\n" +
+		"6. When every task is done, call finish with the documents that form the result, in order.\n" +
+		"7. Write everything in the language of the goal. Use ask_user only if the goal is truly unclear.\n")
 	return sb.String()
 }
 
@@ -884,8 +935,9 @@ const jobWorkerSystem = "You are a worker in a cluster of phones and write one p
 	"Use the documents you are given as context. Do exactly the task: output only the requested text, " +
 	"in the language of the task, with no preamble or comments."
 
-// jobPrompt is the user message of one step; the caller holds mu.
-func jobPrompt(job *Job) string {
+// jobPrompt is the user message of one step for a cluster with the given
+// number of workers; the caller holds mu.
+func jobPrompt(job *Job, workers int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "GOAL:\n%s\n", job.Goal)
 	if job.Language != "" {
@@ -925,12 +977,21 @@ func jobPrompt(job *Job) string {
 			fmt.Fprintf(&b, "- step %d %s: %s\n", s.N, s.Tool, res)
 		}
 	}
+	// Offer as many next tasks as there are workers, so they write in
+	// parallel instead of one chapter at a time.
+	var next []string
 	for _, t := range job.Tasks {
-		if t.Status != "done" {
-			fmt.Fprintf(&b, "\nNEXT TASK: %d. %s → %s. Do it now (write_doc or delegate; you may delegate the following "+
-				"independent tasks in the same call).", t.ID, t.Title, t.Doc)
-			break
+		if t.Status != "done" && len(next) < max(workers, 1) {
+			next = append(next, fmt.Sprintf("%d. %s → %s", t.ID, t.Title, t.Doc))
 		}
+	}
+	switch {
+	case len(next) == 1:
+		fmt.Fprintf(&b, "\nNEXT TASK: %s. Do it now (write_doc or delegate).", next[0])
+	case len(next) > 1:
+		fmt.Fprintf(&b, "\nNEXT TASKS (%d workers are ready; delegate these together in one call so they run in parallel, "+
+			"each with the context documents it needs; write a key document such as an outline yourself first if a task needs it):\n%s",
+			workers, strings.Join(next, "\n"))
 	}
 	if len(job.Tasks) > 0 && !slices.ContainsFunc(job.Tasks, func(t JobTask) bool { return t.Status != "done" }) {
 		b.WriteString("\nAll tasks are done: check the result if needed, then call finish.")
@@ -957,11 +1018,7 @@ func workerPrompt(job *Job, context []string, task string) string {
 	return b.String()
 }
 
-func jobTools(workers []Backend, canPlan bool) json.RawMessage {
-	names := []string{}
-	for _, w := range workers {
-		names = append(names, workerName(w))
-	}
+func jobTools(canPlan bool) json.RawMessage {
 	fn := func(name, desc string, props map[string]any, required ...string) map[string]any {
 		return map[string]any{"type": "function", "function": map[string]any{"name": name, "description": desc,
 			"parameters": map[string]any{"type": "object", "properties": props, "required": required}}}
@@ -970,10 +1027,6 @@ func jobTools(workers []Backend, canPlan bool) json.RawMessage {
 	strs := func(desc string) map[string]any {
 		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": desc}
 	}
-	worker := map[string]any{"type": "string"}
-	if len(names) > 0 {
-		worker["enum"] = names
-	}
 	tools := []any{
 		fn("plan_tasks", "Set the plan: replaces every task that is not done yet. One task per document, in order.", map[string]any{
 			"language": str("language every text must be written in: the language of the goal, e.g. Polish"),
@@ -981,13 +1034,12 @@ func jobTools(workers []Backend, canPlan bool) json.RawMessage {
 				"items": map[string]any{"type": "object", "properties": map[string]any{
 					"title": str("what to do"), "doc": str("name of the document the task produces")},
 					"required": []string{"title", "doc"}}}}, "language", "tasks"),
-		fn("delegate", "Run tasks on worker phones in parallel; each result is saved as a document.", map[string]any{"tasks": map[string]any{
+		fn("delegate", "Run tasks on worker phones in parallel (the fastest free phones are chosen for you); each result is saved as a document.", map[string]any{"tasks": map[string]any{
 			"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
-				"worker":  worker,
 				"task":    str("complete instructions: what to write, length, style"),
 				"context": strs("names of documents the worker needs"),
 				"save_as": str("document name for the result")},
-				"required": []string{"worker", "task", "save_as"}}}}, "tasks"),
+				"required": []string{"task", "save_as"}}}}, "tasks"),
 		fn("write_doc", "Write or replace a document yourself.", map[string]any{"name": str("document name"), "text": str("full text")}, "name", "text"),
 		fn("read_doc", "Read a document in full (shown in your next step).", map[string]any{"name": str("document name")}, "name"),
 		fn("ask_user", "Ask the user a question and wait for the answer.", map[string]any{"question": str("the question")}, "question"),
