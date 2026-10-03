@@ -120,25 +120,7 @@ func (g *Gateway) superborgSystem(workers []Backend) string {
 	var sb strings.Builder
 	sb.WriteString("You are SuperBorg, the orchestrator of a cluster of phones, each running a smaller language model. " +
 		"You answer the user. With the delegate tool you can run subtasks on worker phones; they run in parallel.\n\nWorkers:\n")
-	for _, w := range workers {
-		fmt.Fprintf(&sb, "- %s: %s", workerName(w), w.Model)
-		var notes []string
-		if mi, ok := g.modelInfoFor(w.Model); ok {
-			if mi.Params != "" {
-				notes = append(notes, mi.Params+" params")
-			}
-			if len(mi.Tags) > 0 {
-				notes = append(notes, strings.Join(mi.Tags, ", "))
-			}
-		}
-		if w.Speed > 0 {
-			notes = append(notes, fmt.Sprintf("~%.0f tok/s", w.Speed))
-		}
-		if len(notes) > 0 {
-			fmt.Fprintf(&sb, " (%s)", strings.Join(notes, "; "))
-		}
-		sb.WriteString("\n")
-	}
+	sb.WriteString(g.roster(workers))
 	sb.WriteString("\nRules:\n" +
 		"- Answer simple questions yourself, without delegating.\n" +
 		"- Delegate only independent, self-contained subtasks (draft, summarize, list, check). " +
@@ -148,10 +130,30 @@ func (g *Gateway) superborgSystem(workers []Backend) string {
 		"- Models under 2B params are only fit for very simple tasks (short lists, yes/no, simple facts in English). " +
 		"Give writing, translation and reasoning to the bigger models, or do it yourself. At most one task per worker per call.\n" +
 		"- Worker answers are short and often wrong: check them, fix or drop bad parts, then write the final answer yourself, in the user's language.\n")
+	if g.jobs.Load() != nil {
+		sb.WriteString("- For long, multi-step work (many chapters, parts or items, or a text longer than one answer), " +
+			"call start_job instead of delegate: it runs in the background with its own plan, documents and workers.\n")
+	}
 	return sb.String()
 }
 
-// delegateTool is the orchestrator's only tool.
+// chatTools returns the chat orchestrator's tools: delegate, plus start_job
+// when jobs are enabled.
+func (g *Gateway) chatTools(workers []Backend) json.RawMessage {
+	var tools []any
+	_ = json.Unmarshal(delegateTool(workers), &tools)
+	if g.jobs.Load() != nil {
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
+			"name":        "start_job",
+			"description": "Start a background job for long, multi-step work; the user follows it in the Jobs view.",
+			"parameters": map[string]any{"type": "object", "required": []string{"title"},
+				"properties": map[string]any{"title": map[string]any{"type": "string", "description": "short title of the job"}}},
+		}})
+	}
+	return mustJSON(tools)
+}
+
+// delegateTool is the chat orchestrator's delegate tool.
 func delegateTool(workers []Backend) json.RawMessage {
 	names := make([]string, len(workers))
 	for i, w := range workers {
@@ -225,7 +227,7 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 		if final || len(workers) == 0 {
 			delete(req, "tools")
 		} else {
-			req["tools"] = delegateTool(workers)
+			req["tools"] = g.chatTools(workers)
 		}
 	}
 
@@ -262,6 +264,10 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 		if len(out.calls) == 0 || final || len(workers) == 0 {
 			break
 		}
+		if c, ok := findCall(out.calls, "start_job"); ok {
+			em.send("content", g.startJobFromChat(msgs, c, p))
+			break
+		}
 		extra = append(extra, map[string]any{"role": "assistant", "content": out.content, "tool_calls": out.calls})
 		for _, c := range out.calls {
 			res, u := g.delegate(r, workers, c, em, p, reqID)
@@ -270,6 +276,35 @@ func (g *Gateway) serveSuperborg(w http.ResponseWriter, r *http.Request, sb Supe
 		}
 	}
 	em.finish(total)
+}
+
+func findCall(calls []toolCall, name string) (toolCall, bool) {
+	for _, c := range calls {
+		if c.Function.Name == name {
+			return c, true
+		}
+	}
+	return toolCall{}, false
+}
+
+// startJobFromChat creates a job from the conversation: its goal is the
+// user's last message verbatim (the orchestrator's restatement could drop
+// details), its title the one the orchestrator chose. It returns the reply.
+func (g *Gateway) startJobFromChat(msgs []map[string]any, c toolCall, p Principal) string {
+	var args struct{ Title string }
+	_ = json.Unmarshal([]byte(c.Function.Arguments), &args)
+	goal := ""
+	for _, m := range msgs {
+		if role, _ := m["role"].(string); role == "user" {
+			if s, ok := m["content"].(string); ok {
+				goal = s
+			}
+		}
+	}
+	job := g.jobs.Load().Create(args.Title, goal, p.Name)
+	return fmt.Sprintf("\n\nStarted job **%s** (`%s`). The cluster works on it in the background: plan, documents, "+
+		"progress and the result are in the panel's Jobs view (#/jobs), or `pbctl jobs show %s`. "+
+		"Send follow-up instructions there.", job.Title, job.ID, job.ID)
 }
 
 // withSystem puts sys before the conversation, merged into the client's own
@@ -304,7 +339,7 @@ type orchestration struct {
 // orchestrateOnce sends one streaming request to the orchestrator through
 // forward (inflight, reaping, metrics and usage as for any request),
 // relaying its text to the client as it arrives and collecting tool calls.
-func (g *Gateway) orchestrateOnce(r *http.Request, orch Backend, req map[string]json.RawMessage, em *sbEmitter, p Principal, reqID string) (orchestration, error) {
+func (g *Gateway) orchestrateOnce(r *http.Request, orch Backend, req map[string]json.RawMessage, em textSink, p Principal, reqID string) (orchestration, error) {
 	sw := &sseCollector{header: http.Header{}, em: em}
 	// Idle timeout: a thinking 8B model on a phone can generate for longer
 	// than the upstream timeout; it is only stopped when it goes silent.
@@ -330,13 +365,24 @@ func (g *Gateway) orchestrateOnce(r *http.Request, orch Backend, req map[string]
 	return out, nil
 }
 
+// textSink receives an answer's text as it streams in: field is "content"
+// or "reasoning_content". The client emitter and job event logs are sinks.
+type textSink interface {
+	send(field, text string)
+}
+
+// discard is the sink of worker calls, whose text is only collected.
+type discard struct{}
+
+func (discard) send(string, string) {}
+
 // sseCollector is the http.ResponseWriter forward writes the
 // orchestrator's stream into: it parses the SSE events, relays content and
 // reasoning deltas to the client and accumulates tool calls.
 type sseCollector struct {
 	header  http.Header
 	status  int
-	em      *sbEmitter
+	em      textSink
 	line    []byte
 	errBody bytes.Buffer
 	content strings.Builder
@@ -486,7 +532,7 @@ func parseSubtasks(args string) ([]subtask, error) {
 
 // delegate runs one tool call's subtasks on the workers in parallel and
 // returns the tool result text for the orchestrator.
-func (g *Gateway) delegate(r *http.Request, workers []Backend, c toolCall, em *sbEmitter, p Principal, reqID string) (string, usage) {
+func (g *Gateway) delegate(r *http.Request, workers []Backend, c toolCall, em textSink, p Principal, reqID string) (string, usage) {
 	if c.Function.Name != "delegate" {
 		return fmt.Sprintf("error: unknown tool %q; the only tool is delegate", c.Function.Name), usage{}
 	}
@@ -516,7 +562,8 @@ func (g *Gateway) delegate(r *http.Request, workers []Backend, c toolCall, em *s
 		go func() {
 			defer wg.Done()
 			start := g.now()
-			b, text, u, err := g.runSubtask(r, workers, assigned[i], t.Task, p, reqID)
+			msgs := []map[string]string{{"role": "system", "content": workerSystem}, {"role": "user", "content": t.Task}}
+			b, text, u, err := g.runSubtask(r, workers, assigned[i], msgs, superborgWorkerMaxTokens, p, reqID)
 			secs := g.now().Sub(start).Seconds()
 			if err != nil {
 				g.mDelegations.WithLabelValues(b.NodeID, "error").Inc()
@@ -564,29 +611,32 @@ func (g *Gateway) leastBusy(workers []Backend, used map[string]bool) Backend {
 	return workers[best]
 }
 
-// runSubtask sends one task to b; if b fails before answering, it is
-// retried once on the least busy other worker. It returns the worker that
-// answered (or failed last).
-func (g *Gateway) runSubtask(r *http.Request, workers []Backend, b Backend, task string, p Principal, reqID string) (Backend, string, usage, error) {
+// runSubtask sends one task (msgs) to b; if b fails before answering, it
+// is retried once on the least busy other worker. It returns the worker that
+// answered (or failed last). The call streams with an idle timeout, so a
+// slow phone writing a long text is not cut off while it generates.
+func (g *Gateway) runSubtask(r *http.Request, workers []Backend, b Backend, msgs []map[string]string, maxTokens int, p Principal, reqID string) (Backend, string, usage, error) {
 	body := mustJSON(map[string]any{
 		"model":                b.Model,
-		"messages":             []map[string]string{{"role": "system", "content": workerSystem}, {"role": "user", "content": task}},
-		"max_tokens":           superborgWorkerMaxTokens,
-		"stream":               false,
+		"messages":             msgs,
+		"max_tokens":           maxTokens,
+		"stream":               true,
 		"chat_template_kwargs": map[string]bool{"enable_thinking": false},
 	})
 	var lastErr error
 	tried := map[string]bool{}
 	for attempt := 0; attempt < 2; attempt++ {
 		tried[b.NodeID] = true
-		bw := newBufferedWriter()
-		err := g.forward(bw, g.internalRequest(r, "/v1/chat/completions", nil), b, body, false, false, p, reqID)
-		if err == nil && bw.status == http.StatusOK {
-			text, u, perr := parseCompletion(bw.body.Bytes())
-			return b, text, u, perr
+		sw := &sseCollector{header: http.Header{}, em: discard{}}
+		err := g.forward(sw, g.internalRequest(r, "/v1/chat/completions", nil), b, body, true, true, p, reqID)
+		if err == nil && sw.status == http.StatusOK {
+			if !sw.sawEvent {
+				sw.whole(bytes.TrimSpace(sw.line))
+			}
+			return b, stripThink(sw.content.String()), sw.usage, nil
 		}
 		if err == nil {
-			return b, "", usage{}, fmt.Errorf("HTTP %d: %s", bw.status, clip(extractOpenAIErrorMessage(bw.body.Bytes()), 200))
+			return b, "", usage{}, fmt.Errorf("HTTP %d: %s", sw.status, clip(extractOpenAIErrorMessage(sw.errBody.Bytes()), 200))
 		}
 		lastErr = err
 		if !errors.Is(err, errRetryable) || r.Context().Err() != nil {
@@ -602,25 +652,12 @@ func (g *Gateway) runSubtask(r *http.Request, workers []Backend, b Backend, task
 	return b, "", usage{}, lastErr
 }
 
-// parseCompletion returns a non-streaming chat completion's answer, without
-// any <think> block a reasoning model put into the content.
-func parseCompletion(body []byte) (string, usage, error) {
-	var v struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &v); err != nil || len(v.Choices) == 0 {
-		return "", usage{}, fmt.Errorf("unexpected response: %s", clip(string(body), 200))
-	}
-	text := v.Choices[0].Message.Content
+// stripThink drops a <think> block a reasoning model put into the content.
+func stripThink(text string) string {
 	if _, after, ok := strings.Cut(text, "</think>"); ok {
 		text = after
 	}
-	u, _ := parseUsage(body, false)
-	return strings.TrimSpace(text), u, nil
+	return strings.TrimSpace(text)
 }
 
 func (u usage) add(o usage) usage {

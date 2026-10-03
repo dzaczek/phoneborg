@@ -46,6 +46,13 @@ commands:
   superborg on [orchestrator=<node>|auto] [thinking=on|off]
                               switch it on (clients can no longer choose a node)
   superborg off               back to normal routing
+  jobs                        Super Borg jobs: long multi-step work in the background (ADR-021)
+  jobs new [title=T] <goal>   start a job
+  jobs show <id>              tasks, documents and the latest events
+  jobs say <id> <text>        send an instruction (resumes a waiting, done or cancelled job)
+  jobs doc <id> <name>        print one document
+  jobs result <id>            print the assembled result (Markdown)
+  jobs cancel|rm <id>         stop a job (resumable) or delete it
   served                      list models ready nodes serve, pools and nodes (/v1/models)
   models                      model catalog (size, status, fits, tags, serving)
   models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]
@@ -192,6 +199,8 @@ func dispatch(c *client, o *out, args []string) error {
 		}
 		raw, err := c.do(http.MethodPut, "/admin/gateway", u)
 		return showGateway(o, raw, err)
+	case cmd == "jobs":
+		return jobsCmd(c, o, rest)
 	case cmd == "superborg":
 		return superborgCmd(c, o, rest)
 	case cmd == "served" && len(rest) == 0:

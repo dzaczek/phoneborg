@@ -66,6 +66,7 @@ type Server struct {
 	devices *devices   // USB device auto-detection, reported by pcprov (ADR-019)
 
 	superborg atomic.Pointer[SuperborgSettings] // Super Borg mode (ADR-020), persisted in routing.json
+	jobs      *gateway.Jobs                     // Super Borg jobs (ADR-021)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -82,6 +83,7 @@ type GatewayOptions struct {
 	Routing       RoutingOptions  // node aliases and pools, ADR-014
 	External      ExternalOptions // external engine nodes, ADR-016
 	Devices       DeviceOptions   // USB device auto-detection, ADR-019
+	Jobs          JobsOptions     // Super Borg jobs, ADR-021
 	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
 	// "local by default" (ADR-017); the empty value behaves like "open", so
 	// callers that do not set it (e.g. existing tests) are unaffected.
@@ -173,6 +175,9 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
 	s.applySuperborg(sb)
+	s.jobs = gateway.NewJobs(s.gw, gwOpts.Jobs.Dir, gwOpts.Jobs.State, log)
+	s.gw.SetJobs(s.jobs)
+	s.promReg.MustRegister(&jobsCollector{j: s.jobs})
 	s.gw.SetModelInfo(func(id string) (gateway.ModelInfo, bool) {
 		m, ok := s.catalog.Get(id)
 		if !ok {
@@ -267,6 +272,9 @@ func switching(rt *proto.RuntimeStatus) bool {
 
 // RunExternals polls the external engine nodes (ADR-016) until ctx ends.
 func (s *Server) RunExternals(ctx context.Context) { s.ext.run(ctx) }
+
+// RunJobs executes Super Borg jobs until ctx ends (ADR-021).
+func (s *Server) RunJobs(ctx context.Context) { s.jobs.Run(ctx) }
 
 // ReapGateway cancels requests stuck on nodes that left the ready set.
 func (s *Server) ReapGateway() { s.gw.Reap() }

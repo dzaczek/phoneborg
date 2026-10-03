@@ -18,6 +18,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Models and placement](#models-and-placement)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
 - [Super Borg mode](#super-borg-mode)
+- [Super Borg jobs](#super-borg-jobs)
 - [External nodes (Mac / PC)](#external-nodes-mac--pc)
 - [API keys](#api-keys)
 - [Access control](#access-control)
@@ -61,7 +62,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-listen` | `:18080` | HTTP listen address |
 | `-admin-token-file` | none | admin token file (≥ 16 characters, `#` comments allowed); none = admin API disabled |
 | `-api-keys-file` | none | API keys file; none = open gateway (dev only). Reloaded on SIGHUP. |
-| `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `devices.json`, `models/` |
+| `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `devices.json`, `jobs/`, `models/` |
 | `-models-dir` | `<state-dir>/models` | where catalog model files are stored |
 | `-backend-host` | `127.0.0.1` | host where the phones' adb forwards are reachable |
 | `-upstream-timeout` | `120s` | max duration of one proxied request |
@@ -201,6 +202,7 @@ use it on localhost or a trusted network.
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
 | Pools | A **Super Borg** card on top: on/off, orchestrator (auto or a node), thinking, the node orchestrating now and the workers ([Super Borg mode](#super-borg-mode)). Below it, pools routed as `pool/<name>`: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
+| Jobs | [Super Borg jobs](#super-borg-jobs): New job, the job list (live), and for the selected job its goal, your messages, tasks, documents (click to read, rendered as Markdown), progress log, a message box, **Preview result** (the assembled result rendered in the panel), **Download .md**, Cancel and Delete. |
 | Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; only `superborg` while Super Borg mode is on, with delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
 | API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. |
 | Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
@@ -354,6 +356,12 @@ bin/pbctl nodes
 | `pbctl superborg` | Super Borg mode: on/off, orchestrator, thinking, active orchestrator and workers |
 | `pbctl superborg on [orchestrator=<node>\|auto] [thinking=on\|off]` | switch it on, changing only the given settings |
 | `pbctl superborg off` | back to normal routing |
+| `pbctl jobs` | Super Borg jobs: status, steps, tasks done/total |
+| `pbctl jobs new [title=T] <goal>` | start a job |
+| `pbctl jobs show <id>` | tasks, documents and the latest events |
+| `pbctl jobs say <id> <text>` | send an instruction; resumes a waiting, finished or cancelled job |
+| `pbctl jobs doc <id> <name>` / `pbctl jobs result <id>` | one document / the assembled Markdown result |
+| `pbctl jobs cancel <id>` / `pbctl jobs rm <id>` | stop (resumable) / delete |
 | `pbctl served` | what ready phones serve, plus `auto`, pools and aliased nodes (`/v1/models`) |
 
 **Models and placement**
@@ -689,6 +697,71 @@ a simple question (answered directly, no `→` lines) and a composite one,
 e.g. "Napisz krótki wiersz o kocie po polsku, przetłumacz go na angielski i
 podaj 3 ciekawostki o kotach": the Thinking block shows the subtasks going
 to different phones in parallel, then the final answer.
+
+## Super Borg jobs
+
+A chat answer cannot hold long, multi-step work: a story in 20 chapters is
+more text than the orchestrator's context, and worker results inside one
+chat request are gone by the next message. A **job** (ADR-021) runs such
+work in the background on the controller and keeps everything it produces:
+
+- a **task list** (each task produces one named document),
+- a **workspace of documents** (`plan`, `characters`, `chapter_01`, …),
+- a **progress log**, and the user's later instructions.
+
+```sh
+pbctl jobs new title="Bajka" Napisz bajkę dla 5-latka o magicznym zamku: 20 rozdziałów po ok. 3 minuty czytania
+pbctl jobs                       # all jobs: status, steps, tasks done/total
+pbctl jobs show <id>             # tasks, documents, last events
+pbctl jobs say <id> rozdziały krótsze, więcej humoru
+pbctl jobs doc <id> chapter_03   # one document
+pbctl jobs result <id> > bajka.md
+pbctl jobs cancel <id>           # stops; a later "say" resumes it
+pbctl jobs rm <id>
+```
+
+In the panel, the **Jobs** view does the same: **New job**, a live list,
+and per job its tasks, documents (click to read, rendered as Markdown),
+progress log, a message box, **Preview result** (the assembled result,
+rendered in the panel), **Download .md**, Cancel and Delete. With Super Borg mode
+on, a chat request that needs this kind of work makes the orchestrator call
+`start_job`: the chat answer names the new job, whose goal is your message
+verbatim.
+
+How a job runs:
+
+- One job runs at a time, oldest queued first; the others wait as `queued`.
+  Jobs run whether or not Super Borg mode is on, with its orchestrator
+  setting (or the automatic choice).
+- **Every step is a fresh, small request**: the orchestrator sees the goal,
+  your later messages, the task list, one-line previews of the documents and
+  its last 6 steps, and must call exactly one tool (`tool_choice:
+  required`): `plan_tasks`, `write_doc`, `read_doc`, `delegate`,
+  `ask_user` or `finish`. There is no growing chat history, so the prompt
+  stays at a few thousand tokens however long the job runs.
+- `delegate` runs up to one task per worker in parallel. Each task names
+  the documents the worker needs as **context** (the gateway inserts their
+  text, at most 12 kB) and a **save_as** document for the result; the
+  orchestrator gets only a short preview back. Worker answers are capped at
+  1200 tokens and stream with an idle timeout, like the orchestrator.
+- A job **waits** after `ask_user`, after 80 steps in one run, or when the
+  orchestrator made no tool call in 3 steps in a row (a model without
+  tool-call support, e.g. Gemma, chosen because the usual orchestrator was
+  unplugged); send a message to continue. Your messages are shown to the orchestrator from its
+  next step on, also while it runs. After 5 failed steps in a row the job
+  is `failed`; a message retries it.
+- The result is the documents `finish` named (before that, the task
+  documents in task order), joined as Markdown.
+- Jobs are stored in `<state-dir>/jobs/<id>.json` after every step. A job
+  that was running when the controller stopped is queued again and
+  continues where it was.
+- Metrics: `phoneborg_superborg_jobs{status}`,
+  `phoneborg_superborg_job_steps_total{tool}`; worker calls count in
+  `phoneborg_superborg_delegations_total` and every call in the per-node
+  gateway metrics, attributed to the principal that created the job.
+
+Expect phone speed: a 20-chapter story is on the order of one to two hours
+of cluster time, and the language quality is that of the small models.
 
 ## External nodes (Mac / PC)
 

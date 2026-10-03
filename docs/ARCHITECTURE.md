@@ -17,6 +17,7 @@ into [DECISIONS.md](DECISIONS.md). For measurements, see
 - [Persistence](#persistence)
 - [Ports](#ports)
 - [Super Borg mode](#super-borg-mode)
+- [Super Borg jobs](#super-borg-jobs)
 - [Production deployment](#production-deployment)
 - [Security model](#security-model)
 - [Known limitations](#known-limitations)
@@ -60,6 +61,7 @@ on the host (ADR-003, ADR-006).
 |---|---|---|
 | Registry | `controller/registry.go` | Nodes by id, inventory, last heartbeat, lifecycle state, drain flags and aliases (kept by node id, so they survive re-registration). |
 | Gateway | `controller/gateway` | OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/models`. Authenticator, target resolution, `Picker`s (`Affinity`, `LeastInflight`, `Spread`), failover, reaping, token and usage accounting, prewarm. |
+| Super Borg jobs | `controller/gateway/jobs.go`, `controller/jobs_admin.go` | Background jobs for long, multi-step work: task list, document workspace, stateless orchestrator steps, persisted per job (ADR-021). |
 | Super Borg | `controller/gateway/superborg.go`, `controller/superborg.go` | Cluster-wide mode: one model `superborg`; an orchestrator node delegates subtasks to the other nodes through a `delegate` tool, the gateway runs them in parallel (ADR-020). |
 | Admin API | `controller/admin.go`, `models_admin.go`, `pools.go`, `external.go` | `/admin/...` JSON API behind a bearer token: nodes, drain, keys, stats, gateway settings, models, placement, pools, aliases, prewarm, external nodes (ADR-008). |
 | External nodes | `controller/external.go` | Operator-added OpenAI-compatible servers (LM Studio, oMLX, Ollama, llama-server on a Mac or PC): health and model polling, self-tests, backends for the gateway (ADR-016). |
@@ -291,6 +293,7 @@ With `-state-dir DIR` the controller keeps:
 | `DIR/models.json` | model catalog | on change |
 | `DIR/placement.json` | placement policies and the default model | on change |
 | `DIR/routing.json` | node aliases, pools, per-node measured bandwidth, Super Borg settings | on change (atomic, mode 0600) |
+| `DIR/jobs/<id>.json` | Super Borg jobs: goal, messages, tasks, documents, events | after every step (atomic, mode 0600) |
 | `DIR/external.json` | external nodes with their API keys and self-test results | on change (atomic, mode 0600) |
 | `DIR/models/` | downloaded GGUF files (`-models-dir` overrides) | by the catalog |
 
@@ -375,6 +378,34 @@ request with three independent parts ran its subtasks in parallel in
 10–85 s, and took about 6 minutes in total, most of it the orchestrator
 generating the final answer. A 4B orchestrator answers the same request in
 about 2 minutes, with clearly worse planning.
+
+## Super Borg jobs
+
+```text
+ POST /admin/jobs, pbctl jobs new, the Jobs view, or start_job from a Super Borg chat
+   ─► job {goal, messages, tasks[], docs[], events[], recent steps} ─► <state-dir>/jobs/<id>.json
+ runner (one job at a time, oldest queued first)
+   step: orchestrator request (stream, idle timeout, tool_choice=required), built from scratch:
+           system = rules + worker roster
+           user   = goal + user messages + task list + document previews + last 6 step results
+         ─► exactly one tool:
+           plan_tasks  append tasks {title, doc}
+           write_doc   orchestrator writes a document itself       ─► marks tasks with that doc done
+           delegate    tasks {worker, task, context[], save_as} in parallel:
+                         worker prompt = context documents (≤ 12 kB) + task
+                         result ─► document save_as (marks its task done); orchestrator gets a preview
+           read_doc    full text, shown in the next step only
+           ask_user    status waiting until a message arrives
+           finish      status done, result = named documents in order
+         ─► save the job file
+   80 steps in one run ─► waiting; 5 failed steps in a row ─► failed; a message re-queues
+```
+
+The design keeps the orchestrator's context constant instead of letting a
+chat history grow: what matters between steps lives in the job (task
+statuses, documents), and the orchestrator re-reads a compact view of it
+every step. Large texts never pass through the orchestrator unless it asks
+for them with `read_doc`. Rationale: ADR-021.
 
 ## Production deployment
 

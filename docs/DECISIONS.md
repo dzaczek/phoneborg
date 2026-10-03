@@ -1441,3 +1441,65 @@ independent parts; simple questions cost about the same as asking the
 orchestrator directly. Thinking is off by default for that reason. While the
 mode is on, pools, node targets and `auto` are unavailable to clients by
 design.
+
+## ADR-021: Super Borg jobs — long work with server-side state
+
+**Problem.** Super Borg chat (ADR-020) broke down on a real multi-step
+request: a story for a 5-year-old in 20 chapters of about 3 minutes each,
+planned and written together with the workers. Over several chat turns the
+orchestrator (Qwen3-8B on a phone) claimed chapters that did not exist and
+took 16–42 minutes per turn before the first word. Causes:
+
+1. Worker results existed only inside one chat request; the next request
+   carried only the orchestrator's earlier prose, so it invented progress.
+2. The chat history grew to 5–10k tokens, re-processed every turn at about
+   12–17 tok/s on the phone.
+3. Two delegation rounds per request cannot cover 20 chapters.
+4. The finished story (~15k tokens) does not fit the orchestrator's 16k
+   context at all, so it cannot be one answer.
+
+**Alternatives.**
+1. Raise the round limit and keep everything in the chat request.
+2. Persist the delegation messages per conversation and resend them.
+3. A background job with server-side state — a task list and a workspace of
+   named documents — driven by stateless orchestrator steps, as agent
+   harnesses (Claude Code, Codex, Hermes) do with todo lists, files and
+   fresh-context subagents.
+
+**Trade-offs.** (1) makes the context problem worse and ties hours of work
+to one open browser tab. (2) fixes the forgetting but not the growth: every
+chapter would flow through the orchestrator's context. (3) needs a runner,
+storage, an API and a view, but keeps the orchestrator's prompt small and
+constant, never loses a result, survives restarts and closed tabs, and
+assembles a result of any size outside the model.
+
+**Decision.** (3).
+
+- **State** (`controller/gateway/jobs.go`): goal, later user messages,
+  tasks `{title, doc, status}`, documents `{name, text, author}`, event log,
+  last 6 step results; one JSON file per job in `<state-dir>/jobs/`, saved
+  after every step. Running jobs are re-queued on startup.
+- **Steps**: each step is a fresh two-message request (rules + roster; a
+  compact view of the job) with `tool_choice: required`, so a small model
+  must act through a tool instead of narrating. Tools: `plan_tasks`,
+  `write_doc`, `read_doc`, `delegate` (with `context` documents injected
+  into the worker prompt and `save_as` for the result), `ask_user`,
+  `finish`. A task is done when its document is written.
+- **Limits**: one job at a time; 80 steps per run, then it waits for a
+  message, and so do 3 steps in a row without a tool call (seen live when
+  the OnePlus was unplugged and the fallback orchestrator, Gemma 3n, wrote
+  "tool_code" as text instead of calling tools); 5 failed steps in a row
+  fail it; worker output 1200 tokens,
+  injected context 12 kB, orchestrator output 3000 tokens. Orchestrator and
+  worker calls stream with the idle timeout of ADR-020.
+- **Entry points**: `POST /admin/jobs` and the rest of `/admin/jobs/...`,
+  `pbctl jobs`, the panel's Jobs view, and a `start_job` tool in the Super
+  Borg chat, which creates a job from the user's last message verbatim.
+- **Result**: the documents `finish` names (else the task documents in
+  order), joined as Markdown by the controller.
+
+**Consequences.** Long work becomes slow but reliable and inspectable: every
+document can be read, redone or steered by a message while the job runs.
+The quality of planning and writing is still that of the small models; the
+mechanism only stops it from falling apart. Jobs compete with chat traffic
+for the same phones, and only one runs at a time.

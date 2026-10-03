@@ -64,6 +64,7 @@ type Gateway struct {
 	targets   atomic.Pointer[Targets]
 	modelInfo atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
 	superborg atomic.Pointer[Superborg]     // nil = Super Borg mode off (ADR-020)
+	jobs      atomic.Pointer[Jobs]          // nil = no Super Borg jobs (ADR-021)
 	timeout   atomic.Int64                  // upstream timeout, ns
 	backends  BackendSource
 	cfg       Config
@@ -91,6 +92,7 @@ type Gateway struct {
 
 	mSuperborg   *prometheus.CounterVec
 	mDelegations *prometheus.CounterVec
+	mJobSteps    *prometheus.CounterVec
 }
 
 func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, reg prometheus.Registerer, log *slog.Logger) *Gateway {
@@ -138,6 +140,9 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 		mDelegations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "phoneborg_superborg_delegations_total", Help: "Subtasks the Super Borg orchestrator delegated, by worker node and result (ADR-020)."},
 			[]string{"node_id", "result"}),
+		mJobSteps: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "phoneborg_superborg_job_steps_total", Help: "Super Borg job orchestrator steps, by tool called (ADR-021)."},
+			[]string{"tool"}),
 	}
 	if g.cfg.Usage == nil {
 		g.cfg.Usage = noUsage{}
@@ -145,7 +150,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.SetPicker(picker)
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
 	g.prewarmTimeout = PrewarmTimeout
-	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations)
+	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations, g.mJobSteps)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
 	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy", "remote_requires_api_key"} {
 		g.mRejected.WithLabelValues(reason)

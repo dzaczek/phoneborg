@@ -34,7 +34,7 @@ func main() {
 	backendHost := flag.String("backend-host", "127.0.0.1", "host where nodes' advertised ports (adb forwards) are reachable")
 	keysFile := flag.String("api-keys-file", "", "API keys file (\"<name> sha256:<hex>\" or legacy \"<name> <key>\" lines), reloaded on SIGHUP; empty = no auth (dev only)")
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token; empty = admin API disabled")
-	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json, external.json, devices.json); empty = keep it in memory only")
+	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json, external.json, devices.json, jobs/); empty = keep it in memory only")
 	modelsDir := flag.String("models-dir", "", "directory for model files served to nodes; default <state-dir>/models, or a temporary directory without -state-dir")
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "max duration of one proxied inference request")
 	thermalLimit := flag.Float64("thermal-limit-c", 75, "temperature (Celsius) at or above which a node is \"hot\" and gets no new sessions; 0 disables thermal-aware routing")
@@ -117,6 +117,14 @@ func main() {
 		}
 	}
 
+	var jobs controller.JobsOptions
+	if *stateDir != "" {
+		jobs.Dir = filepath.Join(*stateDir, "jobs") // Super Borg jobs, one file each (ADR-021)
+		if jobs.State, err = gateway.LoadJobs(jobs.Dir); err != nil {
+			fatal("loading Super Borg jobs", "err", err)
+		}
+	}
+
 	var external controller.ExternalOptions
 	if *stateDir != "" {
 		external.File = filepath.Join(*stateDir, "external.json") // external engine nodes with their API keys (ADR-016)
@@ -142,6 +150,7 @@ func main() {
 		Models:         modelOpts,
 		Routing:        routing,
 		External:       external,
+		Jobs:           jobs,
 		Devices:        devicesOpts,
 		AccessMode:     *gatewayAccess,
 		TrustedCIDRs:   trustedCIDRList,
@@ -182,6 +191,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go srv.RunExternals(ctx)
+	go srv.RunJobs(ctx)
 	hs := &http.Server{Addr: *addr, Handler: srv.Handler()}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()

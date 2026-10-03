@@ -326,3 +326,11 @@ dialog.drawer {
 }
 .toast.error { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); }
 .toast button { background: transparent; border: 0; color: inherit; min-height: 0; padding: 0 2px; }
+
+/* Rendered Markdown (job documents and results). */
+.md { max-width: 72ch; line-height: 1.6; }
+.md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1.2em 0 .4em; }
+.md p, .md ul, .md ol, .md blockquote, .md pre { margin: 0 0 .8em; }
+.md blockquote { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); }
+.md pre { background: var(--surface-2); padding: 10px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
