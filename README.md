@@ -122,12 +122,13 @@ Setups and all other numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 | Document | For |
 |---|---|
 | [docs/README.md](docs/README.md) | index by audience and task |
+| [docs/CONCEPTS.md](docs/CONCEPTS.md) | ways to use the cluster, with pros and cons: pools, Super Borg, jobs, agents, benchmarks |
 | [docs/REAL_PHONES.md](docs/REAL_PHONES.md) | choosing, preparing, provisioning and troubleshooting real phones |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | running the cluster: requests, web panel, `pbctl`, models, pools, keys, monitoring |
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..016) |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..029) |
 
 ## Repository layout
 

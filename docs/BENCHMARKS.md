@@ -1,7 +1,10 @@
 # Benchmarks
 
-Every measurement PhoneBorg has published, in one place. All numbers were
-taken in 2026-09 on the development setup:
+Every measurement PhoneBorg has published, in one place. Most numbers were
+taken in 2026-09 on the development setup below; the
+[multi-model benchmark](#multi-model-benchmark-four-phones) and the
+[Super Borg timings](#super-borg-and-jobs-observed-timings) come from the
+four-phone production cluster in 2026-10.
 
 | Name used below | Hardware |
 |---|---|
@@ -28,6 +31,8 @@ token generation).
 - [OpenCode prompt sizes](#opencode-prompt-sizes)
 - [Parallel agents: pool vs single node](#parallel-agents-pool-vs-single-node)
 - [Effective bandwidth and performance tiers](#effective-bandwidth-and-performance-tiers)
+- [Multi-model benchmark, four phones](#multi-model-benchmark-four-phones)
+- [Super Borg and jobs: observed timings](#super-borg-and-jobs-observed-timings)
 - [Memory: what Android leaves free](#memory-what-android-leaves-free)
 - [Other small measurements](#other-small-measurements)
 
@@ -223,6 +228,180 @@ The model ignores sliding-window attention and compute buffers, so it runs
 a little optimistic. It is good enough to keep a phone from being given a
 model that is categorically too slow (`-min-predicted-tok-s`, default 3).
 See the `PRED TOK/S` column of `pbctl placement`.
+
+## Multi-model benchmark, four phones
+
+Measured on 2026-10-04 with MMB (ADR-028, `pbctl mmb run nodes=pixel,mi8,oneplus,poco`,
+one phone after the other) on the production cluster:
+
+| Name | Hardware | Android | RAM / budget for the model |
+|---|---|---|---|
+| **oneplus** | OnePlus 10 Pro (NE2213), Snapdragon 8 Gen 1 (SM8450) | 16 | 11.0 GiB / ~7 GiB |
+| **poco** | POCO F3 (M2012K11AG), Snapdragon 870 (SM8250) | 13 | 7.3 GiB / ~4.4 GiB |
+| **pixel** | Google Pixel 8 Pro, Tensor G3 | 17 | 11.3 GiB / ~6–7 GiB |
+| **mi8** | Xiaomi Mi 8, Snapdragon 845 | 15 (LineageOS) | 5.5 GiB / ~2.6 GiB |
+
+**Method.** For every ready catalog model that fits a phone (RAM class and
+budget), the phone is drained, the model is forced onto it, and three
+requests are timed: a ~500-token prompt with an empty cache (*cold*), the
+same prefix with another question (*warm*: the answer after the first
+prompt), and a one-line question. Generation is a fixed 128 tokens
+(`ignore_eos`), temperature 0, thinking off. Speeds are llama.cpp's own
+timings; times are measured by the controller. `n/f` = does not fit the
+phone. 65 results, 11 skipped, no failures. Context 16k for all; the POCO
+used a q8_0 KV cache for the 4B models, the others f16.
+
+**Generation, tok/s (128 tokens)**
+
+| Model | Size | oneplus | poco | pixel | mi8 |
+|---|---|---|---|---|---|
+| qwen2.5-0.5b-instruct-q4_k_m | 0.5 GiB | 29.0 | 25.3 | 28.3 | 14.6 |
+| gemma-3-1b-it-q4_k_m | 0.8 GiB | 17.0 | 14.2 | 15.2 | 7.0 |
+| llama-3.2-1b-instruct-q4_k_m | 0.8 GiB | 17.2 | 16.6 | 15.9 | 7.2 |
+| qwen3-1.7b-q4_k_m | 1.0 GiB | 11.6 | 9.4 | 11.6 | 4.9 |
+| qwen2.5-1.5b-instruct-q4_k_m | 1.0 GiB | 13.3 | 12.8 | 13.5 | 5.7 |
+| deepseek-r1-distill-qwen-1.5b-q4_k_m | 1.0 GiB | 13.5 | 12.7 | 13.5 | 5.7 |
+| lfm2-2.6b-q4_k_m | 1.5 GiB | 10.0 | 9.8 | 8.8 | 3.8 |
+| gemma-2-2b-it-abliterated-q4_k_m | 1.6 GiB | 6.6 | 6.2 | 6.2 | 3.0 |
+| huggingfacetb_smollm3-3b-q4_k_m | 1.8 GiB | 7.1 | 7.0 | 6.4 | n/f |
+| granite-4.0-h-micro-q4_k_m | 1.8 GiB | 6.7 | 6.7 | 3.1 | n/f |
+| llama-3.2-3b-instruct-q4_k_m | 1.9 GiB | 6.4 | 6.0 | 6.0 | n/f |
+| dolphin3.0-llama3.2-3b-q4_k_m | 1.9 GiB | 6.4 | 6.3 | 5.9 | n/f |
+| gemma-3-4b-it-abliterated.q4_k_m | 2.3 GiB | 5.0 | 5.2 | 3.5 | n/f |
+| gemma-3-4b-it-q4_k_m | 2.3 GiB | 5.1 | 5.4 | 4.6 | n/f |
+| phi-4-mini-instruct-q4_k_m | 2.3 GiB | 5.1 | 5.7 | 2.6 | n/f |
+| qwen3-4b-abliterated.q4_k_m | 2.3 GiB | 4.8 | 5.0 | 2.8 | n/f |
+| qwen3-4b-instruct-2507-q4_k_m | 2.3 GiB | 4.6 | 5.0 | 4.5 | n/f |
+| gemma-3n-e2b-it-q4_k_m | 2.8 GiB | 6.1 | 7.0 | 5.8 | 3.2 |
+| qwen3-8b-q4_k_m | 4.7 GiB | 2.9 | n/f | 1.8 | n/f |
+
+**Prompt processing, tok/s (~500-token prompt)**
+
+| Model | Size | oneplus | poco | pixel | mi8 |
+|---|---|---|---|---|---|
+| qwen2.5-0.5b-instruct-q4_k_m | 0.5 GiB | 89.2 | 88.0 | 123.5 | 36.6 |
+| gemma-3-1b-it-q4_k_m | 0.8 GiB | 44.5 | 45.2 | 62.5 | 15.1 |
+| llama-3.2-1b-instruct-q4_k_m | 0.8 GiB | 59.2 | 59.0 | 98.4 | 13.0 |
+| qwen3-1.7b-q4_k_m | 1.0 GiB | 47.9 | 39.3 | 59.5 | 8.4 |
+| qwen2.5-1.5b-instruct-q4_k_m | 1.0 GiB | 51.9 | 42.3 | 67.8 | 8.9 |
+| deepseek-r1-distill-qwen-1.5b-q4_k_m | 1.0 GiB | 47.3 | 42.0 | 67.5 | 8.9 |
+| lfm2-2.6b-q4_k_m | 1.5 GiB | 23.6 | 23.6 | 28.3 | 4.9 |
+| gemma-2-2b-it-abliterated-q4_k_m | 1.6 GiB | 24.2 | 26.4 | 30.7 | 5.8 |
+| huggingfacetb_smollm3-3b-q4_k_m | 1.8 GiB | 17.0 | 19.7 | 19.7 | n/f |
+| granite-4.0-h-micro-q4_k_m | 1.8 GiB | 13.8 | 16.5 | 21.9 | n/f |
+| llama-3.2-3b-instruct-q4_k_m | 1.9 GiB | 16.3 | 19.5 | 24.0 | n/f |
+| dolphin3.0-llama3.2-3b-q4_k_m | 1.9 GiB | 15.9 | 19.8 | 19.1 | n/f |
+| gemma-3-4b-it-abliterated.q4_k_m | 2.3 GiB | 13.4 | 16.2 | 17.3 | n/f |
+| gemma-3-4b-it-q4_k_m | 2.3 GiB | 13.7 | 16.1 | 14.8 | n/f |
+| phi-4-mini-instruct-q4_k_m | 2.3 GiB | 14.3 | 15.9 | 18.2 | n/f |
+| qwen3-4b-abliterated.q4_k_m | 2.3 GiB | 12.1 | 13.9 | 16.2 | n/f |
+| qwen3-4b-instruct-2507-q4_k_m | 2.3 GiB | 11.7 | 12.6 | 12.9 | n/f |
+| gemma-3n-e2b-it-q4_k_m | 2.8 GiB | 19.2 | 24.2 | 21.5 | 5.9 |
+| qwen3-8b-q4_k_m | 4.7 GiB | 6.1 | n/f | 6.9 | n/f |
+
+**Time to first token: cold → warm (same ~500-token prefix again), s**
+
+| Model | Size | oneplus | poco | pixel | mi8 |
+|---|---|---|---|---|---|
+| qwen2.5-0.5b-instruct-q4_k_m | 0.5 GiB | 4.3 → 0.3 | 4.4 → 0.3 | 3.2 → 0.5 | 13.2 → 0.5 |
+| gemma-3-1b-it-q4_k_m | 0.8 GiB | 10.2 → 8.9 | 8.3 → 8.6 | 6.1 → 9.1 | 29.6 → 25.3 |
+| llama-3.2-1b-instruct-q4_k_m | 0.8 GiB | 6.5 → 0.4 | 7.7 → 0.4 | 4.0 → 1.7 | 33.2 → 1.3 |
+| qwen3-1.7b-q4_k_m | 1.0 GiB | 8.1 → 0.6 | 10.0 → 0.8 | 8.8 → 0.8 | 55.7 → 2.6 |
+| qwen2.5-1.5b-instruct-q4_k_m | 1.0 GiB | 7.4 → 0.5 | 9.1 → 0.5 | 5.8 → 4.4 | 56.0 → 1.8 |
+| deepseek-r1-distill-qwen-1.5b-q4_k_m | 1.0 GiB | 8.1 → 0.4 | 9.1 → 0.4 | 5.7 → 3.3 | 52.3 → 1.6 |
+| lfm2-2.6b-q4_k_m | 1.5 GiB | 17.7 → 19.9 | 18.9 → 16.8 | 17.6 → 17.4 | 104.5 → 80.8 |
+| gemma-2-2b-it-abliterated-q4_k_m | 1.6 GiB | 16.4 → 16.3 | 18.6 → 14.3 | 16.5 → 16.2 | 86.6 → 64.2 |
+| huggingfacetb_smollm3-3b-q4_k_m | 1.8 GiB | 43.9 → 1.3 | 37.2 → 1.2 | 31.3 → 1.5 | n/f |
+| granite-4.0-h-micro-q4_k_m | 1.8 GiB | 35.8 → 28.9 | 29.8 → 23.5 | 23.3 → 27.2 | n/f |
+| llama-3.2-3b-instruct-q4_k_m | 1.9 GiB | 29.5 → 1.1 | 25.2 → 1.1 | 22.9 → 1.3 | n/f |
+| dolphin3.0-llama3.2-3b-q4_k_m | 1.9 GiB | 28.2 → 1.2 | 26.3 → 1.0 | 54.7 → 1.3 | n/f |
+| gemma-3-4b-it-abliterated.q4_k_m | 2.3 GiB | 36.3 → 28.2 | 30.1 → 24.5 | 83.3 → 27.2 | n/f |
+| gemma-3-4b-it-q4_k_m | 2.3 GiB | 38.5 → 28.1 | 33.6 → 23.0 | 58.2 → 28.5 | n/f |
+| phi-4-mini-instruct-q4_k_m | 2.3 GiB | 32.7 → 1.1 | 31.7 → 1.0 | 28.8 → 1.1 | n/f |
+| qwen3-4b-abliterated.q4_k_m | 2.3 GiB | 43.2 → 1.8 | 37.3 → 2.3 | 27.0 → 1.9 | n/f |
+| qwen3-4b-instruct-2507-q4_k_m | 2.3 GiB | 43.2 → 1.5 | 38.0 → 1.8 | 40.1 → 9.0 | n/f |
+| gemma-3n-e2b-it-q4_k_m | 2.8 GiB | 23.7 → 19.9 | 19.7 → 15.9 | 32.0 → 19.8 | 83.8 → 66.6 |
+| qwen3-8b-q4_k_m | 4.7 GiB | 82.9 → 3.4 | n/f | 100.0 → 3.3 | n/f |
+
+**Load time (first load includes the download to the phone), s**
+
+| Model | Size | oneplus | poco | pixel | mi8 |
+|---|---|---|---|---|---|
+| qwen2.5-0.5b-instruct-q4_k_m | 0.5 GiB | 8 | 8 | 6 | 6 |
+| gemma-3-1b-it-q4_k_m | 0.8 GiB | 6 | 34 | 32 | 12 |
+| llama-3.2-1b-instruct-q4_k_m | 0.8 GiB | 36 | 34 | 32 | 36 |
+| qwen3-1.7b-q4_k_m | 1.0 GiB | 42 | 46 | 42 | 42 |
+| qwen2.5-1.5b-instruct-q4_k_m | 1.0 GiB | 44 | 42 | 42 | 12 |
+| deepseek-r1-distill-qwen-1.5b-q4_k_m | 1.0 GiB | 12 | 44 | 42 | 44 |
+| lfm2-2.6b-q4_k_m | 1.5 GiB | 60 | 60 | 60 | 52 |
+| gemma-2-2b-it-abliterated-q4_k_m | 1.6 GiB | 66 | 62 | 64 | 58 |
+| huggingfacetb_smollm3-3b-q4_k_m | 1.8 GiB | 66 | 74 | 68 | n/f |
+| granite-4.0-h-micro-q4_k_m | 1.8 GiB | 66 | 74 | 68 | n/f |
+| llama-3.2-3b-instruct-q4_k_m | 1.9 GiB | 74 | 80 | 66 | n/f |
+| dolphin3.0-llama3.2-3b-q4_k_m | 1.9 GiB | 18 | 76 | 72 | n/f |
+| gemma-3-4b-it-abliterated.q4_k_m | 2.3 GiB | 20 | 26 | 88 | n/f |
+| gemma-3-4b-it-q4_k_m | 2.3 GiB | 82 | 88 | 84 | n/f |
+| phi-4-mini-instruct-q4_k_m | 2.3 GiB | 86 | 88 | 82 | n/f |
+| qwen3-4b-abliterated.q4_k_m | 2.3 GiB | 84 | 24 | 90 | n/f |
+| qwen3-4b-instruct-2507-q4_k_m | 2.3 GiB | 20 | 26 | 28 | n/f |
+| gemma-3n-e2b-it-q4_k_m | 2.8 GiB | 20 | 102 | 114 | 30 |
+| qwen3-8b-q4_k_m | 4.7 GiB | 38 | n/f | 182 | n/f |
+
+**What the numbers say**
+
+- **Phones.** On the same model, the OnePlus, POCO and Pixel are close
+  (within ~10 %); the Mi 8 is about half as fast. Only the OnePlus and the
+  Pixel can hold the 8B model. The Pixel has the fastest prompt processing
+  on small models (123 tok/s on the 0.5B).
+- **The Pixel's numbers for 3B+ models are low and inconsistent**: two 4B
+  models of the same size gave 4.5 and 2.8 tok/s, and the Qwen3-4B-Instruct
+  measured 4.9 tok/s in a short benchmark the day before. It ran first and
+  loaded models for over an hour; Tensor G3 is known to throttle. Treat its
+  large-model figures as a lower bound and re-measure after it cools down.
+- **Prompt cache by architecture.** The warm request should only process the
+  new question. That works for Qwen, Llama, Phi, SmolLM and DeepSeek-R1
+  (warm TTFT 0.3–1.8 s on the OnePlus). It does **not** work for Gemma 2/3,
+  Gemma 3n, LFM2 and Granite 4.0-H: their warm TTFT is close to the cold one
+  (Gemma 3n on the Mi 8: 84 s cold, 67 s warm). These use sliding-window
+  attention or hybrid recurrent layers, for which llama.cpp re-processes the
+  prompt; `--swa-full` may restore reuse for Gemma at a memory cost (not
+  tested yet). In conversations and agent sessions these models are much
+  slower than their tok/s suggest.
+- **Size vs speed.** Generation speed falls roughly with the resident size
+  (bandwidth-bound, see [effective bandwidth](#effective-bandwidth-and-performance-tiers)):
+  ~25–29 tok/s for 0.5B, ~13–17 for 1–1.5B, ~6–7 for 3B, ~5 for 4B, ~3 for
+  8B on the faster phones.
+- **The 8B model is slow to read.** Qwen3-8B on the OnePlus processes
+  prompts at 6.1 tok/s: 500 tokens take 83 s, an opencode build-agent prompt
+  (~11.7k tokens) would take about half an hour. This is what makes a phone
+  a slow Super Borg orchestrator.
+- **DeepSeek-R1-Distill 1.5B returned empty answers** to the one-line
+  question: it reasons even with thinking off and spends the token budget
+  before answering. It is unsuitable for short answers and as a worker.
+- **Load time** is dominated by the first download (2–3 min for 2–5 GB over
+  USB 2.0); a model already on the phone loads in 6–40 s.
+- Best picks from this run: **Llama 3.2 1B** for fast small tasks (16–17
+  tok/s, warm 0.4 s), **Qwen3-1.7B** for a small model with tools on the
+  Mi 8, **Qwen3-4B-Instruct** and **Phi-4-mini** for 4B work with a working
+  cache, **Qwen3-8B** only as an orchestrator on the OnePlus.
+
+## Super Borg and jobs: observed timings
+
+Not a controlled benchmark: timings seen while building and using Super
+Borg (ADR-020..022) on the four phones, useful to set expectations.
+
+| What | Setup | Time |
+|---|---|---|
+| Chat, three-part request ("poem, translation, three facts") | orchestrator Qwen3-4B on the POCO, two workers | ~2 min |
+| Same request | orchestrator Qwen3-8B on the OnePlus, three workers | ~6 min (most of it the orchestrator writing the answer) |
+| Same request with thinking on | Qwen3-8B on the OnePlus | over 10 min; cut at the old 600 s total limit, which led to the first-token/idle limits of ADR-024 |
+| One job step (orchestrator call) | Qwen3-8B on the OnePlus, prompt ~2–3k tokens | 5–10 min |
+| A chapter written one at a time | worker gemma-3n on the Mi 8 | ~15 min per chapter (step + writing) |
+| A 12-document story (plan, outline, chapters) | gateway assigns workers, three phones in parallel | ~70 min, 4 documents per phone |
+
+Most of the time goes to the orchestrator reading its prompt on a phone.
+An external orchestrator (ADR-029) removes that part; the writing time on
+the phones stays.
 
 ## Memory: what Android leaves free
 
