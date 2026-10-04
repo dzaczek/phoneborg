@@ -65,6 +65,7 @@ type Server struct {
 	devices *devices   // USB device auto-detection, reported by pcprov (ADR-019)
 
 	jobs *gateway.Jobs // Super Borg jobs (ADR-021)
+	mmb  *mmb          // multi-model benchmark (ADR-028)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -82,6 +83,7 @@ type GatewayOptions struct {
 	External      ExternalOptions // external engine nodes, ADR-016
 	Devices       DeviceOptions   // USB device auto-detection, ADR-019
 	Jobs          JobsOptions     // Super Borg jobs, ADR-021
+	MMB           MMBOptions      // multi-model benchmark, ADR-028
 	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
 	// "local by default" (ADR-017); the empty value behaves like "open", so
 	// callers that do not set it (e.g. existing tests) are unaffected.
@@ -178,6 +180,8 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	s.jobs = gateway.NewJobs(s.gw, gwOpts.Jobs.Dir, gwOpts.Jobs.State, log)
 	s.gw.SetJobs(s.jobs)
 	s.promReg.MustRegister(&jobsCollector{j: s.jobs})
+	s.mmb = newMMB(s, gwOpts.MMB.Dir, log)
+	s.promReg.MustRegister(s.mmb.mProbes)
 	s.gw.SetModelInfo(func(id string) (gateway.ModelInfo, bool) {
 		m, ok := s.catalog.Get(id)
 		if !ok {

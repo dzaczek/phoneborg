@@ -34,6 +34,11 @@ commands:
   drain <id>                  stop sending new requests to a node (ext:<name> for external nodes)
   undrain <id>                put a drained node back into rotation
   forget <id>                 remove a node (it re-registers if alive)
+  mmb                         multi-model benchmark runs (ADR-028)
+  mmb run [nodes=a,b] [pool=P] [models=x,y] [parallel]
+                              load every model that fits (or the given ones) on each phone and time it;
+                              phones one by one, or all at once with parallel
+  mmb show|cancel|rm <id>     results table / stop (phones get their models back) / delete
   admin-tokens                named admin tokens, one per operator or device (ADR-026)
   admin-tokens create <name>  create one (printed once); the audit log names it
   admin-tokens revoke <name>  revoke one ("admin", from -admin-token-file, cannot be)
@@ -209,6 +214,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return mcpCmd(c, o, rest)
 	case cmd == "admin-tokens":
 		return adminTokensCmd(c, o, rest)
+	case cmd == "mmb":
+		return mmbCmd(c, o, rest)
 	case cmd == "served" && len(rest) == 0:
 		return served(c, o)
 	case cmd == "models":
