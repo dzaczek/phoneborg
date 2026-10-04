@@ -20,6 +20,7 @@ Numbers quoted here were measured on the four-phone cluster in 2026-10
 - [5. Jobs](#5-jobs)
 - [6. An agent drives the cluster (opencode + MCP)](#6-an-agent-drives-the-cluster-opencode--mcp)
 - [7. Benchmarks to choose models and phones](#7-benchmarks-to-choose-models-and-phones)
+- [Function calling (tools)](#function-calling-tools)
 - [Comparison](#comparison)
 - [Which one should I use?](#which-one-should-i-use)
 - [Splitting a fleet](#splitting-a-fleet)
@@ -169,6 +170,58 @@ legend of what each one means.
 **Use it** before choosing placement, when a phone or model is added, or to
 check a suspected throttling or memory problem. A benchmark takes phones out
 of service for minutes per model.
+
+## Function calling (tools)
+
+Function calling (OpenAI `tools` / `tool_calls`) appears in PhoneBorg at
+four levels. They differ in who defines the tools, which model calls them
+and who executes the calls.
+
+| Level | Tools | Called by | Executed by |
+|---|---|---|---|
+| **Pass-through** | the client's own (e.g. opencode's `read`, `edit`, `bash`) | a phone's model | the client |
+| **Super Borg chat** | `delegate`, `start_job` | the pool's orchestrator | the gateway |
+| **Jobs** | `plan_tasks`, `delegate`, `write_doc`, `read_doc`, `ask_user`, `finish` | the pool's orchestrator | the controller |
+| **MCP** | `cluster_status`, `ask_cluster`, `cluster_map`, `cluster_vote`, `job_*`, `jobs_list` | the agent's model (e.g. Claude in opencode) | `pbctl mcp` |
+
+**Pass-through.** A request with `tools` goes through the gateway
+unchanged; the phone's llama-server returns `tool_calls` and the client
+runs them. The gateway sends such requests only to phones whose model has
+the catalog tag `tools` (now `qwen3-4b-instruct-2507`, `qwen3-8b`,
+`qwen3-4b-abliterated`); if no such phone is ready, it falls back to any
+phone and counts it in
+`phoneborg_gateway_tool_requests_total{result="fallback"}`. Mark a model
+with `pbctl models tag <model> general,tools`. Requests with tools to a
+Super Borg pool skip the delegation loop and go straight to the
+orchestrator, so the client sees its own tool calls.
+
+**Super Borg chat.** The gateway gives the orchestrator a `delegate` tool
+(a list of `{worker, task}`, the worker names as an enum) and, when jobs
+are on, `start_job`. It runs the subtasks on the workers in parallel,
+returns their answers as tool results and repeats until the orchestrator
+answers in text.
+
+**Jobs.** Every step is one stateless call with `tool_choice: "required"`:
+the orchestrator must pick exactly one tool. `plan_tasks` is offered only
+when there is no plan yet or the user sent a new message. The controller
+guards against loops (a repeated call is refused, a step without a tool
+call three times in a row pauses the job and asks the user) and checks
+`finish` against the task list.
+
+**MCP.** The tools run on your machine and use the gateway and admin API;
+the cluster only sees the prompts the agent sends to it.
+
+| Pros | Cons |
+|---|---|
+| standard OpenAI format: any agent or SDK works unchanged | small models misuse tools: wrong arguments, loops, text instead of a call (Gemma writes `tool_code` as text) |
+| tool-capable routing keeps tool requests away from models that cannot call tools | tool definitions cost prompt tokens: ~11.7k for opencode's build agent out of a 16k context |
+| delegation, jobs and MCP reuse the same mechanism, so a better orchestrator improves all of them | every call is a round trip through slow prefill; a job step takes minutes on a phone |
+| guards (`tool_choice: required`, repeat and stall detection, `finish` verification) make phone orchestrators usable | the guards hide model mistakes only partly; results still need checking |
+
+**Recommendations:** tag only models you have seen call tools correctly;
+use Qwen3 (4B Instruct 2507 or 8B) or an external model as orchestrator;
+keep agents on phones tool-less (`pbctl opencode init` without
+`-read-tools`) and let a strong main model hold the tools.
 
 ## Comparison
 
