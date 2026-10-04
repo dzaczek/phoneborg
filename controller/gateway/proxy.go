@@ -860,6 +860,9 @@ func openAIError(w http.ResponseWriter, status int, typ, code, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": e})
 }
 
+// NewRequestID returns a random id like the gateway's request ids.
+func NewRequestID() string { return newID() }
+
 func newID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)

@@ -296,6 +296,7 @@ With `-state-dir DIR` the controller keeps:
 | `DIR/models.json` | model catalog | on change |
 | `DIR/placement.json` | placement policies and the default model | on change |
 | `DIR/routing.json` | node aliases, pools (Super Borg pools included), per-node measured bandwidth | on change (atomic, mode 0600) |
+| `DIR/mmb/<id>.json` | multi-model benchmark runs and results | after every result (atomic, mode 0600) |
 | `DIR/admin-tokens` | named admin tokens as SHA-256 hashes (`-admin-tokens-file` overrides) | on create/revoke (atomic, mode 0600) |
 | `DIR/jobs/<id>.json` | Super Borg jobs: goal, messages, tasks, documents, events | after every step (atomic, mode 0600) |
 | `DIR/external.json` | external nodes with their API keys and self-test results | on change (atomic, mode 0600) |

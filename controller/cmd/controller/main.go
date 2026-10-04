@@ -35,7 +35,7 @@ func main() {
 	keysFile := flag.String("api-keys-file", "", "API keys file (\"<name> sha256:<hex>\" or legacy \"<name> <key>\" lines), reloaded on SIGHUP; empty = no auth (dev only)")
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token (named \"admin\"); empty = admin API disabled")
 	adminTokensFile := flag.String("admin-tokens-file", "", "file of named admin tokens, one per operator or device, managed with pbctl admin-tokens (ADR-026); default <state-dir>/admin-tokens, or memory only without -state-dir")
-	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json, external.json, devices.json, jobs/); empty = keep it in memory only")
+	stateDir := flag.String("state-dir", "", "directory for persistent state (usage.json, models.json, placement.json, routing.json, external.json, devices.json, jobs/, mmb/); empty = keep it in memory only")
 	modelsDir := flag.String("models-dir", "", "directory for model files served to nodes; default <state-dir>/models, or a temporary directory without -state-dir")
 	upstreamTimeout := flag.Duration("upstream-timeout", 120*time.Second, "longest silence from a node once its response has started (between streamed chunks); ADR-024")
 	firstTokenTimeout := flag.Duration("first-token-timeout", 30*time.Minute, "longest wait for a node's first response byte, i.e. prompt processing (slow on phones for 10k-token agent prompts); 0 = -upstream-timeout; ADR-024")
@@ -134,6 +134,11 @@ func main() {
 		}
 	}
 
+	mmbDir := ""
+	if *stateDir != "" {
+		mmbDir = filepath.Join(*stateDir, "mmb") // multi-model benchmark runs (ADR-028)
+	}
+
 	var external controller.ExternalOptions
 	if *stateDir != "" {
 		external.File = filepath.Join(*stateDir, "external.json") // external engine nodes with their API keys (ADR-016)
@@ -160,6 +165,7 @@ func main() {
 		Routing:        routing,
 		External:       external,
 		Jobs:           jobs,
+		MMB:            controller.MMBOptions{Dir: mmbDir},
 		Devices:        devicesOpts,
 		AccessMode:     *gatewayAccess,
 		TrustedCIDRs:   trustedCIDRList,

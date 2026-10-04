@@ -16,6 +16,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Web panel](#web-panel)
 - [pbctl reference](#pbctl-reference)
 - [Models and placement](#models-and-placement)
+- [Multi-model benchmark (MMB)](#multi-model-benchmark-mmb)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
 - [Tool-capable routing](#tool-capable-routing)
 - [Super Borg pools](#super-borg-pools)
@@ -206,6 +207,7 @@ use it on localhost or a trusted network.
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
 | Pools | Pools routed as `pool/<name>`, each with a status badge (ready · N nodes, no ready node with the reason, disabled) and **Enable/Disable**: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
+| MMB | [Multi-model benchmark](#multi-model-benchmark-mmb): start a run on phones or a pool (models, one by one or at the same time), live runs, results table with the best values marked, and a model × phone comparison. |
 | Jobs | [Super Borg jobs](#super-borg-jobs): New job, the job list (live), and for the selected job its goal, your messages, tasks, documents (click to read, rendered as Markdown), progress log, a message box, **Preview result** (the assembled result rendered in the panel), **Download .md**, Cancel and Delete. |
 | Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; a Super Borg pool shows its delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
 | API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. Below them, **Admin tokens**: the named tokens for this panel and pbctl; create (shown once) and revoke. |
@@ -359,6 +361,9 @@ bin/pbctl nodes
 | `pbctl gateway` | current gateway settings |
 | `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
 | `pbctl stats` | uptime, cluster summary, usage by key and node |
+| `pbctl mmb` | multi-model benchmark runs |
+| `pbctl mmb run [nodes=a,b] [pool=P] [models=x,y] [parallel]` | benchmark every model that fits (or the given ones) on each phone, one by one or at the same time ([details](#multi-model-benchmark-mmb)) |
+| `pbctl mmb show\|cancel\|rm <id>` | results table / stop (phones get their models back) / delete |
 | `pbctl mcp` | serve the cluster as MCP tools on stdin/stdout ([details](#the-cluster-as-mcp-tools)) |
 | `pbctl jobs` | Super Borg jobs: status, steps, tasks done/total |
 | `pbctl jobs new [title=T] [pool=P] <goal>` | start a job on Super Borg pool P (default: the first one) |
@@ -558,6 +563,47 @@ removed.
 
 Policies and the default model are saved to `<state-dir>/placement.json`,
 the catalog to `<state-dir>/models.json`.
+
+## Multi-model benchmark (MMB)
+
+MMB measures how every model runs on the chosen phones, so models and
+phones can be compared on real numbers (ADR-028). For each phone it loads,
+one after the other, every ready catalog model that fits the phone (or the
+models you pick), and times the same three requests on each:
+
+| Column | What it measures |
+|---|---|
+| Load | from switching the model until the phone serves it: download (first time) + load |
+| Cold TTFT | time to first token of a ~500-token prompt with an empty cache |
+| Prompt t/s | prompt processing speed of that request (llama.cpp timings) |
+| Gen t/s | generation speed over a fixed 128 tokens (`ignore_eos`) |
+| Warm TTFT | time to first token of a second request with the same long prefix: the answer after the first prompt, from the prompt cache |
+| Cache × | cold TTFT ÷ warm TTFT |
+| Short | total time of a one-line question |
+
+```sh
+pbctl mmb run nodes=pixel                                   # every model that fits the Pixel
+pbctl mmb run nodes=pixel,poco models=qwen3-4b-instruct-2507-q4_k_m,gemma-3n-e2b-it-q4_k_m
+pbctl mmb run pool=smart parallel                           # every phone of the pool, at the same time
+pbctl mmb                                                   # runs
+pbctl mmb show <id>                                         # results table
+pbctl mmb cancel <id>                                       # stop; the phones get their models back
+```
+
+The panel's **MMB** view does the same: choose phones or a pool, models
+(none = all that fit) and one by one or at the same time; it shows the runs
+live, a results table with the best value of each column marked, and, with
+several phones, a model × phone table of generation speed and warm TTFT.
+
+While a phone is benchmarked it is drained (no normal traffic, so it does
+not skew the numbers) and its model is forced with a benchmark override
+(placement reason `benchmark`, kept in memory only). When its models are
+done, or the run is cancelled, the override goes and the phone gets its
+placement and drain state back; a controller restart drops a running run
+(marked `cancelled`) and leaves the phones normal. One run at a time. A
+model whose resident size exceeds the phone's RAM budget, or whose class
+does not fit, is not tried. Runs are stored in `<state-dir>/mmb/`. Expect
+minutes per model: the first load downloads the model to the phone.
 
 ## Virtual models, pools and aliases
 

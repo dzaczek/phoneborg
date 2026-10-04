@@ -1680,3 +1680,34 @@ common model, while a phone serves one model at a time.
   set and disjoint. Pools that take any node, or any model, never conflict:
   they adapt to what the phones serve. Placement stays the only thing that
   chooses models (ADR-011); pools still do not load models.
+
+## ADR-028: Multi-model benchmark (MMB)
+
+**Problem.** Choosing a model per phone relied on the planner's predicted
+speed (ADR-015) and one self-test per loaded model. Operators asked for real,
+comparable numbers: every model that fits a phone, loaded and timed the same
+way, with time to first token, prompt and generation speed, and the answer
+time after a first prompt (the prompt cache), for one phone or several,
+one by one or at the same time.
+
+**Decision.**
+- A run (`POST /admin/mmb`, `pbctl mmb run`, the panel's MMB view) names
+  phones or a pool, optional models (default: every ready catalog model
+  that fits each phone by class and RAM budget), and whether the phones run
+  in parallel. One run at a time.
+- Per phone: drain it, then for each model set a **benchmark override**, an
+  in-memory forced pin applied by `Replan` in front of the placement spec
+  (reason `benchmark`), wait until the phone serves the model (load time),
+  and send three requests straight to it through `Gateway.Probe`, which
+  reaches a drained backend and times the first streamed token: a
+  ~500-token prompt (cold), the same prefix again (warm), and a one-line
+  question; 128 fixed tokens (`ignore_eos`) and thinking off for comparable
+  generation speeds. Afterwards the override is cleared and the drain state
+  restored; cancelling or a restart does the same.
+- Runs are stored per run in `<state-dir>/mmb/`; an unreadable file is
+  skipped, not fatal. Results are counted in `phoneborg_mmb_results_total`.
+
+**Consequences.** A benchmark takes phones out of service for minutes per
+model (downloads included) and replaces their models meanwhile; pools that
+need those phones lose them for that time. Numbers depend on temperature
+(ADR-010): a hot phone throttles, which the table does not correct for.

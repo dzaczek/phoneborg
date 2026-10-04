@@ -123,6 +123,53 @@ type placement struct {
 	plan   models.Plan
 	nodes  []PlacementNode
 	byNode map[string]models.Assignment
+	// overrides force a model onto a node while a benchmark runs (ADR-028),
+	// by node id; never saved.
+	overrides map[string]string
+}
+
+// ReasonBenchmark marks an assignment forced by a running benchmark.
+const ReasonBenchmark = "benchmark"
+
+// withOverrides returns spec with a pin per override in front, and the
+// overridden nodes taken out of every other pin, so the planner places the
+// benchmark's model there and nothing else.
+func withOverrides(spec models.Spec, overrides map[string]string) models.Spec {
+	out := models.Spec{DefaultModel: spec.DefaultModel}
+	nodes := make([]string, 0, len(overrides))
+	for n := range overrides {
+		nodes = append(nodes, n)
+	}
+	slices.Sort(nodes)
+	for _, n := range nodes {
+		out.Policies = append(out.Policies, models.Policy{ModelID: overrides[n], Mode: models.ModePin, Nodes: []string{n}})
+	}
+	for _, p := range spec.Policies {
+		if p.Mode == models.ModePin {
+			p.Nodes = slices.DeleteFunc(slices.Clone(p.Nodes), func(n string) bool { _, ok := overrides[n]; return ok })
+			if len(p.Nodes) == 0 {
+				continue
+			}
+		}
+		out.Policies = append(out.Policies, p)
+	}
+	return out
+}
+
+// SetBenchmarkOverride forces model onto node until it is cleared ("" model)
+// and replans.
+func (s *Server) SetBenchmarkOverride(node, model string) {
+	s.place.mu.Lock()
+	if s.place.overrides == nil {
+		s.place.overrides = map[string]string{}
+	}
+	if model == "" {
+		delete(s.place.overrides, node)
+	} else {
+		s.place.overrides[node] = model
+	}
+	s.place.mu.Unlock()
+	s.Replan()
 }
 
 func (p *placement) save() error {
@@ -143,7 +190,7 @@ func (p *placement) save() error {
 // desired runtime (as opposed to letting the node keep what it has).
 func assigning(reason string) bool {
 	switch reason {
-	case models.ReasonPin, models.ReasonReplicas, models.ReasonPercent, models.ReasonDefault:
+	case models.ReasonPin, models.ReasonReplicas, models.ReasonPercent, models.ReasonDefault, ReasonBenchmark:
 		return true
 	}
 	return false
@@ -223,9 +270,17 @@ func (s *Server) Replan() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	nodes, ready, view := s.planInputs(p.byNode)
-	plan := p.planner.Plan(p.spec, nodes, ready)
+	spec := p.spec
+	if len(p.overrides) > 0 {
+		spec = withOverrides(spec, p.overrides)
+	}
+	plan := p.planner.Plan(spec, nodes, ready)
 	byNode := make(map[string]models.Assignment, len(plan.Assignments))
-	for _, a := range plan.Assignments {
+	for i, a := range plan.Assignments {
+		if m, ok := p.overrides[a.NodeID]; ok && a.ModelID == m {
+			a.Reason = ReasonBenchmark
+			plan.Assignments[i] = a
+		}
 		byNode[a.NodeID] = a
 		if old := p.byNode[a.NodeID]; assigning(a.Reason) && (old.ModelID != a.ModelID || !assigning(old.Reason)) {
 			s.log.Info("placement changed", "node_id", a.NodeID, "model_id", a.ModelID, "from_model_id", old.ModelID,
