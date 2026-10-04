@@ -16,27 +16,27 @@ exports everything to Prometheus and Grafana.
 > on emulated phones. APIs, metrics and file layout will change. Parts of the
 > API are unauthenticated in v0: do not expose it to untrusted networks.
 
-```text
- OpenAI client / opencode / curl          pbctl / web panel
-            │  http://host:18080/v1              │  /admin (token)
-            ▼                                    ▼
- ┌──────────────────────── host (runs adb) ─────────────────────────┐
- │  controller                                                      │
- │   ├─ registry     node inventory, heartbeats, lifecycle          │
- │   ├─ gateway      auth · affinity / pools · failover             │
- │   ├─ catalog +    model downloads, placement plan                │
- │   │  planner                                                     │
- │   └─ /metrics ──► Prometheus ──► Grafana                         │
- │  pcprov           adb provisioning, USB hot-plug watch           │
- └──────┬──────────────────────┬──────────────────────┬─────────────┘
-        │ USB (adb reverse / adb forward)             │
-   ┌────▼─────┐           ┌────▼─────┐           ┌────▼─────┐
-   │ phone 1  │           │ phone 2  │    ...    │ phone N  │
-   │ node-    │           │ node-    │           │ node-    │
-   │ agent    │           │ agent    │           │ agent    │
-   │  └ llama-│           │  └ llama-│           │  └ llama-│
-   │   server │           │   server │           │   server │
-   └──────────┘           └──────────┘           └──────────┘
+```mermaid
+flowchart TB
+  client["OpenAI client / opencode / curl"] -->|"http://host:18080/v1"| gw
+  admin["pbctl / web panel"] -->|"/admin (token)"| ctl
+  subgraph host["host (runs adb)"]
+    subgraph ctl["controller"]
+      reg["registry<br>node inventory, heartbeats, lifecycle"]
+      gw["gateway<br>auth · affinity / pools · failover"]
+      cat["catalog + planner<br>model downloads, placement plan"]
+      met["/metrics"]
+    end
+    pcprov["pcprov<br>adb provisioning, USB hot-plug watch"]
+  end
+  met --> prom["Prometheus"] --> graf["Grafana"]
+  subgraph phones["phones, over USB (adb reverse / adb forward)"]
+    p1["phone 1<br>node-agent → llama-server"]
+    p2["phone 2<br>node-agent → llama-server"]
+    pn["phone N<br>node-agent → llama-server"]
+  end
+  gw --> p1 & p2 & pn
+  pcprov -.->|"adb"| phones
 ```
 
 ## What it does

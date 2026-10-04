@@ -24,28 +24,32 @@ into [DECISIONS.md](DECISIONS.md). For measurements, see
 
 ## Overview
 
-```text
- OpenAI client / opencode / curl        pbctl / web panel (/ui/)      Prometheus :9090 ─► Grafana :3000
-            │ /v1/...                          │ /admin/... (token)          │ /metrics
-            ▼                                  ▼                             ▼
- ┌─────────────────────────── host (runs adb) ──────────────────────────────────────────┐
- │ controller :18080                                                                    │
- │   registry ── node inventory, heartbeats, lifecycle, drain flags, aliases            │
- │   gateway ─── auth · target resolution · pickers · failover · reaping · usage        │
- │   catalog ─── GGUF downloads + metadata        planner ── which node serves what     │
- │   admin API · web panel · usage store · /metrics · /status                           │
- │                                                                                      │
- │ pcprov ───── adb provisioning, hot-plug watch, adb link heal, slim                   │
- └──────┬────────────────────────────────────────────────────────────┬──────────────────┘
-        │ USB: adb reverse tcp:18080 (phone ─► controller)            │
-        │      adb forward tcp:<host port> ─► tcp:18090 (controller ─► llama-server)
-   ┌────▼──────────────────────────┐                           ┌──────▼─────┐
-   │ phone: /data/local/tmp/phoneborg                          │  phone N   │
-   │  node-agent (shell user)      │                           │    ...     │
-   │   inventory · benchmark ·     │                           └────────────┘
-   │   heartbeats · model manager  │
-   │   └─ llama-server 127.0.0.1:18090                         
-   └───────────────────────────────┘
+```mermaid
+flowchart TB
+  client["OpenAI client / opencode / curl"] -->|"/v1/..."| gw
+  ui["pbctl / web panel (/ui/)"] -->|"/admin/... (token)"| adm
+  prom["Prometheus :9090"] -->|"scrapes /metrics"| adm
+  prom --> graf["Grafana :3000"]
+  subgraph host["host (runs adb)"]
+    subgraph ctl["controller :18080"]
+      reg["registry<br>node inventory, heartbeats, lifecycle,<br>drain flags, aliases"]
+      gw["gateway<br>auth · target resolution · pickers ·<br>failover · reaping · usage"]
+      cat["catalog<br>GGUF downloads + metadata"]
+      plan["planner<br>which node serves what"]
+      adm["admin API · web panel · usage store ·<br>/metrics · /status"]
+    end
+    pcprov["pcprov<br>adb provisioning, hot-plug watch,<br>adb link heal, slim"]
+  end
+  subgraph phone["phone: /data/local/tmp/phoneborg"]
+    agent["node-agent (shell user)<br>inventory · benchmark · heartbeats ·<br>model manager"]
+    llama["llama-server 127.0.0.1:18090"]
+    agent --> llama
+  end
+  phoneN["phone N ..."]
+  agent -->|"USB: adb reverse tcp:18080<br>(phone → controller)"| reg
+  gw -->|"USB: adb forward host port → tcp:18090<br>(controller → llama-server)"| llama
+  gw --> phoneN
+  pcprov -.->|"adb push, start, heal"| phone
 ```
 
 Everything the phones do goes over the USB cable: the agent talks to
@@ -107,22 +111,28 @@ with the provisioned "PhoneBorg" dashboard, plus two emulated phones.
 
 ## Provisioning over adb
 
-```text
- pcprov provision / watch                                    phone
- ───────────────────────                                     ─────
- 1. adb devices, (adb connect host:port for -connect)
- 2. getprop ro.product.cpu.abilist  ── must be arm64-v8a
- 3. /proc/cpuinfo Features ─► pick llama.cpp variant (dotprod+fp16 │ fp16 │ armv8-a)
- 4. adb reverse tcp:18080 tcp:18080          phone 127.0.0.1:18080 ─► controller
- 5. adb push node-agent, bin/llama-server,  ─► /data/local/tmp/phoneborg/
-    models/<file>.gguf (skipped if same size)
- 6. adb forward tcp:0 tcp:18090  ─► host port P   controller ─► P ─► llama-server
-    (an existing forward is reused, so P stays stable)
- 7. start node-agent detached  (-advertise-port P, -runtime-variant, -model, -agent-args)
- 8. optional: slim
-
- watch loop: every 3 s list devices; new or re-appeared device ─► steps 1–8
-             every 15 s per device: heal = re-add missing reverse / forward
+```mermaid
+sequenceDiagram
+  participant PC as pcprov (provision / watch)
+  participant ADB as adb on the host
+  participant PH as phone
+  PC->>ADB: 1. adb devices (adb connect host:port with -connect)
+  PC->>PH: 2. getprop ro.product.cpu.abilist, must be arm64-v8a
+  PC->>PH: 3. read /proc/cpuinfo Features
+  Note over PC: pick the llama.cpp variant: dotprod+fp16, fp16 or armv8-a
+  PC->>ADB: 4. adb reverse tcp:18080 tcp:18080 (phone 127.0.0.1:18080 → controller)
+  PC->>PH: 5. adb push node-agent, bin/llama-server, models/MODEL.gguf to /data/local/tmp/phoneborg (skipped if same size)
+  PC->>ADB: 6. adb forward tcp:0 tcp:18090 → host port P (an existing forward is reused, so P stays stable)
+  PC->>PH: 7. start node-agent detached (-advertise-port P, -runtime-variant, -model, -agent-args)
+  opt 8. slim
+    PC->>PH: disable user-facing apps
+  end
+  loop watch, every 3 s
+    PC->>ADB: list devices, a new or re-appeared device gets steps 1 to 8
+  end
+  loop watch, every 15 s per device
+    PC->>ADB: heal, re-add a missing reverse or forward
+  end
 ```
 
 `adb` drops forward and reverse rules when a phone re-enumerates on USB (a
@@ -132,18 +142,15 @@ once.
 
 ## Node lifecycle
 
-```text
-                register                   benchmark report
-   (new) ───────────────► BENCHMARKING ───────────────────► ACTIVE
-                                ▲                          │   ▲
-                   heartbeat    │          no heartbeat    │   │ heartbeat
-                   resumed,     │          for 3 intervals │   │ resumed
-                   no benchmark │                          ▼   │
-                                └──────────────────────── SUSPECT
-                                                           │
-                                          no heartbeat     │
-                                          for 6 intervals  ▼
-                                                        OFFLINE ── heartbeat resumed ─► ACTIVE
+```mermaid
+stateDiagram-v2
+  [*] --> BENCHMARKING: register
+  BENCHMARKING --> ACTIVE: benchmark report
+  ACTIVE --> SUSPECT: no heartbeat for 3 intervals
+  SUSPECT --> ACTIVE: heartbeat resumed
+  SUSPECT --> BENCHMARKING: heartbeat resumed, no benchmark
+  SUSPECT --> OFFLINE: no heartbeat for 6 intervals
+  OFFLINE --> ACTIVE: heartbeat resumed
 ```
 
 - The controller asks for heartbeats every 5 s (`-heartbeat-interval`), so
@@ -162,37 +169,40 @@ once.
 
 ## Request routing
 
-```text
- request ─► authenticate (open: anonymous │ keys: 401 without a valid key)
-        ─► resolve "model":
-             <model id>        ready nodes serving it
-             auto              any ready node
-             pool/<name>       eligible pool members  (pool picker: spread │ affinity;
-                               routing superborg ─► orchestrator loop, see Super Borg pools)
-             node/<alias|id>   exactly that node      (no picker, no failover; 503 node_unavailable)
-                               (an external node's name, or ext:<name>, too)
-             unknown pool/node 404 model_not_found
-        ─► routable = ACTIVE + runtime ready + not drained + not switching
-                      (+ ACTIVE external nodes, one backend per model)
-        ─► request offers tools? keep only nodes whose model has the catalog tag "tools"
-                                 (none has it ─► keep all; node/<alias> is never filtered)
-        ─► skip nodes at their max_concurrency (external nodes); none left ─► 503 busy
-        ─► context filter: estimated tokens (body bytes / 4) > every node's context
-                            ─► 400 context_length_exceeded; smaller nodes are skipped
-        ─► picker chooses a node
-             Affinity (default): same prompt prefix (first message + tools) ─► same node;
-                                 skip a pinned node that is ≥ spill (2) busier or hot;
-                                 new large sessions (≥ 16 KiB) ─► least busy, fewest
-                                 large sessions, fastest (self-test tok/s)
-             LeastInflight:      fewest in-flight requests
-             Spread (pools):     fewest in-flight, then fastest, then rotation; no pins
-             hot nodes get no new sessions unless every candidate is hot
-        ─► forward over adb forward (until the first byte: -first-token-timeout, default 30 min;
-                                    after it: -upstream-timeout of silence, default 120 s)
-             refused / 5xx before any byte sent ─► retry once on another node,
-                                                    avoid the failed node for 30 s
-             all attempts failed ─► 502 backends_failed
+```mermaid
+flowchart TD
+  req["request"] --> auth{"authenticate"}
+  auth -->|"auth mode keys, no valid key"| e401["401"]
+  auth -->|"open (anonymous) or a valid key"| res{"resolve model"}
+  res -->|"model id"| c1["ready nodes serving it"]
+  res -->|"auto"| c2["any ready node"]
+  res -->|"pool/name"| c3["eligible pool members<br>(picker spread or affinity)"]
+  res -->|"pool with routing superborg"| sb["orchestrator loop<br>(see Super Borg pools)"]
+  res -->|"node/alias or id,<br>an external node's name or ext:name"| c4["exactly that node<br>no picker, no failover<br>503 node_unavailable"]
+  res -->|"unknown pool or node"| e404["404 model_not_found"]
+  c1 & c2 & c3 --> rt["routable = ACTIVE + runtime ready + not drained + not switching<br>(+ ACTIVE external nodes, one backend per model)"]
+  rt --> tools{"request offers tools?"}
+  tools -->|"yes"| tf["keep nodes whose model has the catalog tag tools<br>(none has it: keep all)"]
+  tools -->|"no"| busy
+  tf --> busy{"external nodes at max_concurrency<br>skipped, any left?"}
+  busy -->|"no"| e503["503 busy"]
+  busy -->|"yes"| ctx{"estimated tokens (body bytes / 4)<br>fit some node's context?"}
+  ctx -->|"no"| e400["400 context_length_exceeded"]
+  ctx -->|"yes, smaller nodes skipped"| pick["picker chooses a node"]
+  pick --> fwd["forward over adb forward<br>first byte within -first-token-timeout (default 30 min),<br>then at most -upstream-timeout of silence (default 120 s)"]
+  c4 --> fwd
+  fwd -->|"refused or 5xx before any byte"| retry["retry once on another node,<br>avoid the failed node for 30 s"]
+  retry --> pick
+  fwd -->|"all attempts failed"| e502["502 backends_failed"]
 ```
+
+| Picker | How it chooses |
+|---|---|
+| Affinity (default) | the same prompt prefix (first message + tools) goes to the same node; a pinned node that is at least `spill` (2) busier or hot is skipped; new large sessions (≥ 16 KiB) go to the least busy node with the fewest large sessions, then the fastest (self-test tok/s) |
+| LeastInflight | fewest in-flight requests |
+| Spread (pools) | fewest in-flight, then fastest, then rotation; no pins |
+
+Hot nodes get no new sessions unless every candidate is hot.
 
 - **Reaping.** Every second the controller sweeps node states and cancels
   in-flight requests on nodes that left the ready set (e.g. `SUSPECT`); those
@@ -212,17 +222,15 @@ An operator can add any OpenAI-compatible server as a node with
 node id `ext:<name>` with alias `<name>`; it has no agent, heartbeats,
 inventory or RAM class, and the planner never assigns it a model (ADR-016).
 
-```text
- controller ── every 10 s: GET {url}/v1/models (bearer api_key, 5 s timeout)
-      │          ok ─► ACTIVE, models = listed ids ∩ allowlist
-      │          3 failures in a row ─► OFFLINE (last_error kept)
-      │        on registration / model-list change: self-test each new model
-      │          (fixed prompt, max_tokens 32) ─► gen tok/s = routing Speed
-      ▼
- gateway ── one Backend per (external node, model), URL = {url}
-            body "model" rewritten to the real model id
-            Authorization: Bearer <api_key> (client headers are never forwarded)
-            at most max_concurrency requests in flight (default 1)
+```mermaid
+flowchart LR
+  subgraph poll["controller, every 10 s"]
+    get["GET url/v1/models<br>bearer api_key, 5 s timeout"]
+    get -->|"ok"| act["ACTIVE<br>models = listed ids ∩ allowlist"]
+    get -->|"3 failures in a row"| off["OFFLINE<br>last_error kept"]
+    act -->|"registration or<br>model list change"| st["self-test each new model<br>fixed prompt, max_tokens 32<br>gen tok/s = routing speed"]
+  end
+  act --> be["gateway: one backend per (external node, model)<br>URL = url, body model rewritten to the real id<br>Authorization: Bearer api_key (client headers never forwarded)<br>at most max_concurrency in flight (default 1)"]
 ```
 
 External nodes take part in `auto`, pools (node filters match `<name>` or
@@ -234,31 +242,51 @@ every per-node gateway metric. `node/<name>` goes to the node's first model
 
 ## Model placement and switching
 
-```text
- pbctl models add hf://…  ─► catalog: download (resume, 3 retries) ─► SHA-256 ─► parse GGUF
-                                      ─► size, resident_bytes, layers, KV heads ─► ready
- pbctl placement set …    ─► policies (pin │ replicas │ percent, classes, min_tok_s) + default model
-                                      │
- planner (on every change, node join/leave/drain, model ready, and every 10 s)
-   pins ─► replicas ─► percent ─► default model ─► otherwise keep what the node serves
-   eligible = fits (node budget, or class heuristic before the first heartbeat)
-              and predicted tok/s ≥ min_tok_s (unknown never excludes; pins always place)
-                                      │
- heartbeat reply: 200 {desired: model id, URL, SHA-256, size, resident bytes,
-                       ctx 16384 (≤ trained), slots 1, kv auto, GGUF shape}   (204 = no change)
-                                      │
- node agent (one switch at a time, latest desired state wins)
-   cached with right SHA-256? ─ no ─► statfs; evict other .gguf LRU (never the served one)
-                                      ─► GET /v1/model-files/<id> over adb reverse
-                                         (models/<id>.gguf.part, HTTP Range resume)
-                                      ─► verify SHA-256 ─► rename
-   size: budget = MemAvailable + RssAnon(llama-server) − 600 MiB (-mem-reserve-mb)
-         try f16 KV ─► q8_0 KV ─► halve ctx to 4096 ─► 1 slot ─► fail
-   load: stop old llama-server ─► start new one ─► /health (2 min) ─► self-test
-   state: downloading ─► loading ─► serving       (the gateway skips switching nodes)
-   on failure: keep or restart the previous model; state error; retry the same
-               desired state after 30 s, doubling to 10 min (sooner if budget grows >10%)
+```mermaid
+flowchart TD
+  subgraph ctl["controller"]
+    add["pbctl models add"] --> cat["catalog<br>download, SHA-256, parse GGUF"]
+    set["pbctl placement set"] --> pol["policies<br>+ default model"]
+    cat --> planner["planner<br>one model per node"]
+    pol --> planner
+  end
+  planner -->|"heartbeat reply: desired model"| agent
+  subgraph phone["node agent, one switch at a time"]
+    agent{"cached with the<br>right SHA-256?"}
+    agent -->|"no"| dl["download from the controller<br>over adb reverse, verify"]
+    agent -->|"yes"| size
+    dl --> size["size: fit context,<br>KV type and slots in RAM"]
+    size --> load["load: restart llama-server,<br>/health, self-test"]
+    load -->|"ok"| serving(["serving"])
+    load -->|"failure"| back["keep the previous model,<br>retry with backoff"]
+  end
 ```
+
+- **Catalog.** `pbctl models add hf://…` downloads with resume and 3
+  retries, hashes the file (SHA-256), parses the GGUF and records size,
+  `resident_bytes`, layers and KV heads before the model is ready.
+- **Planner.** Runs on every change (policies, node join/leave/drain, a model
+  becoming ready) and every 10 s. Order: pins → replicas → percent → default
+  model → otherwise keep what the node serves. A model is eligible on a node
+  if it fits (node budget, or the class heuristic before the first
+  heartbeat) and its predicted tok/s ≥ `min_tok_s` (unknown never excludes;
+  pins always place).
+- **Heartbeat reply.** `200` with the desired model id, URL, SHA-256, size,
+  resident bytes, `ctx 16384` (≤ trained), 1 slot, KV type `auto` and the
+  GGUF shape; `204` means no change. The latest desired state wins.
+- **Download.** `statfs`, then evict other `.gguf` files least recently used
+  first (never the served one), then `GET /v1/model-files/<id>` over
+  `adb reverse` into `models/<id>.gguf.part` with HTTP Range resume, verify
+  SHA-256, rename.
+- **Sizing.** Budget = `MemAvailable` + `RssAnon(llama-server)` − 600 MiB
+  (`-mem-reserve-mb`); try f16 KV → q8_0 KV → halve the context to 4096 →
+  1 slot → fail.
+- **Load.** Stop the old llama-server, start the new one, wait for
+  `/health` (2 min), run the self-test. State goes downloading → loading →
+  serving; the gateway skips switching nodes.
+- **Failure.** Keep or restart the previous model, state `error`, retry the
+  same desired state after 30 s, doubling to 10 min (sooner if the budget
+  grows by more than 10%).
 
 A node provisioned with `pcprov -model FILE` serves that file until the
 controller sends a desired model. If the requested settings do not fit but
@@ -334,30 +362,36 @@ A pool with routing `superborg` (ADR-022) is a single model made of its
 members. A chat request to it runs this loop; other targets are routed as
 usual (ADR-020):
 
-```text
- chat request ─► client brings its own tools, or /v1/completions?
-                   yes ─► forward unchanged to the orchestrator (agents keep their tool loop)
-              ─► orchestrator = configured alias/id if a ready member,
-                                else the member serving the largest catalog model
-                 workers      = every other ready, not hot member (phones and external nodes)
-              ─► system prompt: rules + worker roster (name, model, params, tags, tok/s),
-                                sorted and stable so llama-server keeps it in its prefix cache;
-                                merged into the client's own system message
-              ─► round 1..2: orchestrator request, always streamed, tools = [delegate]
-                   delegate({tasks:[{worker, task}]})   worker names as an enum
-                   content / reasoning deltas ─► relayed to the client as they arrive
-                   tool-call deltas           ─► accumulated
-                   no tool call ─► that was the answer, done
-                   tool call    ─► run every task in parallel:
-                                     worker = the named one, else the least busy free one
-                                     non-streaming, max_tokens 512, thinking off
-                                     failure ─► retry once on another worker,
-                                                then "error: …" as the task's result
-                                     progress "→ mi8: …" / "← mi8: done in 14 s"
-                                       ─► client as reasoning_content
-                                 results ─► tool messages ─► next round
-              ─► round 3: same request without tools, so the orchestrator must answer
-              ─► client: SSE chunks (stream) or one chat.completion; usage = sum of all calls
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant G as gateway
+  participant O as orchestrator
+  participant W as workers
+  C->>G: chat request to a superborg pool
+  alt client brings its own tools, or /v1/completions
+    G->>O: forward unchanged (agents keep their tool loop)
+    O-->>C: answer
+  else delegation loop
+    Note over G: orchestrator = the configured member if ready,<br>else the member serving the largest catalog model<br>workers = every other ready, not hot member<br>(phones and external nodes)
+    Note over G: system prompt = rules + worker roster<br>(name, model, params, tags, tok/s), sorted and stable<br>so the prefix cache holds, merged into the client's system message
+    loop rounds 1 and 2
+      G->>O: request, always streamed, tools = [delegate]
+      O-->>C: content and reasoning deltas, relayed as they arrive
+      alt no tool call
+        Note over O: that was the answer, done
+      else delegate with tasks of worker and task (worker names as an enum)
+        par every task in parallel
+          G->>W: the named worker, else the least busy free one (non-streaming, max_tokens 512, thinking off)
+          W-->>G: result (on failure retry once on another worker, then an error text as the result)
+        end
+        G-->>C: progress lines as reasoning_content, e.g. → mi8 … and ← mi8 done in 14 s
+        G->>O: results as tool messages, next round
+      end
+    end
+    G->>O: round 3, the same request without tools, so it must answer
+    O-->>C: SSE chunks (stream) or one chat.completion, usage = sum of all calls
+  end
 ```
 
 - Every orchestrator and worker call goes through the normal `forward`
@@ -386,24 +420,24 @@ about 2 minutes, with clearly worse planning.
 
 ## Super Borg jobs
 
-```text
- POST /admin/jobs, pbctl jobs new, the Jobs view, or start_job from a Super Borg chat
-   ─► job {goal, messages, tasks[], docs[], events[], recent steps} ─► <state-dir>/jobs/<id>.json
- runner (one job at a time, oldest queued first)
-   step: orchestrator request (stream, idle timeout, tool_choice=required), built from scratch:
-           system = rules + worker roster
-           user   = goal + user messages + task list + document previews + last 6 step results
-         ─► exactly one tool:
-           plan_tasks  append tasks {title, doc}
-           write_doc   orchestrator writes a document itself       ─► marks tasks with that doc done
-           delegate    tasks {worker, task, context[], save_as} in parallel:
-                         worker prompt = context documents (≤ 12 kB) + task
-                         result ─► document save_as (marks its task done); orchestrator gets a preview
-           read_doc    full text, shown in the next step only
-           ask_user    status waiting until a message arrives
-           finish      status done, result = named documents in order
-         ─► save the job file
-   80 steps in one run ─► waiting; 5 failed steps in a row ─► failed; a message re-queues
+```mermaid
+flowchart TD
+  start["POST /admin/jobs, pbctl jobs new, the Jobs view,<br>or start_job from a Super Borg chat"] --> job["job: goal, messages, tasks, docs, events, recent steps<br>saved to state-dir/jobs/id.json"]
+  job --> runner["runner: one job at a time, oldest queued first"]
+  runner --> step["step: orchestrator request built from scratch<br>(stream, idle timeout, tool_choice = required)<br>system = rules + worker roster<br>user = goal + user messages + task list + document previews + last 6 step results"]
+  step --> tool{"exactly one tool"}
+  tool -->|"plan_tasks"| t1["append tasks (title, doc)"]
+  tool -->|"write_doc"| t2["the orchestrator writes a document itself,<br>tasks with that doc are marked done"]
+  tool -->|"delegate"| t3["tasks (worker, task, context, save_as) in parallel<br>worker prompt = context documents (≤ 12 kB) + task<br>result → document save_as (marks its task done),<br>the orchestrator gets a preview"]
+  tool -->|"read_doc"| t4["full text, shown in the next step only"]
+  tool -->|"ask_user"| t5["status waiting until a message arrives"]
+  tool -->|"finish"| t6["status done<br>result = named documents in order"]
+  t1 & t2 & t3 & t4 --> save["save the job file"]
+  save --> step
+  save -.->|"80 steps in one run"| waiting["waiting"]
+  save -.->|"5 failed steps in a row"| failed["failed"]
+  t5 -.->|"a message re-queues"| runner
+  waiting -.->|"a message re-queues"| runner
 ```
 
 The design keeps the orchestrator's context constant instead of letting a
@@ -417,23 +451,27 @@ for them with `read_doc`. Rationale: ADR-021.
 The reference deployment is one Linux VM next to the phones; the phones
 reach it only over USB.
 
+```mermaid
+flowchart TB
+  phones["phones"] -->|"USB"| hv["hypervisor<br>USB passthrough by host port, not by vendor:product id<br>(two phones of one vendor share 18d1:4ee7 and get mixed up)"]
+  hv --> pc
+  subgraph vm["Linux VM (Debian): adb, a user with the phones' adb keys"]
+    pc["phoneborg-pcprov.service (Requires= the controller)<br>pcprov watch -model state/models/qwen2.5-0.5b-….gguf<br>-agent-args '-ctx-size 16384' -admin-token-file …"]
+    ctl["phoneborg-controller.service<br>controller -listen :18080 -ollama-listen :11434 -upstream-timeout 600s<br>-admin-token-file … -state-dir … -gateway-access local"]
+    disk[("/srv/phoneborg<br>separate LVM volume")]
+    pc --> ctl
+    pc --> disk
+    ctl --> disk
+  end
+```
+
 ```text
- hypervisor ── USB passthrough by host port (not by vendor:product id:
- │             two phones of one vendor share 18d1:4ee7 and get mixed up)
- ▼
- Linux VM (Debian), adb installed, user with the phones' adb keys
- ├─ /srv/phoneborg            separate LVM volume (models are tens of GB)
- │   ├─ app/                  source tree + bin/ (controller, pbctl, pcprov,
- │   │                        node-agent-android-arm64, llama/<variant>/llama-server)
- │   ├─ state/                -state-dir: routing.json, placement.json, models.json,
- │   │                        usage.json, external.json, devices.json, models/*.gguf
- │   └─ admin-token           mode 0600
- ├─ phoneborg-controller.service
- │     controller -listen :18080 -ollama-listen :11434 -upstream-timeout 600s
- │                -admin-token-file … -state-dir … -gateway-access local
- └─ phoneborg-pcprov.service  (Requires= the controller)
-       pcprov watch -model <state>/models/qwen2.5-0.5b-…gguf
-                    -agent-args "-ctx-size 16384" -admin-token-file …
+/srv/phoneborg            separate LVM volume (models are tens of GB)
+├─ app/                   source tree + bin/ (controller, pbctl, pcprov,
+│                         node-agent-android-arm64, llama/<variant>/llama-server)
+├─ state/                 -state-dir: routing.json, placement.json, models.json,
+│                         usage.json, external.json, devices.json, models/*.gguf
+└─ admin-token            mode 0600
 ```
 
 - **Bootstrap model.** pcprov pushes one small GGUF with the agent, so a
