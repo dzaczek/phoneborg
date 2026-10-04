@@ -466,7 +466,7 @@ var (
 // orchestrator choice.
 func (g *Gateway) jobPool(name string) (Superborg, []Backend, error) {
 	if name == "" {
-		return Superborg{}, g.routable(), nil
+		return Superborg{}, Target{}.filter(g.routable()), nil // no external orchestrators: they are used only when named
 	}
 	tgt, err := g.Resolve(name)
 	if err == nil && tgt.Disabled {

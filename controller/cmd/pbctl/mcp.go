@@ -152,7 +152,7 @@ func mcpTools() []mcpTool {
 		}
 		return map[string]any{"type": "object", "properties": props, "required": required}
 	}
-	return []mcpTool{
+	tools := []mcpTool{
 		{Name: "cluster_status", Description: "List the phones (model, speed, state) and pools of the PhoneBorg cluster.",
 			InputSchema: obj(map[string]any{}), run: mcpClusterStatus},
 		{Name: "ask_cluster", Description: "Send one self-contained prompt to the phone cluster and return the answer. " +
@@ -178,6 +178,8 @@ func mcpTools() []mcpTool {
 		{Name: "jobs_list", Description: "All jobs with status and progress.",
 			InputSchema: obj(map[string]any{}), run: mcpJobsList},
 	}
+	tools = append(tools, mcpClusterTools()...)
+	return tools
 }
 
 func argString(args map[string]any, name string, required bool) (string, error) {

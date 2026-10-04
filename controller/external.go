@@ -67,7 +67,14 @@ type ExternalSpec struct {
 	MaxConcurrency int      `json:"max_concurrency,omitempty"` // 0 = 1
 	CtxSize        int      `json:"ctx_size,omitempty"`        // tokens; 0 = unknown
 	SpeedTPS       float64  `json:"speed_tps,omitempty"`       // operator hint, overrides self-tests; 0 = none
+	// Role "orchestrator" keeps the node out of normal routing: it only
+	// orchestrates Super Borg pools that name it, or serves node/<name>
+	// (ADR-029). "" = a normal node.
+	Role string `json:"role,omitempty"`
 }
+
+// ExternalRoleOrchestrator is the role of an external orchestrator.
+const ExternalRoleOrchestrator = "orchestrator"
 
 // ExternalSpeed is one model's self-test result.
 type ExternalSpeed struct {
@@ -80,6 +87,7 @@ type ExternalSpeed struct {
 // External is an external node as returned by the admin API.
 type External struct {
 	Name             string                   `json:"name"`
+	Role             string                   `json:"role,omitempty"` // "orchestrator" = no normal traffic (ADR-029)
 	NodeID           string                   `json:"node_id"`
 	URL              string                   `json:"url"`
 	HasAPIKey        bool                     `json:"has_api_key"`
@@ -112,6 +120,7 @@ type ExternalConfig struct {
 	CtxSize        int                      `json:"ctx_size,omitempty"`
 	SpeedTPS       float64                  `json:"speed_tps,omitempty"`
 	Measured       map[string]ExternalSpeed `json:"measured,omitempty"`
+	Role           string                   `json:"role,omitempty"`
 }
 
 // ExternalOptions configures external nodes.
@@ -258,6 +267,9 @@ func normExternalSpec(spec ExternalSpec) (ExternalSpec, error) {
 	if spec.CtxSize < 0 || spec.SpeedTPS < 0 {
 		return spec, errors.New("ctx_size and speed_tps must not be negative")
 	}
+	if spec.Role != "" && spec.Role != ExternalRoleOrchestrator {
+		return spec, fmt.Errorf("role must be %q or empty", ExternalRoleOrchestrator)
+	}
 	allow := []string{}
 	for _, m := range spec.Models {
 		if m = strings.TrimSpace(m); m == "" {
@@ -280,7 +292,7 @@ func (e *externals) put(name string, spec ExternalSpec) (bool, error) {
 	defer e.mu.Unlock()
 	old := e.byName[name]
 	n := &extNode{state: ExternalOffline, cfg: ExternalConfig{Name: name, URL: u, Models: allow,
-		MaxConcurrency: spec.MaxConcurrency, CtxSize: spec.CtxSize, SpeedTPS: spec.SpeedTPS}}
+		MaxConcurrency: spec.MaxConcurrency, CtxSize: spec.CtxSize, SpeedTPS: spec.SpeedTPS, Role: spec.Role}}
 	if spec.APIKey != nil {
 		n.cfg.APIKey = *spec.APIKey
 	} else if old != nil {
@@ -334,7 +346,7 @@ func (e *externals) list(inflight, pins map[string]int) []External {
 			Models: slices.Clone(n.cfg.Models), DiscoveredModels: slices.Clone(n.discovered),
 			MaxConcurrency: n.cfg.MaxConcurrency, CtxSize: n.cfg.CtxSize, SpeedTPS: n.cfg.SpeedTPS,
 			State: n.state, LastCheck: n.lastCheck, LastError: n.lastErr, Measured: map[string]ExternalSpeed{},
-			Drained: n.drained, Inflight: inflight[id], PinnedSessions: pins[id]}
+			Drained: n.drained, Inflight: inflight[id], PinnedSessions: pins[id], Role: n.cfg.Role}
 		if x.Models == nil {
 			x.Models = []string{}
 		}
@@ -380,7 +392,7 @@ func (e *externals) backends() []gateway.Backend {
 		for _, m := range n.discovered {
 			out = append(out, gateway.Backend{NodeID: ExternalPrefix + n.cfg.Name, Alias: n.cfg.Name, Model: m, URL: n.cfg.URL,
 				Speed: n.speed(m), Drained: n.drained, CtxSize: n.cfg.CtxSize, External: true, APIKey: n.cfg.APIKey,
-				MaxConcurrency: n.cfg.MaxConcurrency})
+				MaxConcurrency: n.cfg.MaxConcurrency, OrchestratorOnly: n.cfg.Role == ExternalRoleOrchestrator})
 		}
 	}
 	return out
@@ -679,6 +691,8 @@ func externalMembers(p Pool, exts []External) []PoolMember {
 			switch {
 			case len(p.Nodes) > 0 && !slices.Contains(p.Nodes, x.NodeID) && !slices.Contains(p.Nodes, x.Name):
 				m.Reason = ReasonNotMember
+			case x.Role == ExternalRoleOrchestrator:
+				m.Reason = ReasonOrchestratorOnly
 			case len(p.Classes) > 0:
 				m.Reason = ReasonClass
 			case x.Drained:

@@ -1616,7 +1616,10 @@ admin token in its environment.
 **Decision.** (2). `pbctl mcp` speaks MCP (JSON-RPC 2.0, newline-delimited;
 revisions 2025-06-18, 2025-03-26 and 2024-11-05) with tools
 `cluster_status`, `ask_cluster`, `job_start`, `job_status`, `job_message`,
-`job_result` and `jobs_list`. Tool failures are tool results with
+`job_result` and `jobs_list`, later `cluster_map` (parallel independent
+tasks), `cluster_vote` (several phones judge one question, with an
+optional threshold) and `job_wait` (blocks until a job changes, so an agent
+can follow it in a loop). Tool failures are tool results with
 `isError`, not protocol errors, so the model can read them.
 `pbctl opencode init` writes `mcp.phoneborg` with the absolute pbctl path
 and `{env:PHONEBORG_ADMIN_TOKEN}`, never the token itself; `sync` replaces
@@ -1711,3 +1714,28 @@ one by one or at the same time.
 model (downloads included) and replaces their models meanwhile; pools that
 need those phones lose them for that time. Numbers depend on temperature
 (ADR-010): a hot phone throttles, which the table does not correct for.
+
+## ADR-029: External orchestrators
+
+**Problem.** The Super Borg orchestrator (ADR-020, ADR-022) is the
+bottleneck: Qwen3-8B on a phone processes prompts at about 6 tok/s and
+plans weakly. Strong models are available elsewhere: Ollama or oMLX on a
+desktop, LM Studio, or a hosted API such as DeepSeek. External nodes
+(ADR-016) can already serve any OpenAI-compatible model, but every one of
+them takes part in normal routing, so a paid API would also get `auto`
+traffic, pool requests and Super Borg worker tasks.
+
+**Decision.** An external node gets an optional `role`. With
+`role: "orchestrator"` its backends are marked `OrchestratorOnly`: they
+match no target except `node/<name>` (so not `auto`, model ids or pools),
+are left out of `/v1/models`, are never a Super Borg worker and are never
+chosen as orchestrator automatically. A Super Borg pool whose
+`orchestrator` names such a node uses it even though it is not a member;
+if it is down, the pool falls back to its own best member. Pools list it
+with the reason `orchestrator only`. `pbctl external add ... role=...`
+sets it; it is stored in `external.json`.
+
+**Consequences.** Any OpenAI-compatible server with reliable tool calling
+can plan for the phones without being exposed to other traffic. Hosted
+APIs still see the controller's health polls and one short self-test per
+model.

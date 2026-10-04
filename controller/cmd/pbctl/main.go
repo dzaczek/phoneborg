@@ -82,7 +82,7 @@ commands:
                               create a pool or change the given fields ("-" clears a list)
   pools rm <name>             remove a pool
   external                    external engine nodes (LM Studio, oMLX, Ollama, llama-server)
-  external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N]
+  external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N] [role=orchestrator|worker]
                               add or replace an external node, addressed as node/<name>
                               (without key-file the current key is kept; key-file=- removes it)
   external rm <name>          remove an external node

@@ -66,7 +66,7 @@ func externalCmd(c *client, o *out, rest []string) error {
 }
 
 // parseExternalAdd builds a PUT body from "<url> [key-file=path]
-// [models=a,b] [concurrency=N] [ctx=N] [speed=N]".
+// [models=a,b] [concurrency=N] [ctx=N] [speed=N] [role=orchestrator|worker]".
 func parseExternalAdd(url string, kvs []string) (controller.ExternalSpec, error) {
 	spec := controller.ExternalSpec{URL: url}
 	for _, kv := range kvs {
@@ -89,8 +89,13 @@ func parseExternalAdd(url string, kvs []string) (controller.ExternalSpec, error)
 			spec.CtxSize, err = strconv.Atoi(v)
 		case "speed":
 			spec.SpeedTPS, err = strconv.ParseFloat(v, 64)
+		case "role":
+			if v == "worker" || v == "-" {
+				v = ""
+			}
+			spec.Role = v
 		default:
-			return spec, fmt.Errorf("unknown external setting %q (key-file, models, concurrency, ctx, speed)", k)
+			return spec, fmt.Errorf("unknown external setting %q (key-file, models, concurrency, ctx, speed, role)", k)
 		}
 		if err != nil {
 			return spec, fmt.Errorf("%s: %w", k, err)
@@ -153,10 +158,14 @@ func listExternal(c *client, o *out) error {
 		if x.CtxSize > 0 {
 			ctx = strconv.Itoa(x.CtxSize)
 		}
-		rows = append(rows, []string{x.Name, x.URL, externalState(x), orAny(x.Models), dash(strings.Join(x.DiscoveredModels, ",")),
+		role := "worker"
+		if x.Role != "" {
+			role = x.Role
+		}
+		rows = append(rows, []string{x.Name, role, x.URL, externalState(x), orAny(x.Models), dash(strings.Join(x.DiscoveredModels, ",")),
 			fmt.Sprintf("%d/%d", x.Inflight, x.MaxConcurrency), ctx, externalTPS(x), key, ago(x.LastCheck), dash(x.LastError)})
 	}
-	o.table("NAME\tURL\tSTATE\tALLOW\tMODELS\tINFLIGHT\tCTX\tTOK/S\tKEY\tLAST CHECK\tLAST ERROR", rows)
+	o.table("NAME\tROLE\tURL\tSTATE\tALLOW\tMODELS\tINFLIGHT\tCTX\tTOK/S\tKEY\tLAST CHECK\tLAST ERROR", rows)
 	return nil
 }
 

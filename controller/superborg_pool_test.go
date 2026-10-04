@@ -71,3 +71,26 @@ func TestSuperborgModeMigratesToPool(t *testing.T) {
 		t.Errorf("pools after restart %+v", pools)
 	}
 }
+
+func TestExternalOrchestratorRole(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "external.json")
+	e := newExtEnv(t, dir, nil)
+	api := fakeLlama(t)
+	e.admin(http.MethodPut, "/admin/external/deepseek", `{"url":"`+api.URL+`","role":"boss"}`, 400, nil)
+	var x External
+	e.admin(http.MethodPut, "/admin/external/deepseek", `{"url":"`+api.URL+`","role":"orchestrator"}`, 201, &x)
+	if x.Role != ExternalRoleOrchestrator {
+		t.Fatalf("role %q", x.Role)
+	}
+	if data, _ := os.ReadFile(file); !strings.Contains(string(data), `"role": "orchestrator"`) && !strings.Contains(string(data), `"role":"orchestrator"`) {
+		t.Errorf("role not stored:\n%s", data)
+	}
+	var p Pool
+	e.admin(http.MethodPut, "/admin/pools/any", `{}`, 200, &p)
+	for _, m := range p.Members {
+		if m.NodeID == "ext:deepseek" && (m.Eligible || m.Reason != ReasonOrchestratorOnly) {
+			t.Errorf("member %+v", m)
+		}
+	}
+}

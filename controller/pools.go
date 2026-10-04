@@ -39,17 +39,20 @@ const (
 
 // Eligibility reasons of pool members.
 const (
-	ReasonNotMember    = "not a member"
-	ReasonClass        = "class not allowed"
-	ReasonDrained      = "drained"
-	ReasonHot          = "hot"
-	ReasonSwitching    = "switching"
-	ReasonNotReady     = "not ready"
-	ReasonModel        = "model not allowed"
-	ReasonBelowMinTPS  = "below min_gen_tps"
-	poolPrefix         = gateway.KindPool + "/"
-	nodePrefix         = gateway.KindNode + "/"
-	routingFileVersion = 1
+	ReasonNotMember   = "not a member"
+	ReasonClass       = "class not allowed"
+	ReasonDrained     = "drained"
+	ReasonHot         = "hot"
+	ReasonSwitching   = "switching"
+	ReasonNotReady    = "not ready"
+	ReasonModel       = "model not allowed"
+	ReasonBelowMinTPS = "below min_gen_tps"
+	// ReasonOrchestratorOnly: an external orchestrator (ADR-029) is never a
+	// pool member; a Super Borg pool uses it by naming it as orchestrator.
+	ReasonOrchestratorOnly = "orchestrator only"
+	poolPrefix             = gateway.KindPool + "/"
+	nodePrefix             = gateway.KindNode + "/"
+	routingFileVersion     = 1
 )
 
 // Pool is a named set of nodes that clients address as "pool/<name>".

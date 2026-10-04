@@ -311,7 +311,7 @@ func TestSyncAgentFilesAddUpdateRemoveKeep(t *testing.T) {
 	manifest := ocManifest{Files: map[string]string{}}
 
 	base := []aliasedNode{{Alias: "phone-01", Device: "Xiaomi Mi 8", ServedModel: "qwen2.5-0.5b"}}
-	specs := managedAgentSpecs("phoneborg", false, base)
+	specs := managedAgentSpecs("phoneborg", false, false, base)
 	res, err := syncAgentFiles(dir, specs, &manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestSyncAgentFilesAddUpdateRemoveKeep(t *testing.T) {
 	}
 
 	// Template change (read-tools toggled) -> existing files updated.
-	specs2 := managedAgentSpecs("phoneborg", true, base)
+	specs2 := managedAgentSpecs("phoneborg", true, false, base)
 	res, err = syncAgentFiles(dir, specs2, &manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +341,7 @@ func TestSyncAgentFilesAddUpdateRemoveKeep(t *testing.T) {
 
 	// Alias removed -> phone-01 file deleted; new alias phone-02 added.
 	next := []aliasedNode{{Alias: "phone-02", Device: "Pixel 5", ServedModel: "qwen2.5-0.5b"}}
-	specs3 := managedAgentSpecs("phoneborg", true, next)
+	specs3 := managedAgentSpecs("phoneborg", true, false, next)
 	res, err = syncAgentFiles(dir, specs3, &manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +361,7 @@ func TestSyncAgentFilesKeepsHandEditedFile(t *testing.T) {
 	dir := t.TempDir()
 	manifest := ocManifest{Files: map[string]string{}}
 	aliased := []aliasedNode{{Alias: "phone-01", Device: "Xiaomi Mi 8", ServedModel: "qwen2.5-0.5b"}}
-	specs := managedAgentSpecs("phoneborg", false, aliased)
+	specs := managedAgentSpecs("phoneborg", false, false, aliased)
 	if _, err := syncAgentFiles(dir, specs, &manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -908,5 +908,59 @@ func TestRenderInstructionsNamesSuperborgPools(t *testing.T) {
 	s := renderInstructions([]ocAgentSpec{{Name: "phone-poco", Description: "Runs on poco."}}, []string{"pool/borg"})
 	if !strings.Contains(s, "- @phone-poco: Runs on poco.") || !strings.Contains(s, "on a Super Borg pool (pool/borg)") {
 		t.Errorf("instructions:\n%s", s)
+	}
+}
+
+func TestCodeAgentsOnlyWithCodePool(t *testing.T) {
+	without := managedAgentSpecs("phoneborg", false, false, nil)
+	with := managedAgentSpecs("phoneborg", false, true, nil)
+	if len(with) != len(without)+3 {
+		t.Fatalf("%d agents with pool/code, %d without", len(with), len(without))
+	}
+	names := map[string]string{}
+	for _, s := range with {
+		names[s.Name] = s.Model
+	}
+	for _, n := range []string{"code-review", "code-tests", "code-docs"} {
+		if names[n] != "phoneborg/pool/code" || targetForAgentName(n) != "pool/code" {
+			t.Errorf("%s: model %q, target %q", n, names[n], targetForAgentName(n))
+		}
+	}
+}
+
+func TestOpencodeInitGlobal(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	dir := filepath.Join(cfg, "opencode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	own := "{\n  // mine\n  \"model\": \"x/y\"\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "opencode.jsonc"), []byte(own), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ts := newFakeServer(t, baseFakeState())
+	c := fakeClient(ts.URL)
+	w := new(strings.Builder)
+	if err := opencodeInit(c, &out{w: w}, []string{"-global"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "opencode.jsonc")); string(data) != own {
+		t.Errorf("global config changed:\n%s", data)
+	}
+	for _, f := range []string{"agent/borg-fast.md", "phoneborg.md", "phoneborg-managed.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("missing %s: %v", f, err)
+		}
+	}
+	if !strings.Contains(w.String(), filepath.Join(dir, "phoneborg.md")) || !strings.Contains(w.String(), `"mcp"`) {
+		t.Errorf("no snippet:\n%s", w)
+	}
+	if ocAgentDirName != ".opencode/agent" {
+		t.Error("project layout not restored")
+	}
+	// sync works in the same layout.
+	if err := opencodeSync(c, &out{w: new(strings.Builder)}, []string{"-global"}); err != nil {
+		t.Fatal(err)
 	}
 }

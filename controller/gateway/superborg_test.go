@@ -340,3 +340,40 @@ func TestSuperborgOrchestratorStopsWhenSilent(t *testing.T) {
 		t.Fatalf("after %v: %s", d, w.Body)
 	}
 }
+
+func TestExternalOrchestratorOnlyWhenNamed(t *testing.T) {
+	orch := &fakeOrchestrator{calls: `{"tasks":[{"worker":"w1","task":"t"}]}`}
+	api := orch.server(t)
+	g, h := newGW(t, AllowAll{},
+		Backend{NodeID: "ext:deepseek", Alias: "deepseek", Model: "deepseek-chat", URL: api.URL, External: true, OrchestratorOnly: true},
+		Backend{NodeID: "w1-id", Alias: "w1", Model: "small", URL: fakeLlama(t, "w1").URL})
+	// Normal traffic never reaches it, and it is not listed as a model.
+	for i := 0; i < 3; i++ {
+		if w := post(h, chat); w.Code == 200 && w.Header().Get("X-PhoneBorg-Node") == "ext:deepseek" {
+			t.Fatal("auto request went to the external orchestrator")
+		}
+	}
+	if w := post(h, `{"model":"deepseek-chat","messages":[]}`); w.Code != 404 {
+		t.Errorf("its model id is routable: %d", w.Code)
+	}
+	for _, e := range g.ModelEntries() {
+		if e.ID == "deepseek-chat" {
+			t.Error("listed as a model")
+		}
+	}
+	// Without being named it is not chosen as orchestrator either.
+	setBorg(g, Superborg{})
+	if o, _ := g.pickOrchestrator(Superborg{}, g.routable(), nil); o.NodeID == "ext:deepseek" {
+		t.Error("chosen automatically")
+	}
+	// Named, it orchestrates; the phone is the only worker.
+	setBorg(g, Superborg{Orchestrator: "deepseek"})
+	w := post(h, borgChat)
+	if w.Code != 200 || w.Header().Get("X-PhoneBorg-Node") != "ext:deepseek" || !strings.Contains(w.Body.String(), "[w1] hi from w1") {
+		t.Fatalf("status %d node %q: %s", w.Code, w.Header().Get("X-PhoneBorg-Node"), w.Body)
+	}
+	o, workers, _ := g.SuperborgPlan("pool/borg")
+	if o.NodeID != "ext:deepseek" || len(workers) != 1 || workers[0].NodeID != "w1-id" {
+		t.Errorf("plan %s %v", o.NodeID, workers)
+	}
+}

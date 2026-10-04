@@ -402,7 +402,7 @@ bin/pbctl nodes
 | Command | What |
 |---|---|
 | `pbctl external` | external nodes: URL, state, allowlist, models, in-flight/limit, context, tok/s, key set, last check and error |
-| `pbctl external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N]` | add or replace an external node, addressed as `node/<name>`; without `key-file` the current key is kept, `key-file=-` removes it |
+| `pbctl external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N] [role=orchestrator\|worker]` | add or replace an external node, addressed as `node/<name>`; without `key-file` the current key is kept, `key-file=-` removes it |
 | `pbctl external rm <name>` | remove an external node |
 | `pbctl external selftest <name>` | measure each of its models' generation tok/s |
 
@@ -410,7 +410,7 @@ bin/pbctl nodes
 
 | Command | What |
 |---|---|
-| `pbctl opencode init [-dir D] [-provider P] [-base-url URL] [-force] [-read-tools] [-small-model]` | write `opencode.json` (provider, MCP server) and `.opencode/agent/` subagents; `-dir` default `.`, `-provider` default `phoneborg`, `-base-url` default controller URL + `/v1`; `-small-model` sets `small_model` to `<provider>/pool/fast` if unset |
+| `pbctl opencode init [-dir D] [-global] [-provider P] [-base-url URL] [-force] [-read-tools] [-small-model]` | write `opencode.json` (provider, MCP server) and `.opencode/agent/` subagents; `-dir` default `.`, `-provider` default `phoneborg`, `-base-url` default controller URL + `/v1`; `-small-model` sets `small_model` to `<provider>/pool/fast` if unset |
 | `pbctl opencode sync [-dir D]` | regenerate from the current cluster (idempotent) |
 | `pbctl opencode watch [-dir D] [-interval 15s]` | loop `sync`, logging only changes |
 | `pbctl opencode status [-dir D]` | managed agents vs. cluster state |
@@ -978,6 +978,37 @@ How they behave:
 }
 ```
 
+### External orchestrators
+
+An external node with **`role=orchestrator`** takes no normal traffic: it
+is not used for `auto`, model ids or pools, is not a Super Borg worker, is
+not listed in `/v1/models` and is never chosen automatically. It works only
+as the orchestrator of a Super Borg pool that names it, and through
+`node/<name>` (ADR-029). That fits a strong or paid model that should plan
+and check while the phones do the work:
+
+```sh
+# Ollama on a desktop (its OpenAI-compatible API is under /v1)
+pbctl external add brain http://192.168.1.20:11434 models=qwen3:30b-a3b role=orchestrator
+# oMLX or LM Studio on a Mac (the server must listen on the LAN, not 127.0.0.1)
+echo 'sk-...' > omlx-key && chmod 600 omlx-key
+pbctl external add mac http://192.168.1.20:8000 key-file=omlx-key models=Qwen3-30B-A3B-Instruct-2507-4bit role=orchestrator
+# A hosted API, e.g. DeepSeek (pay per token: role=orchestrator keeps other traffic away)
+echo 'sk-...' > deepseek-key && chmod 600 deepseek-key
+pbctl external add deepseek https://api.deepseek.com key-file=deepseek-key models=deepseek-chat ctx=65536 role=orchestrator
+
+# A Super Borg pool of phones, orchestrated by it; jobs on this pool use it too
+pbctl pools set borg routing=superborg orchestrator=deepseek
+pbctl jobs new pool=borg Write a story for a 5-year-old in 6 chapters
+```
+
+The orchestrator's model must call tools reliably (Qwen3, DeepSeek-Chat,
+most recent instruct models). If it is down, the pool falls back to its
+best phone. `pbctl external` shows the ROLE column; `role=worker` turns a
+node back into a normal one. The controller polls `/v1/models` every 10 s
+and self-tests each new model once with a 32-token request, which a hosted
+API bills like any other call.
+
 ## Admin tokens
 
 The token in `-admin-token-file` is the `admin` token; `pcprov` and scripts
@@ -1218,18 +1249,36 @@ own environment. An agent on any model (e.g. Claude) then gets these tools:
 | `job_message` | send an instruction to a job (resumes it) |
 | `job_result` | the assembled result as Markdown |
 | `jobs_list` | all jobs |
+| `cluster_map` | several independent tasks at once, spread over the phones of a target (e.g. `pool/code`); returns every answer, numbered, with the node that wrote it |
+| `cluster_vote` | the same question to several phones (default 5, at most 9), each answering one of the given options with a reason; returns the votes, the majority and, with a threshold such as `4/5` (and `min_score` for ratings), PASS or FAIL |
+| `job_wait` | waits up to `timeout_s` (default 240, at most 1800) until a job finishes, fails, asks a question or completes a task, then returns its status; follows a job without polling |
 
 `ask_cluster` goes through the gateway like any request (an API key from
 `PHONEBORG_API_KEY` if the gateway needs one); the job tools use the admin
 API. Any MCP client that runs local stdio servers can use the same command.
 
+When the cluster has a **`pool/code`** (models good at code and tools, e.g.
+`pbctl pools set code models=qwen3-4b-instruct-2507-q4_k_m,phi-4-mini-instruct-q4_k_m`),
+`init` and `sync` also write the subagents `@code-review` (bugs first),
+`@code-tests` (unit tests for given code) and `@code-docs` (documentation
+comments), all on `pool/code`.
+
+`pbctl opencode init -global` (and `sync -global`) writes the agents to
+`~/.config/opencode/agent/` and the instructions to
+`~/.config/opencode/phoneborg.md`, for every project; it never changes the
+global config file and prints what to add to it (`instructions` with that
+path, and the MCP server).
+
 `init` also writes `.opencode/phoneborg.md` and lists it under the config's
 `instructions`, so opencode's main agent knows when to delegate without
 being told each time: which subagents exist (one per phone, with its
 model), when to use `ask_cluster`, that long multi-part work goes to
-`job_start` on the Super Borg pool and is checked later rather than waited
-for, and that phones only see what is sent to them, may be wrong and must
-not get secrets. `sync` regenerates it when phones or pools change; a copy
+`job_start` on the Super Borg pool and is followed with `job_wait`, and that
+phones only see what is sent to them, may be wrong and must not get secrets.
+It also gives the agent a working loop: cut the task into small pieces,
+send independent ones together with `cluster_map`, check the results itself
+(tests, build) or with `cluster_vote`, resend only what failed, and apply
+every edit itself. `sync` regenerates it when phones or pools change; a copy
 edited by hand is left alone, with a warning.
 
 `pbctl opencode init -small-model` also sets opencode's `small_model`

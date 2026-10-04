@@ -32,6 +32,10 @@ type Backend struct {
 	// MaxConcurrency caps the node's in-flight requests; a node at its limit
 	// is not a candidate. 0 = no limit.
 	MaxConcurrency int
+	// OrchestratorOnly marks an external orchestrator (ADR-029): it takes no
+	// normal traffic and serves only node/<name> and the Super Borg pools
+	// that name it as orchestrator.
+	OrchestratorOnly bool
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies

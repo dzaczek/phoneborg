@@ -64,7 +64,7 @@ func TestMCPServer(t *testing.T) {
 	if init["protocolVersion"] != "2025-03-26" || init["capabilities"].(map[string]any)["tools"] == nil {
 		t.Errorf("initialize %v", init)
 	}
-	if tools := res["2"]["result"].(map[string]any)["tools"].([]any); len(tools) != 7 {
+	if tools := res["2"]["result"].(map[string]any)["tools"].([]any); len(tools) != 10 {
 		t.Errorf("%d tools", len(tools))
 	}
 	if text, isErr := toolText(t, res["4"]); isErr || !strings.Contains(text, `Started job`) || !strings.Contains(text, `"Story"`) {

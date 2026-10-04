@@ -413,7 +413,7 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		// Raw completions and clients with their own tools go to the
 		// pool's orchestrator, the node best at tool calls.
 		if orch, ok := g.pickOrchestrator(*tgt.Superborg, tgt.filter(g.routable()), nil); ok {
-			tgt = Target{Label: tgt.Label, Nodes: map[string]bool{orch.NodeID: true}}
+			tgt = Target{Label: tgt.Label, Node: orch.NodeID}
 		}
 	}
 	g.serveTarget(w, r, tgt, body, meta, principal, reqID)
@@ -727,7 +727,9 @@ func (g *Gateway) ModelEntries() []ModelEntry {
 	routable := g.routable()
 	seen := map[string]int{}
 	for _, b := range routable {
-		seen[b.Model]++
+		if !b.OrchestratorOnly {
+			seen[b.Model]++
+		}
 	}
 	out := []ModelEntry{}
 	for m, n := range seen {

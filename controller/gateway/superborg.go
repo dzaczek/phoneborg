@@ -83,9 +83,18 @@ func workerName(b Backend) string {
 // writes "tool_code" as text instead), then the largest model (catalog
 // size), then speed.
 func (g *Gateway) pickOrchestrator(sb Superborg, pool []Backend, tried map[string]bool) (Backend, bool) {
+	// An external orchestrator (ADR-029) is not a pool member: it is used
+	// only when named.
+	if sb.Orchestrator != "" {
+		for _, b := range g.routable() {
+			if b.OrchestratorOnly && !tried[b.NodeID] && (b.NodeID == sb.Orchestrator || b.Alias == sb.Orchestrator) {
+				return b, true
+			}
+		}
+	}
 	var cands []Backend
 	for _, b := range pool {
-		if tried[b.NodeID] {
+		if tried[b.NodeID] || b.OrchestratorOnly { // never picked automatically
 			continue
 		}
 		if sb.Orchestrator != "" && (b.NodeID == sb.Orchestrator || b.Alias == sb.Orchestrator) {

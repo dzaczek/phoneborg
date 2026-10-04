@@ -53,6 +53,8 @@ func (t Target) allows(b Backend) bool {
 	switch {
 	case t.Disabled:
 		return false
+	case b.OrchestratorOnly && t.Node != b.NodeID:
+		return false
 	case t.Node != "":
 		return b.NodeID == t.Node
 	case t.Nodes != nil && !t.Nodes[b.NodeID]:
