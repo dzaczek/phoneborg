@@ -30,6 +30,13 @@ const (
 	RoutingSuperborg = gateway.KindSuperborg
 )
 
+// Pool statuses (ADR-027).
+const (
+	PoolReady       = "ready"
+	PoolNoReadyNode = "no ready node"
+	PoolDisabled    = "disabled"
+)
+
 // Eligibility reasons of pool members.
 const (
 	ReasonNotMember    = "not a member"
@@ -58,9 +65,16 @@ type Pool struct {
 	// model) and Thinking configure a Super Borg pool; ignored otherwise.
 	Orchestrator string `json:"orchestrator,omitempty"`
 	Thinking     bool   `json:"thinking,omitempty"`
+	// Disabled pools keep their settings but are not listed in /v1/models
+	// and refuse requests (ADR-027).
+	Disabled bool `json:"disabled,omitempty"`
 	// ActiveOrchestrator is computed in responses for Super Borg pools: the
 	// node that orchestrates now, "" when no member is ready.
 	ActiveOrchestrator string `json:"active_orchestrator,omitempty"`
+	// Status and StatusReason are computed in responses: PoolReady,
+	// PoolNoReadyNode (with the reason) or PoolDisabled.
+	Status       string `json:"status,omitempty"`
+	StatusReason string `json:"status_reason,omitempty"`
 	// Members is computed in responses and ignored in requests.
 	Members []PoolMember `json:"members,omitempty"`
 }
@@ -176,7 +190,7 @@ type pools struct {
 
 // normPool validates a pool definition and fills defaults. Members are dropped.
 func normPool(p Pool) (Pool, error) {
-	p.Members, p.ActiveOrchestrator = nil, ""
+	p.Members, p.ActiveOrchestrator, p.Status, p.StatusReason = nil, "", "", ""
 	p.Orchestrator = strings.TrimSpace(p.Orchestrator)
 	if !nameRE.MatchString(p.Name) {
 		return p, errors.New("pool name must match ^[a-z0-9][a-z0-9-]{0,31}$")
@@ -318,12 +332,78 @@ func poolMembers(p Pool, nodes []proto.Node, drained map[string]bool, thermalLim
 func (s *Server) withMembers(p Pool) Pool {
 	nodes, drained := s.reg.View()
 	p.Members = append(poolMembers(p, nodes, drained, s.ThermalLimitC()), externalMembers(p, s.ext.list(nil, nil))...)
-	if p.Routing == RoutingSuperborg {
+	if p.Routing == RoutingSuperborg && !p.Disabled {
 		if orch, _, ok := s.gw.SuperborgPlanFor(poolTarget(p)); ok {
 			p.ActiveOrchestrator = orch.NodeID
 		}
 	}
+	p.Status, p.StatusReason = poolStatus(p)
 	return p
+}
+
+// poolStatus summarises a pool with computed members: ready (how many
+// nodes), disabled, or no ready node and the most common reason.
+func poolStatus(p Pool) (string, string) {
+	if p.Disabled {
+		return PoolDisabled, ""
+	}
+	if n := eligible(p.Members); n > 0 {
+		return PoolReady, fmt.Sprintf("%d node(s)", n)
+	}
+	count := map[string]int{}
+	for _, m := range p.Members {
+		count[m.Reason]++
+	}
+	best := ""
+	for r, n := range count {
+		if best == "" || n > count[best] || (n == count[best] && r < best) {
+			best = r
+		}
+	}
+	switch best {
+	case "":
+		return PoolNoReadyNode, "no nodes"
+	case ReasonModel:
+		return PoolNoReadyNode, "no node serves an allowed model (" + strings.Join(p.Models, ", ") + ")"
+	case ReasonNotMember:
+		return PoolNoReadyNode, "none of its nodes is connected"
+	}
+	return PoolNoReadyNode, "nodes are " + best
+}
+
+// poolConflict reports why p cannot be enabled next to the other enabled
+// pools, or "": a node named in two enabled pools must be able to serve
+// both, so their model lists (when both are restricted) must share a model.
+// A node serves one model at a time (ADR-027). Pools that take any node do
+// not claim nodes and never conflict.
+func (s *Server) poolConflict(p Pool, others []Pool) string {
+	if p.Disabled || len(p.Nodes) == 0 || len(p.Models) == 0 {
+		return ""
+	}
+	id := func(n string) string {
+		if v, ok := s.reg.Lookup(n); ok {
+			return v
+		}
+		return n
+	}
+	mine := map[string]string{}
+	for _, n := range p.Nodes {
+		mine[id(n)] = n
+	}
+	for _, o := range others {
+		if o.Name == p.Name || o.Disabled || len(o.Nodes) == 0 || len(o.Models) == 0 ||
+			slices.ContainsFunc(o.Models, func(m string) bool { return slices.Contains(p.Models, m) }) {
+			continue
+		}
+		for _, n := range o.Nodes {
+			if name, ok := mine[id(n)]; ok {
+				return fmt.Sprintf("pool/%s and pool/%s both claim node %s but allow no common model (%s: %s; %s: %s); "+
+					"a node serves one model at a time: share a model, drop the node from one pool, or disable one",
+					p.Name, o.Name, name, p.Name, strings.Join(p.Models, ", "), o.Name, strings.Join(o.Models, ", "))
+			}
+		}
+	}
+	return ""
 }
 
 // eligible counts the nodes with at least one eligible member entry (an
@@ -363,6 +443,9 @@ func (t serverTargets) Resolve(name string) (gateway.Target, bool) {
 		if !ok {
 			return gateway.Target{}, false
 		}
+		if p.Disabled {
+			return gateway.Target{Label: name, Disabled: true}, true
+		}
 		tgt := poolTarget(s.withMembers(p))
 		if p.Routing == RoutingSpread {
 			tgt.Picker = s.spread
@@ -387,6 +470,9 @@ func (t serverTargets) Models() []gateway.ModelEntry {
 	exts := s.ext.list(nil, nil)
 	var out []gateway.ModelEntry
 	for _, p := range s.pools.list() {
+		if p.Disabled {
+			continue
+		}
 		out = append(out, gateway.ModelEntry{ID: poolPrefix + p.Name, Object: "model", OwnedBy: "phoneborg", Kind: gateway.KindPool,
 			Nodes: eligible(append(poolMembers(p, nodes, drained, limit), externalMembers(p, exts)...)), Description: p.Description})
 	}
@@ -503,10 +589,21 @@ func (s *Server) adminSetPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.pools.mu.Lock()
+	others := make([]Pool, 0, len(s.pools.byName))
+	for _, o := range s.pools.byName {
+		others = append(others, o)
+	}
+	if conflict := s.poolConflict(p, others); conflict != "" {
+		s.pools.mu.Unlock()
+		err := errors.New(conflict)
+		s.audit(r, "pool_set", err, "pool", p.Name)
+		httpError(w, http.StatusConflict, conflict)
+		return
+	}
 	s.pools.byName[p.Name] = p
 	s.pools.mu.Unlock()
 	err = s.saveRouting()
-	s.audit(r, "pool_set", err, "pool", p.Name, "routing", p.Routing)
+	s.audit(r, "pool_set", err, "pool", p.Name, "routing", p.Routing, "disabled", p.Disabled)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "cannot store pools: "+err.Error())
 		return

@@ -1656,3 +1656,27 @@ every hash in constant time and records the token's name as the request's
 principal, which the audit log and the debug log of reads show. `pbctl
 admin-tokens` and the panel's API keys view manage them. All tokens keep
 the single admin role; scopes are future work.
+
+## ADR-027: Pool status, on/off switch and no conflicting pools
+
+**Problem.** Operators read pools as modes that are "on" or "off". When
+every phone was switched to a model a pool did not allow, `pool/smart` had
+no eligible node and opencode failed with "no eligible ready node", with
+nothing in the panel saying why. Pools could also be defined so that they
+can never both be served: two pools naming the same phone but allowing no
+common model, while a phone serves one model at a time.
+
+**Decision.**
+- Every pool reports a computed `status`: `ready` (with the number of
+  eligible nodes), `no ready node` (with the most common member reason,
+  e.g. no node serving an allowed model) or `disabled`.
+- `disabled` on a pool switches it off without deleting it: it is left out
+  of `/v1/models`, its requests get 503 `pool_disabled` (counted in
+  `phoneborg_gateway_rejected_total`), its target matches no backend (so
+  prewarm and Super Borg do nothing), and jobs on it wait; the default job
+  pool skips disabled pools.
+- Saving or enabling a pool is refused with 409 when it names a node that
+  another enabled pool also names and the two model allow-lists are both
+  set and disjoint. Pools that take any node, or any model, never conflict:
+  they adapt to what the phones serve. Placement stays the only thing that
+  chooses models (ADR-011); pools still do not load models.

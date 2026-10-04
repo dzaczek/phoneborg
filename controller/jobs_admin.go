@@ -145,8 +145,11 @@ func (s *Server) adminDeleteJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) jobPool(name string) (string, error) {
 	name = strings.TrimPrefix(name, poolPrefix)
 	for _, p := range s.pools.list() { // sorted by name
-		if p.Routing != RoutingSuperborg {
+		if p.Routing != RoutingSuperborg || (name == "" && p.Disabled) {
 			continue
+		}
+		if p.Name == name && p.Disabled {
+			return "", fmt.Errorf("pool %q is disabled", name)
 		}
 		if name == "" || p.Name == name {
 			return poolPrefix + p.Name, nil

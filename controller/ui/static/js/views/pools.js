@@ -113,6 +113,7 @@ function poolDialog(existing, nodes, modelIds) {
         routing: routing.value,
         orchestrator: orchestrator.value,
         thinking: thinking.checked,
+        disabled: !!(existing && existing.disabled), // editing keeps the on/off state; use Enable/Disable to change it
       };
       await api('PUT', '/admin/pools/' + encodeURIComponent(nm), body);
       toast(`${nm}: saved.`);
@@ -168,10 +169,27 @@ async function prewarm(p) {
   if (result) showPrewarmResults(p, result);
 }
 
+async function setEnabled(p, on) {
+  const body = { ...p, disabled: !on };
+  for (const k of ['members', 'status', 'status_reason', 'active_orchestrator']) delete body[k];
+  try {
+    await api('PUT', '/admin/pools/' + encodeURIComponent(p.name), body);
+    toast(`${p.name}: ${on ? 'enabled' : 'disabled'}.`);
+  } catch (e) {
+    if (e.status !== 401 && e.status !== 503) errorToast(e); // 409 explains a conflict with another pool
+  }
+  refreshNow();
+}
+
+const STATUS_CLASS = { ready: 'ok', 'no ready node': 'bad', disabled: 'idle' };
+
 function poolCard(p, nodes, modelIds) {
   const edit = h('button.small', { type: 'button', onclick: () => poolDialog(p, nodes, modelIds), 'data-focus-key': p.name + ':edit' }, 'Edit');
   const warm = h('button.small', { type: 'button', onclick: () => prewarm(p), 'data-focus-key': p.name + ':warm' }, 'Prewarm');
   const del = h('button.small.danger', { type: 'button', onclick: () => deletePool(p), 'data-focus-key': p.name + ':delete' }, 'Delete');
+  const toggle = h('button.small', { type: 'button', onclick: () => setEnabled(p, !!p.disabled), 'data-focus-key': p.name + ':toggle' },
+    p.disabled ? 'Enable' : 'Disable');
+  const status = badge(p.status === 'ready' ? `ready · ${p.status_reason}` : p.status || '?', STATUS_CLASS[p.status] || 'info');
   const borg = p.routing === 'superborg'
     ? h('p', null, 'Orchestrator: ', p.active_orchestrator
       ? h('strong', null, (nodes.find((n) => n.id === p.active_orchestrator) || {}).alias || p.active_orchestrator)
@@ -180,7 +198,8 @@ function poolCard(p, nodes, modelIds) {
     p.thinking ? h('span.muted', null, ' · thinking on') : null)
     : null;
   return h('div.card.section', null,
-    h('div.row', null, h('h2', null, p.name), badge(p.routing || 'spread', p.routing === 'superborg' ? 'ok' : 'info'), h('span.spacer'), edit, warm, del),
+    h('div.row', null, h('h2', null, p.name), status, badge(p.routing || 'spread', p.routing === 'superborg' ? 'ok' : 'info'), h('span.spacer'), toggle, edit, warm, del),
+    p.status === 'no ready node' && p.status_reason ? h('p', null, badge('why', 'bad'), ' ', p.status_reason) : null,
     p.description ? h('p.muted', null, p.description) : null,
     borg,
     filtersList(p),

@@ -73,7 +73,7 @@ commands:
   pools                       pools (model pool/<name>) with member eligibility
   pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5]
             [routing=spread|affinity|superborg] [orchestrator=<node>|auto]
-            [thinking=on|off] [desc="..."]
+            [thinking=on|off] [enabled=on|off] [desc="..."]
                               create a pool or change the given fields ("-" clears a list)
   pools rm <name>             remove a pool
   external                    external engine nodes (LM Studio, oMLX, Ollama, llama-server)

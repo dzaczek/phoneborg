@@ -469,6 +469,9 @@ func (g *Gateway) jobPool(name string) (Superborg, []Backend, error) {
 		return Superborg{}, g.routable(), nil
 	}
 	tgt, err := g.Resolve(name)
+	if err == nil && tgt.Disabled {
+		return Superborg{}, nil, fmt.Errorf("%w: %s is disabled (enable it, then send a message)", errBadPool, name)
+	}
 	if err != nil || tgt.Superborg == nil {
 		return Superborg{}, nil, fmt.Errorf("%w: %s (set the pool's routing to \"superborg\", then send a message)", errBadPool, name)
 	}

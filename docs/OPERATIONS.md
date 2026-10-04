@@ -204,7 +204,7 @@ use it on localhost or a trusted network.
 | Devices | USB devices `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [below](#usb-device-detection-and-provisioning)). |
 | Models | The catalog: download status, size, estimated RAM, fitting classes, tags. Add from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`; edit tags, recommended classes/tiers and the default flag; delete (the reason is shown if refused). |
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
-| Pools | Pools routed as `pool/<name>`: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
+| Pools | Pools routed as `pool/<name>`, each with a status badge (ready · N nodes, no ready node with the reason, disabled) and **Enable/Disable**: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
 | Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
 | Jobs | [Super Borg jobs](#super-borg-jobs): New job, the job list (live), and for the selected job its goal, your messages, tasks, documents (click to read, rendered as Markdown), progress log, a message box, **Preview result** (the assembled result rendered in the panel), **Download .md**, Cancel and Delete. |
 | Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; a Super Borg pool shows its delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
@@ -389,7 +389,7 @@ bin/pbctl nodes
 | Command | What |
 |---|---|
 | `pbctl pools` | pools and every node's eligibility per pool |
-| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg] [orchestrator=<node>\|auto] [thinking=on\|off] [desc="..."]` | create a pool or change only the given fields; `-` clears a list; `orchestrator` and `thinking` apply to [Super Borg pools](#super-borg-pools) |
+| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="..."]` | create a pool or change only the given fields; `-` clears a list; `orchestrator` and `thinking` apply to [Super Borg pools](#super-borg-pools); `enabled=off` switches it off; a conflict with another enabled pool is refused |
 | `pbctl pools rm <name>` | remove a pool |
 
 **External nodes** (see [External nodes (Mac / PC)](#external-nodes-mac--pc))
@@ -573,7 +573,7 @@ phone. Design: ADR-014.
 | `node/<alias-or-id>` | exactly that phone; never retried elsewhere; 503 `node_unavailable` if not ready |
 
 An unknown pool or node gets 404 `model_not_found`; a pool with no eligible
-phone gets 503. Context checks, draining and the thermal limit apply to every
+phone gets 503, a disabled pool 503 `pool_disabled`. Context checks, draining and the thermal limit apply to every
 target, except that a `node/` target is served even when hot.
 `phoneborg_gateway_target_requests_total{target}` counts requests per target.
 
@@ -586,6 +586,33 @@ unique, are not another node's id, do not start with `pool` and are not
 pbctl nodes alias mi8-6f3a phone-01        # "-" removes the alias
 curl -X PATCH http://127.0.0.1:18080/admin/nodes/mi8-6f3a \
   -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" -d '{"alias":"phone-01"}'
+```
+
+**All pools work at the same time.** A pool is an address, not a mode:
+each request picks its target by `model`, and pools may share phones.
+**Pools do not load models**: placement decides what each phone serves
+(see [Placement policies](#placement-policies)), and a pool only takes the
+phones that already serve one of its allowed models.
+
+Each pool shows a **status** (panel badge, `pbctl pools`, `status` in the
+API): `ready` with the number of eligible phones, `no ready node` with the
+most common reason (e.g. "no node serves an allowed model"), or `disabled`.
+**Enable/Disable** (panel) or `pbctl pools set <name> enabled=on|off` (the
+pool's `disabled` field) switches a pool off without deleting it: it leaves
+`/v1/models`, its requests get 503 `pool_disabled`, and jobs on it wait.
+
+**No conflicting pools (ADR-027).** A phone serves one model at a time, so
+two *enabled* pools that both name the same phone in `nodes` must share at
+least one allowed model (or one of them must allow any model). Saving or
+enabling a pool that breaks this is refused with 409 and names the pools,
+the phone and their models. Pools that take any phone (`nodes` empty)
+claim none and never conflict.
+
+```sh
+pbctl pools set writers nodes=pixel,poco models=qwen3-4b-instruct-2507-q4_k_m
+pbctl pools set tiny    nodes=pixel models=qwen2.5-0.5b-instruct-q4_k_m
+# pbctl: PUT /admin/pools/tiny: HTTP 409: pool/tiny and pool/writers both claim node pixel but allow no common model ...
+pbctl pools set tiny enabled=off nodes=pixel models=qwen2.5-0.5b-instruct-q4_k_m   # allowed while disabled
 ```
 
 **Pools** select phones by served model, alias or id, class and measured

@@ -70,3 +70,25 @@ func TestApplyPoolSet(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolEnabledAndStatus(t *testing.T) {
+	ts := newController(t)
+	env := map[string]string{"PHONEBORG_URL": ts.URL, "PHONEBORG_ADMIN_TOKEN": token}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"pools", "set", "x", "models=m"}, "pool/x saved"},
+		{[]string{"pools"}, "no ready node: nodes are not ready"},
+		{[]string{"pools", "set", "x", "enabled=off"}, "pool/x saved"},
+		{[]string{"pools"}, "disabled"},
+	} {
+		out, stderr, code := pbctl(t, env, tc.args...)
+		if code != 0 || !strings.Contains(out, tc.want) {
+			t.Errorf("%v: exit %d, %q %q", tc.args, code, out, stderr)
+		}
+	}
+	if _, stderr, code := pbctl(t, env, "pools", "set", "x", "enabled=maybe"); code != 1 || !strings.Contains(stderr, "enabled must be on or off") {
+		t.Errorf("bad enabled: %d %s", code, stderr)
+	}
+}

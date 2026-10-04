@@ -162,7 +162,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.prewarmTimeout = PrewarmTimeout
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations, g.mJobSteps, g.mToolRouting)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
-	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy", "remote_requires_api_key"} {
+	for _, reason := range []string{"unauthorized", "bad_request", "model_not_found", "node_unavailable", "backends_failed", "context_too_large", "busy", "remote_requires_api_key", "pool_disabled"} {
 		g.mRejected.WithLabelValues(reason)
 	}
 	for _, target := range []string{KindAuto, KindModel} {
@@ -399,6 +399,12 @@ func (g *Gateway) ServeChat(w http.ResponseWriter, r *http.Request, principal Pr
 		return
 	}
 	g.mTargets.WithLabelValues(tgt.Label).Inc()
+	if tgt.Disabled {
+		g.mRejected.WithLabelValues("pool_disabled").Inc()
+		g.cfg.Usage.Record(UsageEvent{Principal: principal.Name, Model: meta.Model, Code: strconv.Itoa(http.StatusServiceUnavailable)})
+		openAIError(w, http.StatusServiceUnavailable, "server_error", "pool_disabled", meta.Model+" is disabled")
+		return
+	}
 	if tgt.Superborg != nil { // a Super Borg pool (ADR-022)
 		if !superborgDirect(r.URL.Path, meta) {
 			g.serveSuperborg(w, r, tgt, body, meta, principal, reqID)

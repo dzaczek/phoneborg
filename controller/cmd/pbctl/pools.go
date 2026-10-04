@@ -84,10 +84,14 @@ func listPools(c *client, o *out) error {
 			}
 			routing += " (orchestrator " + orch + ")"
 		}
-		rows = append(rows, []string{"pool/" + p.Name, routing, strconv.Itoa(eligibleNodes(p.Members)), orAny(p.Models), orAny(p.Nodes), orAny(p.Classes),
+		status := p.Status
+		if p.StatusReason != "" && p.Status != controller.PoolReady {
+			status += ": " + p.StatusReason
+		}
+		rows = append(rows, []string{"pool/" + p.Name, dash(status), routing, strconv.Itoa(eligibleNodes(p.Members)), orAny(p.Models), orAny(p.Nodes), orAny(p.Classes),
 			minTPS, dash(p.Description)})
 	}
-	o.table("POOL\tROUTING\tELIGIBLE\tMODELS\tNODES\tCLASSES\tMIN TOK/S\tDESCRIPTION", rows)
+	o.table("POOL\tSTATUS\tROUTING\tELIGIBLE\tMODELS\tNODES\tCLASSES\tMIN TOK/S\tDESCRIPTION", rows)
 	if len(members) > 0 {
 		fmt.Fprintln(o.w)
 		o.table("POOL\tNODE\tMODEL\tSTATUS", members)
@@ -161,6 +165,11 @@ func applyPoolSet(p *controller.Pool, kvs []string) error {
 				v = ""
 			}
 			p.Orchestrator = v
+		case "enabled":
+			if v != "on" && v != "off" {
+				return fmt.Errorf("enabled must be on or off, got %q", v)
+			}
+			p.Disabled = v == "off"
 		case "thinking":
 			if v != "on" && v != "off" {
 				return fmt.Errorf("thinking must be on or off, got %q", v)
@@ -169,7 +178,7 @@ func applyPoolSet(p *controller.Pool, kvs []string) error {
 		case "desc", "description":
 			p.Description = v
 		default:
-			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, desc)", k)
+			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, enabled, desc)", k)
 		}
 	}
 	p.Members = nil

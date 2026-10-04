@@ -43,11 +43,16 @@ type Target struct {
 	// Superborg makes a pool a Super Borg pool (ADR-022): chat requests run
 	// the orchestrator loop over the pool's nodes instead of a picker.
 	Superborg *Superborg
+	// Disabled marks a pool switched off by the operator (ADR-027):
+	// requests to it are refused.
+	Disabled bool
 }
 
 // allows reports whether b may serve the target (model and node filters).
 func (t Target) allows(b Backend) bool {
 	switch {
+	case t.Disabled:
+		return false
 	case t.Node != "":
 		return b.NodeID == t.Node
 	case t.Nodes != nil && !t.Nodes[b.NodeID]:
