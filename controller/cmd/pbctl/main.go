@@ -100,6 +100,8 @@ environment:
   PHONEBORG_URL          controller URL (default http://127.0.0.1:18080)
   PHONEBORG_ADMIN_TOKEN  admin token (or -token-file)
   PHONEBORG_API_KEY      API key for "served" when the gateway enforces keys
+
+docs and source: https://github.com/dzaczek/phoneborg
 `
 
 func main() {

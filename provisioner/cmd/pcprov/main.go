@@ -29,7 +29,7 @@ func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pcprov <devices|provision|watch|status|stop|heal|slim|unslim> [flags]\n  run 'pcprov <cmd> -h' for flags")
+	fmt.Fprintln(os.Stderr, "usage: pcprov <devices|provision|watch|status|stop|heal|slim|unslim> [flags]\n  run 'pcprov <cmd> -h' for flags\n  docs and source: https://github.com/dzaczek/phoneborg")
 	os.Exit(2)
 }
 

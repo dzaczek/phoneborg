@@ -546,7 +546,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1p
 <td>{{with .LastHeartbeat}}{{with .Runtime}}{{.Model}} {{if .Ready}}<span class="ACTIVE">ready</span>{{else}}<span class="SUSPECT">loading</span>{{end}}{{end}}{{end}}</td>
 <td>{{ago .LastSeen}} ago</td></tr>
 {{else}}<tr><td colspan="12">No nodes yet. Connect a phone and run <code>pcprov watch</code>.</td></tr>{{end}}
-</table><p><a href="/ui/">management panel</a> · <a href="/metrics">/metrics</a> · <a href="/v1/nodes">/v1/nodes</a> · <a href="/v1/models">/v1/models</a></p></body></html>`))
+</table><p><a href="/ui/">management panel</a> · <a href="/metrics">/metrics</a> · <a href="/v1/nodes">/v1/nodes</a> · <a href="/v1/models">/v1/models</a> · <a href="https://github.com/dzaczek/phoneborg">GitHub</a></p></body></html>`))
 
 type dashboardRow struct {
 	proto.Node

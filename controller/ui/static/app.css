@@ -137,8 +137,8 @@ legend { font-weight: 500; padding: 0 4px; }
 .layout {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
-  grid-template-rows: auto 1fr;
-  grid-template-areas: "top top" "nav main";
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas: "top top" "nav main" "nav foot";
   min-height: 100vh;
 }
 .topbar {
@@ -170,11 +170,12 @@ legend { font-weight: 500; padding: 0 4px; }
 .nav a:hover { background: var(--surface-2); }
 .nav a[aria-current="page"] { background: var(--info-bg); color: var(--info); font-weight: 600; }
 main { grid-area: main; padding: 16px 20px 40px; min-width: 0; outline: none; }
+.foot { grid-area: foot; padding: 10px 20px; border-top: 1px solid var(--border); }
 .page-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .page-head h1 { margin-right: auto; }
 
 @media (max-width: 760px) {
-  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; grid-template-areas: "top" "nav" "main"; }
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr auto; grid-template-areas: "top" "nav" "main" "foot"; }
   .topbar { flex-wrap: wrap; padding: 8px 12px; position: static; }
   .ext { order: 5; width: 100%; }
   .nav {
