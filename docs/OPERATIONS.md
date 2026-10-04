@@ -581,6 +581,13 @@ models you pick), and times the same three requests on each:
 | Cache × | cold TTFT ÷ warm TTFT |
 | Short | total time of a one-line question |
 
+How to read them: **Gen t/s** is how fast text appears (chat, long answers)
+and is mostly limited by memory bandwidth and model size. **Prompt t/s**
+decides the wait for long inputs: an agent prompt of 10k tokens takes ~17
+minutes at 10 t/s. **Warm TTFT** is what a follow-up message in a
+conversation feels like, thanks to the prompt cache. **Load** is the cost of
+switching models on a phone; only the first load includes the download.
+
 ```sh
 pbctl mmb run nodes=pixel                                   # every model that fits the Pixel
 pbctl mmb run nodes=pixel,poco models=qwen3-4b-instruct-2507-q4_k_m,gemma-3n-e2b-it-q4_k_m
@@ -591,9 +598,20 @@ pbctl mmb cancel <id>                                       # stop; the phones g
 ```
 
 The panel's **MMB** view does the same: choose phones or a pool, models
-(none = all that fit) and one by one or at the same time; it shows the runs
-live, a results table with the best value of each column marked, and, with
-several phones, a model × phone table of generation speed and warm TTFT.
+(none = all that fit) and one by one or at the same time. It shows the runs
+live and:
+
+- **Phones × models**: phones as rows, models as columns, one parameter at a
+  time chosen with the buttons above the table (Gen t/s, Prompt t/s, Cold
+  TTFT, Warm TTFT, Cache ×, Short, Load); ★ marks the best phone for each
+  model, and hovering a cell shows all its values. **Combine all runs**
+  fills the table with the latest result of every phone and model over all
+  runs, so phones benchmarked separately can be compared.
+- **Results** of the selected run: every value per phone and model, with
+  the best of each column marked, tokens in/out, the context and KV cache
+  the phone chose, and why a model failed or was skipped.
+- **What the parameters mean**: what each one measures, whether lower or
+  higher is better, and how to read it.
 
 While a phone is benchmarked it is drained (no normal traffic, so it does
 not skew the numbers) and its model is forced with a benchmark override
