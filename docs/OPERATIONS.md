@@ -224,7 +224,7 @@ it is never conflated with `anonymous`, `local` or a real API key's traffic.
 
 ### Screenshots
 
-Taken on the dev cluster (a Xiaomi Mi 8 and two emulated phones) during a load test.
+Taken on the four-phone cluster (OnePlus 10 Pro, POCO F3, Pixel 8 Pro, Mi 8) in 2026-10, while it served load on several pools and ran a Super Borg job.
 
 **Sign-in screen (the token field is a password field).** — Sign-in screen (the token field is a password field).
 
@@ -242,6 +242,10 @@ Taken on the dev cluster (a Xiaomi Mi 8 and two emulated phones) during a load t
 
 ![Node details: inventory and runtime as reported in heartbeats.](images/panel-node-details.png)
 
+**Devices** — USB devices pcprov sees, with their provisioning state.
+
+![Devices: USB devices seen by pcprov and their provisioning state.](images/panel-devices.png)
+
 **Models** — the catalog with download status, size, fit, tags and recommendations.
 
 ![Models: the catalog with download status, size, fit, tags and recommendations.](images/panel-models.png)
@@ -257,6 +261,18 @@ Taken on the dev cluster (a Xiaomi Mi 8 and two emulated phones) during a load t
 **Proxy** — gateway routing policy, spill, timeout, thermal limit and key enforcement.
 
 ![Proxy: gateway routing policy, spill, timeout, thermal limit and key enforcement.](images/panel-proxy.png)
+
+**Chat** — talk to any target (`auto`, a pool, a phone); every reply names the model and phone and shows its speed.
+
+![Chat: a reply from pool/chat with the model, node and speed under it.](images/panel-chat.png)
+
+**Jobs** — Super Borg jobs: task list, documents, progress, and instructions for a running job.
+
+![Jobs: a job on pool/writer with its tasks, documents and progress.](images/panel-jobs.png)
+
+**MMB** — multi-model benchmark runs, the phone × model table for one parameter, and the legend.
+
+![MMB: benchmark runs and the phone × model table.](images/panel-mmb.png)
 
 **API keys** — usage per key; create and revoke.
 
@@ -1320,11 +1336,19 @@ on http://127.0.0.1:3000 (anonymous view, `admin`/`admin` to edit) with the
 
 ### Dashboard screenshots
 
-The dashboard during a 4-minute load test on the dev cluster. The Temperature panel shows the Mi 8 overheating (up to 96 °C) under sustained direct `node/mi8` traffic.
+The dashboard on the four-phone cluster over 24 hours in 2026-10: the multi-model benchmark, Super Borg jobs, and a 15-minute load on `pool/chat`, `pool/translate`, `pool/fast` and `pool/code`.
 
 **Cluster**
 
 ![Grafana: Cluster row](images/grafana-cluster.png)
+
+**Cluster tokens per minute**
+
+![Grafana: Cluster tokens per minute row](images/grafana-cluster-tokens-per-minute.png)
+
+**Node tokens per minute**
+
+![Grafana: Node tokens per minute row](images/grafana-node-tokens-per-minute.png)
 
 **Inference gateway**
 

@@ -78,6 +78,9 @@ More screenshots of the web panel and the Grafana dashboard: [docs/OPERATIONS.md
 
 ## Quick start
 
+**Fast track with one or two phones**, step by step, including pools,
+Super Borg and a job: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
 Requirements: Go 1.25+, `adb`, and Docker (for the llama.cpp build,
 monitoring and emulation).
 
@@ -122,6 +125,7 @@ Setups and all other numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 | Document | For |
 |---|---|
 | [docs/README.md](docs/README.md) | index by audience and task |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | fast track: a test cluster with one or two phones |
 | [docs/CONCEPTS.md](docs/CONCEPTS.md) | ways to use the cluster, with pros and cons: pools, Super Borg, jobs, agents, benchmarks |
 | [docs/REAL_PHONES.md](docs/REAL_PHONES.md) | choosing, preparing, provisioning and troubleshooting real phones |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | running the cluster: requests, web panel, `pbctl`, models, pools, keys, monitoring |
