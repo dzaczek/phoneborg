@@ -21,7 +21,9 @@ export class ApiError extends Error {
 let onAuthError = () => {};
 export const setAuthErrorHandler = (fn) => { onAuthError = fn; };
 
-export async function api(method, path, body, tok = token.get()) {
+// credentials is 'omit' for every admin call (the admin API never uses
+// cookies); grafanaSession alone needs 'same-origin' to receive its cookie.
+export async function api(method, path, body, tok = token.get(), credentials = 'omit') {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
   const headers = { Authorization: 'Bearer ' + tok, Accept: 'application/json' };
@@ -29,7 +31,7 @@ export async function api(method, path, body, tok = token.get()) {
   let res;
   try {
     res = await fetch(path, {
-      method, headers, signal: ctl.signal, cache: 'no-store', credentials: 'omit',
+      method, headers, signal: ctl.signal, cache: 'no-store', credentials,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (e) {
@@ -50,6 +52,9 @@ export async function api(method, path, body, tok = token.get()) {
 }
 
 export const get = (path) => api('GET', path);
+
+// grafanaSession gets the cookie that lets iframes load /grafana/ (ADR-031).
+export const grafanaSession = () => api('POST', '/admin/grafana/session', undefined, token.get(), 'same-origin');
 
 // getOptional returns null when the route does not exist on this controller
 // (404), e.g. model management on a controller built without it.

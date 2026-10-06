@@ -46,6 +46,7 @@ func main() {
 	trustedProxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of reverse proxies whose X-Forwarded-For is trusted to name the real client address; empty = never trust it")
 	ollamaListen := flag.String("ollama-listen", "", "optional second HTTP listen address serving only the Ollama-compatible API (e.g. \":11434\"); empty = off (it is also served on -listen)")
 	firmwareCheck := flag.Bool("firmware-check", false, "check online, once a day, whether newer firmware or a LineageOS build exists for each phone (sends device codenames to Google, LineageOS and GitHub; ADR-030)")
+	grafanaURL := flag.String("grafana-url", "", "Grafana to serve under /grafana/ for the panel's Dashboards view, e.g. http://127.0.0.1:3000; Grafana needs serve_from_sub_path and a root_url ending in /grafana/ (ADR-031); empty = off")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -168,6 +169,7 @@ func main() {
 		Jobs:           jobs,
 		MMB:            controller.MMBOptions{Dir: mmbDir},
 		Firmware:       controller.FirmwareOptions{Online: *firmwareCheck},
+		GrafanaURL:     *grafanaURL,
 		Devices:        devicesOpts,
 		AccessMode:     *gatewayAccess,
 		TrustedCIDRs:   trustedCIDRList,

@@ -31,6 +31,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Usage statistics](#usage-statistics)
 - [OpenCode agent bridge](#opencode-agent-bridge)
 - [Grafana and Prometheus](#grafana-and-prometheus)
+  - [Grafana in the panel](#grafana-in-the-panel)
 - [Troubleshooting](#troubleshooting)
 
 ## Endpoints
@@ -81,6 +82,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-trusted-cidrs` | `127.0.0.0/8,::1/128` | peers served without a key in `local` access mode |
 | `-trusted-proxies` | none | peers whose `X-Forwarded-For` is trusted to name the real client address |
 | `-ollama-listen` | none | optional second listen address serving only the [Ollama-compatible API](#ollama-compatible-api) (e.g. `:11434`); it is always served on `-listen` too |
+| `-grafana-url` | none | Grafana to serve under `/grafana/` for the panel's **Dashboards** view, e.g. `http://127.0.0.1:3000` ([Grafana in the panel](#grafana-in-the-panel)) |
 | `-firmware-check` | off | check online once a day whether newer firmware or a LineageOS build exists for each phone; sends device codenames to Google, LineageOS and GitHub ([Firmware check](#firmware-check)) |
 | `-debug` | off | log every heartbeat |
 
@@ -235,6 +237,10 @@ Taken on the four-phone cluster (OnePlus 10 Pro, POCO F3, Pixel 8 Pro, Mi 8) in 
 **Overview** — cluster health, throughput, models served, placement warnings and virtual models.
 
 ![Overview: cluster health, throughput, models served, placement warnings and virtual models.](images/panel-overview.png)
+
+**Dashboards** — the Grafana dashboard inside the panel, served by the controller under `/grafana/` ([Grafana in the panel](#grafana-in-the-panel)).
+
+![Dashboards: the PhoneBorg Grafana dashboard embedded in the panel.](images/panel-dashboards.png)
 
 **Nodes** — firmware with patch age and update badges, class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.
 
@@ -1369,6 +1375,35 @@ on http://127.0.0.1:3000 (anonymous view, `admin`/`admin` to edit) with the
 | Models | catalog, downloads, planned vs serving nodes, switching nodes, model errors |
 | Administration | drained nodes, admin actions (`phoneborg_admin_actions_total`; rising `result="unauthorized"` means wrong tokens are being tried) |
 | Pools and virtual models | requests per target, eligible nodes per pool |
+
+### Grafana in the panel
+
+The controller can serve Grafana under `/grafana/` on its own port, so the
+panel shows the dashboard in its **Dashboards** view and a tokens-per-minute
+chart in each node's details, with no second login and no Grafana port to
+open (ADR-031).
+
+1. Serve Grafana from the sub-path and allow embedding, e.g. with a systemd
+   drop-in `/etc/systemd/system/grafana-server.service.d/phoneborg.conf`:
+
+   ```ini
+   [Service]
+   Environment=GF_SERVER_ROOT_URL=http://<controller-host>:18080/grafana/
+   Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
+   Environment=GF_SECURITY_ALLOW_EMBEDDING=true
+   ```
+
+   (`[server] root_url`, `serve_from_sub_path` and `[security]
+   allow_embedding` in `grafana.ini` work too.) The compose stack sets these.
+2. Start the controller with `-grafana-url http://127.0.0.1:3000`.
+3. Open **Dashboards** in the panel. Time-range buttons switch the range;
+   **Open in Grafana** opens the full Grafana UI under `/grafana/`.
+
+The panel exchanges its admin token for a 12-hour cookie that only
+`/grafana/` accepts; without it `/grafana/` answers 401. What the embedded
+user may do is Grafana's decision: with anonymous Viewer access the
+dashboards are read-only. Grafana's own port, if still open, now answers at
+`http://<host>:3000/grafana/`.
 
 ### Dashboard screenshots
 

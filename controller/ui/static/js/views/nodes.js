@@ -127,6 +127,20 @@ function firmwareSection(fw, online) {
   ];
 }
 
+// nodeCharts shows the dashboard's per-node tokens-per-minute panel when the
+// controller serves Grafana under /grafana/ (ADR-031).
+function nodeCharts(n) {
+  const box = h('div');
+  get('/admin/grafana').then((g) => {
+    if (!g.enabled) return;
+    const theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    const q = new URLSearchParams({ orgId: '1', panelId: '17', 'var-node': n.id, from: 'now-6h', to: 'now', theme, refresh: '30s' });
+    fill(box, h('h3', null, 'Tokens per minute (6 h)'),
+      h('iframe.node-chart', { src: `${g.prefix}d-solo/${g.dashboard_uid}/phoneborg?${q}`, title: `Tokens per minute on ${n.id}`, loading: 'lazy' }));
+  }).catch(() => {});
+  return box;
+}
+
 function details(n, fw, online) {
   const inv = n.inventory || {};
   const hb = n.last_heartbeat || {};
@@ -147,6 +161,7 @@ function details(n, fw, online) {
       ['Load (1 min)', hb.load1 != null ? hb.load1.toFixed(2) : ''],
       ['Benchmark', n.benchmark ? `${n.benchmark.cpu_gflops.toFixed(1)} GFLOPS, ${n.benchmark.mem_bandwidth_gbps.toFixed(1)} GB/s (${n.benchmark.kind})` : ''],
     ]),
+    nodeCharts(n),
     firmwareSection(fw, online),
     h('h3', null, 'Inventory'), json(n.inventory),
     h('h3', null, 'Runtime'), json(hb.runtime),

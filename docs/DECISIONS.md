@@ -38,6 +38,7 @@ text.
 | [028](#adr-028-multi-model-benchmark-mmb) | Multi-model benchmark (MMB) | accepted | Load every fitting model on chosen phones under a benchmark override and time cold, warm and short requests. |
 | [029](#adr-029-external-orchestrators) | External orchestrators | accepted | External nodes with `role=orchestrator` get no normal traffic and orchestrate only the Super Borg pools that name them. |
 | [030](#adr-030-firmware-check) | Firmware check | accepted | Agents report build, patch and bootloader; with `-firmware-check` the controller compares them daily with LineageOS, Google's OTA page and the Xiaomi tracker. |
+| [031](#adr-031-grafana-in-the-panel) | Grafana in the panel | accepted | The controller serves Grafana under `/grafana/`; the panel embeds the dashboard and per-node charts with a cookie-based session. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -1786,3 +1787,33 @@ Google page, the community tracker) can change format; a failing source
 keeps its last data and is reported in `errors`. Installing anything stays
 manual: flashing needs the phone in hand, and an unlocked bootloader
 wipes it.
+
+## ADR-031: Grafana in the panel
+
+**Problem.** Metrics live in Grafana on its own port, the panel on the
+controller's: two places, two logins, and Grafana's port must be reachable
+from every browser. The panel's CSP only allows content from its own origin,
+so a plain iframe of Grafana is blocked.
+
+**Decision.**
+- With `-grafana-url` the controller reverse-proxies Grafana under
+  `/grafana/` on its own port, as Rancher does. Grafana is configured to
+  serve from that sub-path (`serve_from_sub_path`, a `root_url` ending in
+  `/grafana/`) and to allow embedding. The proxy keeps the request's Host,
+  which Grafana compares with the Origin of POST requests.
+- An iframe cannot send the panel's bearer token, so the panel trades it
+  (`POST /admin/grafana/session`) for an HttpOnly, SameSite=Strict cookie
+  scoped to `/grafana/`, valid 12 hours and signed with a key made at start.
+  `/grafana/` without a valid cookie answers 401. The proxy strips that
+  cookie and any `Authorization` header before Grafana sees the request.
+  This is the only admin call made with cookies; all others still omit them.
+- The panel gets a **Dashboards** view (the PhoneBorg dashboard in kiosk
+  mode, with time-range buttons), the per-node tokens-per-minute panel in
+  the node details, and the top-bar Grafana link pointing to `/grafana/`.
+
+**Consequences.** Everything is reachable through the controller's port.
+Grafana decides what the embedded user may do: with anonymous Viewer access
+(the reference VM and the compose stack) the panel shows dashboards
+read-only; editing still needs a Grafana login. Grafana's own port, if left
+open, now answers under `/grafana/`. A controller restart invalidates the
+cookies; the panel asks for a new one when it loads.

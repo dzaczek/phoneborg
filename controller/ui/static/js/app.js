@@ -1,5 +1,5 @@
 // Panel shell: login, navigation, auto-refresh and settings.
-import { api, token, setAuthErrorHandler } from './api.js';
+import { api, token, setAuthErrorHandler, grafanaSession as startGrafanaSession } from './api.js';
 import { h } from './dom.js';
 import { toast, errorToast, anyDialogOpen, formDialog, field } from './ui.js';
 import overview from './views/overview.js';
@@ -14,10 +14,11 @@ import jobs from './views/jobs.js';
 import mmb from './views/mmb.js';
 import keys from './views/keys.js';
 import usage from './views/usage.js';
+import dashboards from './views/dashboards.js';
 
 // Each view factory returns {title, el, live, refresh()}; live views are
 // refreshed every REFRESH_MS while the tab is visible and no dialog is open.
-const VIEWS = { overview, nodes, devices, models, placement, pools, proxy, chat, jobs, mmb, keys, usage };
+const VIEWS = { overview, dashboards, nodes, devices, models, placement, pools, proxy, chat, jobs, mmb, keys, usage };
 const REFRESH_MS = 5000;
 
 const $ = (id) => document.getElementById(id);
@@ -77,6 +78,7 @@ function showApp() {
   $('login').hidden = true;
   $('app').hidden = false;
   navigate(false);
+  grafanaSession();
 }
 
 function navigate(focus = true) {
@@ -144,10 +146,27 @@ function safeURL(s) {
   } catch { return ''; }
 }
 
+// grafanaPath is set when the controller serves Grafana under /grafana/
+// (ADR-031); the top-bar link then opens it there.
+let grafanaPath = '';
+
 function linkURL(name) {
   let saved = '';
   try { saved = localStorage.getItem('phoneborg.link.' + name) || ''; } catch { /* ignore */ }
+  if (!safeURL(saved) && name === 'grafana' && grafanaPath) return safeURL(grafanaPath);
   return safeURL(saved) || `${location.protocol}//${location.hostname}:${LINKS[name].port}/`;
+}
+
+// grafanaSession asks for the /grafana/ session cookie, so the top-bar link
+// and the Dashboards view work without a separate Grafana login.
+async function grafanaSession() {
+  try {
+    const g = await api('GET', '/admin/grafana');
+    if (!g.enabled) return;
+    await startGrafanaSession();
+    grafanaPath = `${g.prefix}d/${g.dashboard_uid}/phoneborg`;
+    applyLinks();
+  } catch { /* the default links stay */ }
 }
 
 function saveLink(name, value) {

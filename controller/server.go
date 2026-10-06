@@ -67,7 +67,8 @@ type Server struct {
 	jobs *gateway.Jobs // Super Borg jobs (ADR-021)
 	mmb  *mmb          // multi-model benchmark (ADR-028)
 
-	firmware *firmware // firmware check (ADR-030)
+	firmware *firmware     // firmware check (ADR-030)
+	grafana  *grafanaProxy // Grafana under /grafana/ (ADR-031); nil = off
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -87,6 +88,8 @@ type GatewayOptions struct {
 	Jobs          JobsOptions     // Super Borg jobs, ADR-021
 	MMB           MMBOptions      // multi-model benchmark, ADR-028
 	Firmware      FirmwareOptions // firmware check, ADR-030
+	// GrafanaURL is Grafana's address, served under /grafana/ (ADR-031); "" = off.
+	GrafanaURL string
 	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
 	// "local by default" (ADR-017); the empty value behaves like "open", so
 	// callers that do not set it (e.g. existing tests) are unaffected.
@@ -185,6 +188,11 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	s.promReg.MustRegister(&jobsCollector{j: s.jobs})
 	s.mmb = newMMB(s, gwOpts.MMB.Dir, log)
 	s.firmware = newFirmware(gwOpts.Firmware, log)
+	if gp, err := newGrafanaProxy(gwOpts.GrafanaURL); err != nil {
+		log.Error("Grafana proxy disabled", "err", err)
+	} else {
+		s.grafana = gp
+	}
 	s.promReg.MustRegister(s.mmb.mProbes)
 	s.gw.SetModelInfo(func(id string) (gateway.ModelInfo, bool) {
 		m, ok := s.catalog.Get(id)
@@ -310,6 +318,7 @@ func (s *Server) Handler() http.Handler {
 	s.gw.Register(mux)
 	s.gw.RegisterOllama(mux) // Ollama-compatible front, same auth/routing (ADR-017)
 	s.registerAdmin(mux)
+	s.registerGrafana(mux)
 	return mux
 }
 

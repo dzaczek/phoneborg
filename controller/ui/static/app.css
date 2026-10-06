@@ -335,3 +335,8 @@ dialog.drawer {
 .md blockquote { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); }
 .md pre { background: var(--surface-2); padding: 10px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
+
+/* Dashboards: Grafana served by the controller under /grafana/ (ADR-031). */
+iframe.dashboard { display: block; width: 100%; height: calc(100vh - 150px); min-height: 480px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.dashboard-open { margin-left: 8px; align-self: center; }
+iframe.node-chart { display: block; width: 100%; height: 220px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

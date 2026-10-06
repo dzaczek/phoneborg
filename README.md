@@ -132,7 +132,7 @@ Setups and all other numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..030) |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..031) |
 
 ## Repository layout
 

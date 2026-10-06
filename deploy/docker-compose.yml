@@ -27,7 +27,7 @@ services:
     command: ["-backend-host", "host.docker.internal", "-upstream-timeout", "600s",
               "-admin-token-file", "/run/phoneborg/admin-token", "-state-dir", "/var/lib/phoneborg",
               "-gateway-access", "local", "-trusted-cidrs", "127.0.0.0/8,::1/128,172.16.0.0/12",
-              "-ollama-listen", ":11434"]
+              "-ollama-listen", ":11434", "-grafana-url", "http://grafana:3000"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["127.0.0.1:${CONTROLLER_PORT:-18080}:18080", "127.0.0.1:${OLLAMA_PORT:-11434}:11434"]
     volumes:
@@ -53,6 +53,10 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/phoneborg.json
+      # Served by the controller under /grafana/ for the panel's Dashboards view (ADR-031).
+      GF_SERVER_ROOT_URL: http://localhost:${CONTROLLER_PORT:-18080}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
