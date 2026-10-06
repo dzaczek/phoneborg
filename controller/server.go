@@ -66,6 +66,8 @@ type Server struct {
 
 	jobs *gateway.Jobs // Super Borg jobs (ADR-021)
 	mmb  *mmb          // multi-model benchmark (ADR-028)
+
+	firmware *firmware // firmware check (ADR-030)
 }
 
 // GatewayOptions configures the inference proxy and model management.
@@ -84,6 +86,7 @@ type GatewayOptions struct {
 	Devices       DeviceOptions   // USB device auto-detection, ADR-019
 	Jobs          JobsOptions     // Super Borg jobs, ADR-021
 	MMB           MMBOptions      // multi-model benchmark, ADR-028
+	Firmware      FirmwareOptions // firmware check, ADR-030
 	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
 	// "local by default" (ADR-017); the empty value behaves like "open", so
 	// callers that do not set it (e.g. existing tests) are unaffected.
@@ -181,6 +184,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	s.gw.SetJobs(s.jobs)
 	s.promReg.MustRegister(&jobsCollector{j: s.jobs})
 	s.mmb = newMMB(s, gwOpts.MMB.Dir, log)
+	s.firmware = newFirmware(gwOpts.Firmware, log)
 	s.promReg.MustRegister(s.mmb.mProbes)
 	s.gw.SetModelInfo(func(id string) (gateway.ModelInfo, bool) {
 		m, ok := s.catalog.Get(id)
@@ -279,6 +283,10 @@ func (s *Server) RunExternals(ctx context.Context) { s.ext.run(ctx) }
 
 // RunJobs executes Super Borg jobs until ctx ends (ADR-021).
 func (s *Server) RunJobs(ctx context.Context) { s.jobs.Run(ctx) }
+
+// RunFirmware checks the phones' firmware online, if enabled, until ctx
+// ends (ADR-030).
+func (s *Server) RunFirmware(ctx context.Context) { s.firmware.run(ctx, s.reg.Snapshot) }
 
 // ReapGateway cancels requests stuck on nodes that left the ready set.
 func (s *Server) ReapGateway() { s.gw.Reap() }

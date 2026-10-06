@@ -84,7 +84,50 @@ async function act(n, action) {
   refreshNow();
 }
 
-function details(n) {
+// Firmware (ADR-030): what the phone runs, its security patch age and what
+// is newer. Links are shown only for https URLs from the sources.
+const patchClass = (m) => (m < 0 ? 'idle' : m <= 3 ? 'ok' : m <= 12 ? 'warn' : 'bad');
+const SOURCE = { google: 'Google', xiaomi: 'Xiaomi', lineageos: 'LineageOS' };
+
+function firmwareCell(fw) {
+  if (!fw) return '–';
+  const newer = (fw.updates || []).filter((u) => u.kind !== 'alternative');
+  const alt = (fw.updates || []).find((u) => u.kind === 'alternative');
+  const cur = fw.current || '';
+  return [
+    h('span', { title: cur }, cur.length > 26 ? cur.slice(0, 26) + '…' : cur || '–'),
+    h('span.cell-sub', null,
+      fw.patch_age_months >= 0 ? badge(`patch ${fw.patch_age_months} mo`, patchClass(fw.patch_age_months)) : null,
+      newer.length ? badge('update', 'info') : fw.latest ? badge('latest', 'ok') : null,
+      alt ? badge('LineageOS', 'idle') : null),
+  ];
+}
+
+function firmwareSection(fw, online) {
+  if (!fw) return null;
+  const kv = (pairs) => h('dl.kv', null, pairs.filter(([, v]) => v !== '' && v != null).map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
+  const updates = (fw.updates || []).map((u) => h('li', null,
+    h('strong', null, `${SOURCE[u.source] || u.source} ${u.version}`), u.date ? ` (${u.date})` : '', ' ',
+    badge(u.kind === 'alternative' ? 'alternative ROM' : u.kind, u.kind === 'alternative' ? 'idle' : 'info'),
+    /^https:\/\//.test(u.url || '') ? [' ', h('a', { href: u.url, target: '_blank', rel: 'noopener noreferrer' }, 'download')] : null,
+    u.note ? h('div.muted.small', null, u.note) : null));
+  return [
+    h('h3', null, 'Firmware'),
+    kv([
+      ['Running', fw.current || ''],
+      ['Brand / codename', [fw.brand, fw.device].filter(Boolean).join(' / ')],
+      ['Security patch', fw.security_patch ? [fw.security_patch, ' ', badge(`${fw.patch_age_months} months old`, patchClass(fw.patch_age_months))] : ''],
+      ['Bootloader', fw.bootloader || 'unknown'],
+      ['Status', fw.latest && !(fw.updates || []).some((u) => u.kind !== 'alternative') ? 'newest build its vendor lists' : ''],
+    ]),
+    updates.length ? h('ul', null, updates) : null,
+    h('p.muted.small', null, online
+      ? 'Checked online once a day (Google, LineageOS, the XiaomiFirmwareUpdater tracker); other brands show only the patch age.'
+      : 'Online check is off: start the controller with -firmware-check to look for newer builds. Shown: what the phone reports.'),
+  ];
+}
+
+function details(n, fw, online) {
   const inv = n.inventory || {};
   const hb = n.last_heartbeat || {};
   const kv = (pairs) => h('dl.kv', null, pairs.filter(([, v]) => v !== '' && v != null).map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
@@ -104,6 +147,7 @@ function details(n) {
       ['Load (1 min)', hb.load1 != null ? hb.load1.toFixed(2) : ''],
       ['Benchmark', n.benchmark ? `${n.benchmark.cpu_gflops.toFixed(1)} GFLOPS, ${n.benchmark.mem_bandwidth_gbps.toFixed(1)} GB/s (${n.benchmark.kind})` : ''],
     ]),
+    firmwareSection(fw, online),
     h('h3', null, 'Inventory'), json(n.inventory),
     h('h3', null, 'Runtime'), json(hb.runtime),
     h('p.muted.small', null, 'Snapshot taken when this panel was opened.'),
@@ -147,6 +191,7 @@ function externalRow(x) {
       h('span.cell-sub.mono', null, x.node_id)),
     h('td', null, h('span.mono', null, x.url)),
     h('td', null, '–'),
+    h('td', null, '–'),
     h('td', null, [badge(x.state), x.drained ? badge('DRAINED') : null]),
     h('td', null, models.length ? h('span', null, models[0]) : h('span.muted', null, 'none'),
       models.length > 1 ? h('span.cell-sub', { title: models.join(', ') }, `+${models.length - 1} more`) : null,
@@ -164,7 +209,8 @@ function externalRow(x) {
       : h('button.small', { type: 'button', onclick: () => act(n, 'drain'), 'data-focus-key': x.node_id + ':drain' }, 'Drain')));
 }
 
-const COLS = [{ label: 'Node', title: 'Select a node for details' }, 'Device', { label: 'Class', title: 'Device class by total RAM / performance tier by measured generation bandwidth (ADR-015)' }, 'State', { label: 'Model', title: 'Served model, runtime state and llama.cpp build' },
+const COLS = [{ label: 'Node', title: 'Select a node for details' }, 'Device',
+  { label: 'Firmware', title: 'Running build, security patch age and whether a newer build exists (ADR-030)' }, { label: 'Class', title: 'Device class by total RAM / performance tier by measured generation bandwidth (ADR-015)' }, 'State', { label: 'Model', title: 'Served model, runtime state and llama.cpp build' },
   { label: 'Threads', num: true }, { label: 'Ctx', num: true }, { label: 'Tok/s', num: true, title: 'Measured generation speed (self-test)' },
   { label: 'RAM avail / total', num: true }, { label: 'Temp', num: true }, { label: 'Battery', num: true },
   { label: 'In flight / pinned', num: true, title: 'Requests in flight / sessions pinned by affinity' }, 'Last seen', { label: 'Actions', num: true }];
@@ -175,7 +221,9 @@ export default function nodesView() {
   const el = h('section', null, h('div.page-head', null, h('h1', null, 'Nodes'), summary), body);
 
   async function refresh() {
-    const [nodes, ext] = await Promise.all([get('/admin/nodes'), get('/admin/external')]);
+    const [nodes, ext, fwr] = await Promise.all([get('/admin/nodes'), get('/admin/external'), get('/admin/firmware').catch(() => null)]);
+    const fwByNode = Object.fromEntries(((fwr && fwr.nodes) || []).map((f) => [f.node_id, f]));
+    const online = !!(fwr && fwr.online);
     const externals = (ext && ext.external) || [];
     summary.textContent = `${nodes.length} node(s), ${nodes.filter((n) => n.state === 'ACTIVE').length} active` +
       (externals.length ? `, ${externals.length} external` : '');
@@ -191,9 +239,10 @@ export default function nodesView() {
         h('button.small.danger', { type: 'button', onclick: () => act(n, 'forget'), 'data-focus-key': n.id + ':forget' }, 'Forget'));
       return h('tr', null,
         h('td.nowrap', null,
-          h('button.link' + (n.alias ? '' : '.mono'), { type: 'button', onclick: () => details(n), title: 'Show details', 'data-focus-key': n.id + ':details' }, n.alias || n.id),
+          h('button.link' + (n.alias ? '' : '.mono'), { type: 'button', onclick: () => details(n, fwByNode[n.id], online), title: 'Show details', 'data-focus-key': n.id + ':details' }, n.alias || n.id),
           n.alias ? h('span.cell-sub.mono', null, n.id) : null),
         h('td', null, `${inv.manufacturer || ''} ${inv.model || ''}`.trim() || '–', h('span.cell-sub', null, inv.soc || '')),
+        h('td', null, firmwareCell(fwByNode[n.id])),
         h('td', null, `${classOf(inv.ram_total_bytes) || '–'}/${n.perf_tier || '?'}`),
         h('td', null, stateCell(n)),
         h('td', null, modelCell(rt)),

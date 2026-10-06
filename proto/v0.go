@@ -27,6 +27,16 @@ type Inventory struct {
 	RAMTotalBytes    uint64 `json:"ram_total_bytes"` // min(MemTotal, cgroup memory.max)
 	StorageFreeBytes uint64 `json:"storage_free_bytes"`
 	AgentVersion     string `json:"agent_version"`
+
+	// Firmware, from getprop (ADR-030); empty when unknown.
+	Brand            string `json:"brand,omitempty"`             // ro.product.brand
+	Device           string `json:"device,omitempty"`            // ro.product.device, the codename (e.g. "dipper")
+	BuildID          string `json:"build_id,omitempty"`          // ro.build.id
+	BuildDisplay     string `json:"build_display,omitempty"`     // ro.build.display.id
+	BuildIncremental string `json:"build_incremental,omitempty"` // ro.build.version.incremental (Xiaomi: the MIUI/HyperOS version)
+	SecurityPatch    string `json:"security_patch,omitempty"`    // ro.build.version.security_patch, YYYY-MM-DD
+	LineageVersion   string `json:"lineage_version,omitempty"`   // ro.lineage.version, set on LineageOS
+	Bootloader       string `json:"bootloader,omitempty"`        // "locked", "unlocked" or "" (unknown)
 }
 
 // Benchmark is a self-reported capability score. Kind identifies the method so

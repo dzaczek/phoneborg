@@ -37,6 +37,7 @@ text.
 | [027](#adr-027-pool-status-onoff-switch-and-no-conflicting-pools) | Pool status, on/off switch, no conflicting pools | accepted | Computed pool status, `disabled` flag, 409 for enabled pools that claim one node with no common model. |
 | [028](#adr-028-multi-model-benchmark-mmb) | Multi-model benchmark (MMB) | accepted | Load every fitting model on chosen phones under a benchmark override and time cold, warm and short requests. |
 | [029](#adr-029-external-orchestrators) | External orchestrators | accepted | External nodes with `role=orchestrator` get no normal traffic and orchestrate only the Super Borg pools that name them. |
+| [030](#adr-030-firmware-check) | Firmware check | accepted | Agents report build, patch and bootloader; with `-firmware-check` the controller compares them daily with LineageOS, Google's OTA page and the Xiaomi tracker. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -1749,3 +1750,39 @@ sets it; it is stored in `external.json`.
 can plan for the phones without being exposed to other traffic. Hosted
 APIs still see the controller's health polls and one short self-test per
 model.
+
+## ADR-030: Firmware check
+
+**Problem.** Old phones often run outdated firmware: the POCO F3 of the
+reference cluster had a 31-month-old security patch and stock MIUI, which
+also leaves less RAM for models than LineageOS. Finding out what is newer
+means looking up each phone by hand on different vendor sites.
+
+**Decision.**
+- The agent reports, from `getprop`, the brand, the device codename, the
+  build id, display id and incremental version, the security patch date,
+  the LineageOS version and the bootloader state (`ro.boot.flash.locked`,
+  else the verified boot state). This needs no network and is always shown.
+- With `-firmware-check` (off by default) the controller fetches, once a
+  day and an hour after a new phone appears: the LineageOS build API per
+  codename, Google's full OTA image page (Pixels) and the
+  XiaomiFirmwareUpdater tracker's `latest.yml` (Xiaomi, Redmi, POCO; a
+  community source). Only the sources the connected phones need are
+  fetched. Pixel builds match by codename, skipping carrier builds;
+  Xiaomi builds match by codename and the device-and-region part of the
+  version (`KHMIXM` in `V816.0.5.0.TKHMIXM`), Stable branch only.
+- `GET /admin/firmware` reports, per phone, what runs, the patch age, the
+  bootloader, `latest` and a list of updates of three kinds: `update` (a
+  newer build of the same firmware), `upgrade` (a newer LineageOS version)
+  and `alternative` (LineageOS for a phone on stock firmware).
+  `POST /admin/firmware/check` checks now. The panel's Nodes view shows a
+  Firmware column and a section in the node details.
+- Samsung's FOTA server refused requests and OnePlus has no public source,
+  so those brands show only the patch age.
+
+**Consequences.** Device codenames leave the network, to Google, LineageOS
+and GitHub, which is why the online part is opt-in. Scraped sources (the
+Google page, the community tracker) can change format; a failing source
+keeps its last data and is reported in `errors`. Installing anything stays
+manual: flashing needs the phone in hand, and an unlocked bootloader
+wipes it.

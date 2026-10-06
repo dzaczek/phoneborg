@@ -26,6 +26,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [API keys](#api-keys)
 - [Access control](#access-control)
 - [Draining a phone for maintenance](#draining-a-phone-for-maintenance)
+- [Firmware check](#firmware-check)
 - [Gateway settings](#gateway-settings)
 - [Usage statistics](#usage-statistics)
 - [OpenCode agent bridge](#opencode-agent-bridge)
@@ -80,6 +81,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-trusted-cidrs` | `127.0.0.0/8,::1/128` | peers served without a key in `local` access mode |
 | `-trusted-proxies` | none | peers whose `X-Forwarded-For` is trusted to name the real client address |
 | `-ollama-listen` | none | optional second listen address serving only the [Ollama-compatible API](#ollama-compatible-api) (e.g. `:11434`); it is always served on `-listen` too |
+| `-firmware-check` | off | check online once a day whether newer firmware or a LineageOS build exists for each phone; sends device codenames to Google, LineageOS and GitHub ([Firmware check](#firmware-check)) |
 | `-debug` | off | log every heartbeat |
 
 The compose stack (`make cluster-up`) runs the controller with
@@ -234,11 +236,11 @@ Taken on the four-phone cluster (OnePlus 10 Pro, POCO F3, Pixel 8 Pro, Mi 8) in 
 
 ![Overview: cluster health, throughput, models served, placement warnings and virtual models.](images/panel-overview.png)
 
-**Nodes** — class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.
+**Nodes** — firmware with patch age and update badges, class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.
 
 ![Nodes: class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.](images/panel-nodes.png)
 
-**Node details** — inventory and runtime as reported in heartbeats.
+**Node details** — firmware with the newer builds and their download links, inventory and runtime as reported in heartbeats.
 
 ![Node details: inventory and runtime as reported in heartbeats.](images/panel-node-details.png)
 
@@ -1141,6 +1143,40 @@ controller restart. The panel and `/status` show **DRAINED**; Prometheus has
 `pbctl forget <id>` removes a node, e.g. a retired phone. A running phone
 registers again on its next heartbeat. Requests in flight on a forgotten
 node are retried elsewhere, so drain first if they should finish.
+
+## Firmware check
+
+Every phone reports its build, security patch date and bootloader state;
+the **Nodes** view shows them in the **Firmware** column, with the patch
+age in months (green up to 3, amber up to 12, red above), and in the node
+details (ADR-030).
+
+With `-firmware-check` the controller also looks for newer firmware once a
+day:
+
+| Phones | Source | Shows |
+|---|---|---|
+| any phone LineageOS supports | LineageOS build API | a newer nightly (`update`), a newer version (`upgrade`), or LineageOS for a phone on stock firmware (`alternative`) |
+| Google Pixel | Google's full OTA image page | a newer factory build (`update`) |
+| Xiaomi, Redmi, POCO | XiaomiFirmwareUpdater tracker (community) | a newer MIUI/HyperOS build of the same region (`update`) |
+| Samsung, OnePlus, others | none | the patch age only |
+
+The badge **update** means a newer build of what the phone runs;
+**LineageOS** means an official LineageOS build exists. The details list
+each with its date, a download link and notes (e.g. that the bootloader is
+locked). Flashing stays manual: drain the phone first
+(`pbctl drain <alias>`); after it boots again, `pcprov watch` provisions it.
+
+```sh
+curl -s -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0.1:18080/admin/firmware        # the report
+curl -s -X POST -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0.1:18080/admin/firmware/check   # check now
+```
+
+The first check runs a minute after the controller starts; a phone that
+appears later is covered within the next hour. A source that fails keeps
+its previous result and is listed under `errors`. The phone fields need the
+agent from 2026-10 or later; re-provision older ones
+(`pbctl devices provision <serial>`).
 
 ## Gateway settings
 

@@ -45,6 +45,7 @@ func main() {
 	trustedCIDRs := flag.String("trusted-cidrs", "127.0.0.0/8,::1/128", "comma-separated CIDRs served without an API key in \"local\" access mode")
 	trustedProxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of reverse proxies whose X-Forwarded-For is trusted to name the real client address; empty = never trust it")
 	ollamaListen := flag.String("ollama-listen", "", "optional second HTTP listen address serving only the Ollama-compatible API (e.g. \":11434\"); empty = off (it is also served on -listen)")
+	firmwareCheck := flag.Bool("firmware-check", false, "check online, once a day, whether newer firmware or a LineageOS build exists for each phone (sends device codenames to Google, LineageOS and GitHub; ADR-030)")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -166,6 +167,7 @@ func main() {
 		External:       external,
 		Jobs:           jobs,
 		MMB:            controller.MMBOptions{Dir: mmbDir},
+		Firmware:       controller.FirmwareOptions{Online: *firmwareCheck},
 		Devices:        devicesOpts,
 		AccessMode:     *gatewayAccess,
 		TrustedCIDRs:   trustedCIDRList,
@@ -207,6 +209,7 @@ func main() {
 	defer stop()
 	go srv.RunExternals(ctx)
 	go srv.RunJobs(ctx)
+	go srv.RunFirmware(ctx)
 	hs := &http.Server{Addr: *addr, Handler: srv.Handler()}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()

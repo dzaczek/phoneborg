@@ -79,3 +79,34 @@ func TestSanitize(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestBootloader(t *testing.T) {
+	for _, c := range []struct {
+		props map[string]string
+		want  string
+	}{
+		{map[string]string{"ro.boot.flash.locked": "1", "ro.boot.verifiedbootstate": "green"}, "locked"},
+		{map[string]string{"ro.boot.flash.locked": "0"}, "unlocked"},
+		{map[string]string{"ro.boot.verifiedbootstate": "orange"}, "unlocked"}, // LineageOS on the Mi 8
+		{map[string]string{"ro.boot.verifiedbootstate": "green"}, "locked"},
+		{map[string]string{}, ""},
+	} {
+		if got := Bootloader(c.props); got != c.want {
+			t.Errorf("Bootloader(%v) = %q, want %q", c.props, got, c.want)
+		}
+	}
+}
+
+func TestDiscoverFirmware(t *testing.T) {
+	inv := Discover(ParseGetprop(`[ro.product.brand]: [POCO]
+[ro.product.device]: [alioth]
+[ro.build.id]: [TKQ1.221114.001]
+[ro.build.display.id]: [TKQ1.221114.001 test-keys]
+[ro.build.version.incremental]: [V816.0.5.0.TKHMIXM]
+[ro.build.version.security_patch]: [2024-03-01]
+[ro.boot.flash.locked]: [1]`), "test")
+	if inv.Brand != "POCO" || inv.Device != "alioth" || inv.BuildID != "TKQ1.221114.001" || inv.BuildIncremental != "V816.0.5.0.TKHMIXM" ||
+		inv.SecurityPatch != "2024-03-01" || inv.Bootloader != "locked" || inv.LineageVersion != "" {
+		t.Errorf("firmware fields = %+v", inv)
+	}
+}

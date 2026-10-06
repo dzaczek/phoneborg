@@ -134,6 +134,15 @@ func Discover(props map[string]string, version string) proto.Inventory {
 		CPUCores:       runtime.NumCPU(),
 		RAMTotalBytes:  ParseMeminfo(readFile("/proc/meminfo"))["MemTotal"],
 		AgentVersion:   version,
+
+		Brand:            props["ro.product.brand"],
+		Device:           props["ro.product.device"],
+		BuildID:          props["ro.build.id"],
+		BuildDisplay:     props["ro.build.display.id"],
+		BuildIncremental: props["ro.build.version.incremental"],
+		SecurityPatch:    props["ro.build.version.security_patch"],
+		LineageVersion:   props["ro.lineage.version"],
+		Bootloader:       Bootloader(props),
 	}
 	inv.SDK, _ = strconv.Atoi(props["ro.build.version.sdk"])
 	// Respect container limits so emulated low-end phones report what they
@@ -149,6 +158,25 @@ func Discover(props map[string]string, version string) proto.Inventory {
 		inv.StorageFreeBytes = st.Bavail * uint64(st.Bsize)
 	}
 	return inv
+}
+
+// Bootloader reports "locked", "unlocked" or "" from ro.boot.flash.locked,
+// falling back to the verified boot state (orange = unlocked), which some
+// ROMs (LineageOS on the Mi 8) set without the flash property.
+func Bootloader(props map[string]string) string {
+	switch props["ro.boot.flash.locked"] {
+	case "1":
+		return "locked"
+	case "0":
+		return "unlocked"
+	}
+	switch props["ro.boot.verifiedbootstate"] {
+	case "green", "yellow":
+		return "locked"
+	case "orange":
+		return "unlocked"
+	}
+	return ""
 }
 
 // AvailableRAM is MemAvailable, capped by remaining cgroup headroom.
