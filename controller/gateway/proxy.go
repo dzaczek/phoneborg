@@ -212,6 +212,9 @@ func (g *Gateway) Inflight() map[string]int {
 	return out
 }
 
+// Backends returns every live backend, drained and hot ones included.
+func (g *Gateway) Backends() []Backend { return g.backends() }
+
 // routable returns the backends that may take new requests.
 func (g *Gateway) routable() []Backend {
 	var out []Backend

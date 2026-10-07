@@ -1,47 +1,57 @@
-// Dashboards: the Grafana dashboard inside the panel (ADR-031). The
-// controller serves Grafana under /grafana/ on its own origin; opening this
-// view trades the admin token for a session cookie scoped to /grafana/.
-import { get, grafanaSession } from '../api.js';
+// Dashboards: the Grafana dashboards inside the panel (ADR-031): the cluster
+// dashboard, or the analytics of one phone chosen here.
+import { get } from '../api.js';
 import { h, fill } from '../dom.js';
+import { grafana, dashboardURL, dashboardFrame, notSetUp } from '../grafana.js';
 
 const RANGES = [['1h', 'now-1h'], ['6h', 'now-6h'], ['24h', 'now-24h'], ['7d', 'now-7d']];
-let range = 'now-6h'; // kept across view re-creation
+const BOARDS = { cluster: { uid: 'phoneborg', label: 'Cluster' }, node: { uid: 'phoneborg-node', label: 'Node' } };
+// Kept across view re-creation.
+let range = 'now-6h';
+let board = 'cluster';
+let node = '';
 
-const theme = () => (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-
-function dashboardURL(info, kiosk) {
-  const q = new URLSearchParams({ orgId: '1', from: range, to: 'now', refresh: '30s', theme: theme() });
-  return `${info.prefix}d/${info.dashboard_uid}/phoneborg?${q}${kiosk ? '&kiosk' : ''}`;
+// showNodeAnalytics opens this view on one phone's analytics.
+export function showNodeAnalytics(id) {
+  board = 'node';
+  node = id;
+  location.hash = '#/dashboards';
 }
+
+const pressed = (on) => (on ? 'button.small.primary' : 'button.small');
 
 export default function dashboardsView() {
   const tools = h('div.row');
   const body = h('div', null, h('p.empty', null, 'Loading…'));
   const el = h('section', null, h('div.page-head', null, h('h1', null, 'Dashboards'), tools), body);
-  let info = null;
+  let g = null;
+  let nodes = [];
 
   function render() {
-    const frame = h('iframe.dashboard', { src: dashboardURL(info, true), title: 'PhoneBorg Grafana dashboard', loading: 'lazy' });
+    if (board === 'node' && !nodes.some((n) => n.id === node)) node = nodes.length ? nodes[0].id : '';
+    const vars = board === 'node' ? { node } : {};
+    const url = (kiosk) => dashboardURL(g, BOARDS[board].uid, { from: range, vars, kiosk });
+    const nodeSel = h('select', { 'aria-label': 'Phone', onchange: (e) => { node = e.target.value; render(); } },
+      nodes.map((n) => h('option', { value: n.id, selected: n.id === node }, n.alias ? `${n.alias} (${n.id})` : n.id)));
     fill(tools,
-      RANGES.map(([label, from]) => h(from === range ? 'button.small.primary' : 'button.small', {
-        type: 'button', 'aria-pressed': String(from === range),
-        onclick: () => { range = from; render(); },
-      }, label)),
-      h('a.small.dashboard-open', { href: dashboardURL(info, false), target: '_blank', rel: 'noopener noreferrer' }, 'Open in Grafana'));
-    fill(body, frame);
+      Object.entries(BOARDS).map(([k, b]) => h(pressed(k === board), {
+        type: 'button', 'aria-pressed': String(k === board), onclick: () => { board = k; render(); } }, b.label)),
+      board === 'node' ? nodeSel : null,
+      h('span.muted', null, '·'),
+      RANGES.map(([label, from]) => h(pressed(from === range), {
+        type: 'button', 'aria-pressed': String(from === range), onclick: () => { range = from; render(); } }, label)),
+      h('a.small.dashboard-open', { href: url(false), target: '_blank', rel: 'noopener noreferrer' }, 'Open in Grafana'));
+    fill(body, board === 'node' && !node ? h('p.empty', null, 'No phones yet.') : dashboardFrame(url(true), `${BOARDS[board].label} dashboard`));
   }
 
   async function refresh() {
-    if (info) return; // the dashboard refreshes itself
-    const i = await get('/admin/grafana');
-    if (!i.enabled) {
-      fill(body, h('div.card.section', null,
-        h('p', null, 'Grafana is not set up in the panel.'),
-        h('p.muted.small', null, 'Start the controller with -grafana-url http://127.0.0.1:3000 and serve Grafana from /grafana/ ' +
-          '(serve_from_sub_path = true, root_url ending in /grafana/, allow_embedding = true). See OPERATIONS.md, "Grafana in the panel".')));
+    if (g) return; // the dashboards refresh themselves
+    g = await grafana();
+    if (!g) {
+      fill(body, notSetUp());
       return;
     }
-    info = await grafanaSession();
+    nodes = (await get('/admin/nodes')).map((n) => ({ id: n.id, alias: n.alias }));
     render();
   }
 

@@ -340,3 +340,17 @@ dialog.drawer {
 iframe.dashboard { display: block; width: 100%; height: calc(100vh - 150px); min-height: 480px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .dashboard-open { margin-left: 8px; align-self: center; }
 iframe.node-chart { display: block; width: 100%; height: 220px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+
+/* Tokens: the token analyzer (ADR-032). */
+.section-title { margin: 22px 0 10px; }
+tr.selected td { background: var(--info-bg); }
+.bad-text { color: var(--bad); }
+.tok-text { font-family: var(--mono, ui-monospace, monospace); font-size: 13px; line-height: 1.9; white-space: pre-wrap; word-break: break-word;
+  max-height: 420px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); }
+.tok { border-radius: 3px; padding: 1px 0; }
+.tok0 { background: rgba(96, 165, 250, .28); }
+.tok1 { background: rgba(52, 211, 153, .28); }
+.tok2 { background: rgba(251, 191, 36, .28); }
+.tok3 { background: rgba(244, 114, 182, .28); }
+meter { width: 90px; vertical-align: middle; }
+.tok-input { width: 100%; margin: 6px 0 8px; }

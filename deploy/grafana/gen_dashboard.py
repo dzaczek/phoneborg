@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generates deploy/grafana/dashboards/phoneborg.json. Edit this file, not the JSON.
+"""Generates the dashboards in deploy/grafana/dashboards/ (phoneborg.json, the
+per-node phoneborg-node.json and phoneborg-tokens.json). Edit this file, not the JSON.
 
     python3 deploy/grafana/gen_dashboard.py
 """
@@ -191,16 +192,130 @@ ts("Requests / s by target", [('sum by (target) (rate(phoneborg_gateway_target_r
 ts("Eligible nodes per pool", [('phoneborg_pool_members', "{{pool}}")], 12, w=12, h=6,
    desc="Pool members that can take requests now: ready, not drained, not hot, matching the pool's filters (pbctl pools)")
 
-dash = {"uid": "phoneborg", "title": "PhoneBorg", "tags": ["phoneborg"], "timezone": "browser",
-        "schemaVersion": 39, "version": 1, "refresh": "5s", "time": {"from": "now-30m", "to": "now"},
-        "links": [{"title": "PhoneBorg on GitHub", "type": "link", "icon": "doc",
-                   "url": "https://github.com/dzaczek/phoneborg", "targetBlank": True}],
-        "templating": {"list": [{"name": "node", "label": "Node", "type": "query", "datasource": DS,
-            "query": {"query": 'label_values(phoneborg_gateway_tokens_total, node_id)', "refId": "node"},
-            "definition": 'label_values(phoneborg_gateway_tokens_total, node_id)',
-            "refresh": 2, "multi": True, "includeAll": True, "sort": 1,
-            "current": {"selected": True, "text": ["All"], "value": ["$__all"]}}]},
-        "panels": panels}
-out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboards", "phoneborg.json")
-json.dump(dash, open(out, "w"), indent=1)
-print(len(panels), "panels")
+LINKS = [{"title": "PhoneBorg on GitHub", "type": "link", "icon": "doc",
+          "url": "https://github.com/dzaczek/phoneborg", "targetBlank": True}]
+
+def save(uid, title, filename, templating, time_from="now-30m"):
+    """Writes the panels built so far as one dashboard, then starts a new one."""
+    dash = {"uid": uid, "title": title, "tags": ["phoneborg"], "timezone": "browser",
+            "schemaVersion": 39, "version": 1, "refresh": "5s", "time": {"from": time_from, "to": "now"},
+            "links": LINKS, "templating": {"list": templating}, "panels": list(panels)}
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboards", filename)
+    json.dump(dash, open(out, "w"), indent=1)
+    print(filename, len(panels), "panels")
+    panels.clear(); pid[0] = 1; y[0] = 0
+
+save("phoneborg", "PhoneBorg", "phoneborg.json", [{"name": "node", "label": "Node", "type": "query", "datasource": DS,
+    "query": {"query": 'label_values(phoneborg_gateway_tokens_total, node_id)', "refId": "node"},
+    "definition": 'label_values(phoneborg_gateway_tokens_total, node_id)',
+    "refresh": 2, "multi": True, "includeAll": True, "sort": 1,
+    "current": {"selected": True, "text": ["All"], "value": ["$__all"]}}])
+
+# ---------- Node analytics: one phone at a time (ADR-031) ----------
+N = 'node_id="$node"'
+REQ = 'phoneborg_gateway_requests_total'
+row("Now")
+hot = [{"color": "green", "value": None}, {"color": "orange", "value": 60}, {"color": "red", "value": 75}]
+stat("Active", f'phoneborg_node_up{{{N}}}', 0, w=3, thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 1}],
+     desc="1 = ACTIVE")
+stat("Temperature", f'phoneborg_node_temperature_celsius{{{N}}}', 3, w=3, unit="celsius", thresholds=hot)
+stat("Battery", f'phoneborg_node_battery_level_percent{{{N}}}', 6, w=3, unit="percent")
+stat("Available RAM", f'phoneborg_node_ram_available_bytes{{{N}}}', 9, w=3, unit="bytes")
+stat("Self-test", f'phoneborg_node_runtime_gen_tokens_per_second{{{N}}}', 12, w=3, desc="Generation tok/s of the node's self-test (ADR-010)")
+stat("Last request", f'phoneborg_node_generation_tokens_per_second{{{N}}}', 15, w=3, desc="Generation tok/s llama.cpp reported for the last request")
+stat("In flight", f'phoneborg_gateway_inflight_requests{{{N}}} or vector(0)', 18, w=3)
+stat("Output (range)", f'sum(increase({TOK}{{{OUT}, {N}}}[$__range])) or vector(0)', 21, w=3, desc="Tokens this phone generated in the selected time range")
+panels[-1]["fieldConfig"]["defaults"]["decimals"] = 0
+y[0] += 4
+
+row("Tokens")
+minute_bars("Input and output tokens per minute", [(f'sum(increase({TOK}{{{IN}, {N}}}[1m]))', "input", "blue"),
+                                                   (f'sum(increase({TOK}{{{OUT}, {N}}}[1m]))', "output", "green")], 0, 12,
+            "Prompt tokens the phone read and tokens it generated, per minute")
+ts("Output tokens per minute by model", [(f'sum by (model) (increase({TOK}{{{OUT}, {N}}}[1m]))', "{{model}}")], 12, unit="short", stack=True)
+y[0] += 8
+bars("Tokens by API key (time range)", [(f'sum by (principal) (increase({TOK}{{{IO}, {N}}}[$__range]))', "{{principal}}")], 0, 8,
+     desc="Who used this phone: input + output tokens per API key or principal")
+ts("Average tokens per request", [
+    (f'sum(increase({TOK}{{{IN}, {N}}}[5m])) / clamp_min(sum(increase({REQ}{{code=~"2..", {N}}}[5m])), 1)', "input"),
+    (f'sum(increase({TOK}{{{OUT}, {N}}}[5m])) / clamp_min(sum(increase({REQ}{{code=~"2..", {N}}}[5m])), 1)', "output")], 8, w=8,
+   desc="Prompt and answer size of the requests this phone served (5-minute windows)")
+ts("Prompt cache hit ratio", [(f'sum(rate({TOK}{{kind="prompt_cached", {N}}}[5m])) / clamp_min(sum(rate({TOK}{{{IN}, {N}}}[5m])), 1e-9)', "cached")],
+   16, w=8, unit="percentunit", desc="Share of prompt tokens reused from llama-server's cache")
+y[0] += 8
+
+row("Requests and speed")
+ts("Requests per minute by status", [(f'sum by (code) (increase({REQ}{{{N}}}[1m]))', "{{code}}")], 0, w=8, stack=True)
+ts("Upstream errors per minute", [(f'sum(increase(phoneborg_gateway_upstream_errors_total{{{N}}}[1m]))', "errors")], 8, w=8,
+   desc="Attempts on this phone that failed and were retried elsewhere")
+ts("Speed of the last request", [(f'phoneborg_node_generation_tokens_per_second{{{N}}}', "generation"),
+                                 (f'phoneborg_node_prompt_tokens_per_second{{{N}}}', "prompt")], 16, w=8, desc="tokens/s reported by llama.cpp")
+y[0] += 8
+
+row("Health")
+ts("Temperature", [(f'phoneborg_node_temperature_celsius{{{N}}}', "°C")], 0, w=8, unit="celsius")
+ts("Available RAM", [(f'phoneborg_node_ram_available_bytes{{{N}}}', "available")], 8, w=8, unit="bytes")
+ts("Load (1m)", [(f'phoneborg_node_load1{{{N}}}', "load")], 16, w=8)
+y[0] += 8
+ts("Battery", [(f'phoneborg_node_battery_level_percent{{{N}}}', "%")], 0, w=8, unit="percent")
+ts("Runtime ready / restarts", [(f'phoneborg_node_runtime_ready{{{N}}}', "ready"), (f'phoneborg_node_runtime_restarts{{{N}}}', "restarts")], 8, w=8)
+ts("Hot / drained", [(f'phoneborg_node_hot{{{N}}}', "hot"), (f'phoneborg_node_drained{{{N}}}', "drained")], 16, w=8)
+y[0] += 8
+
+row("Model and Super Borg")
+ts("Model served", [(f'phoneborg_node_model{{{N}}}', "{{model_id}} {{state}}")], 0, w=12, h=6,
+   desc="1 while the phone serves (or switches to) the model")
+ts("Super Borg subtasks per 5 min", [(f'sum by (result) (increase(phoneborg_superborg_delegations_total{{{N}}}[5m]))', "{{result}}")], 12, w=12, h=6,
+   desc="Subtasks the Super Borg orchestrator gave this phone (ADR-020)")
+y[0] += 6
+
+save("phoneborg-node", "PhoneBorg node", "phoneborg-node.json", [{"name": "node", "label": "Node", "type": "query", "datasource": DS,
+    "query": {"query": 'label_values(phoneborg_node_up, node_id)', "refId": "node"},
+    "definition": 'label_values(phoneborg_node_up, node_id)', "refresh": 2, "multi": False, "includeAll": False, "sort": 1}],
+    time_from="now-6h")
+
+# ---------- Token analytics (ADR-032) ----------
+row("Totals in the time range")
+stat("Input tokens", f'sum(increase({TOK}{{{IN}}}[$__range])) or vector(0)', 0)
+stat("Output tokens", f'sum(increase({TOK}{{{OUT}}}[$__range])) or vector(0)', 4)
+stat("Input from cache", f'sum(increase({TOK}{{kind="prompt_cached"}}[$__range])) or vector(0)', 8,
+     desc="Prompt tokens llama-server reused from its cache instead of processing them again")
+stat("Cache share", f'sum(increase({TOK}{{kind="prompt_cached"}}[$__range])) / clamp_min(sum(increase({TOK}{{{IN}}}[$__range])), 1) or vector(0)', 12,
+     unit="percentunit")
+stat("Output per input", f'sum(increase({TOK}{{{OUT}}}[$__range])) / clamp_min(sum(increase({TOK}{{{IN}}}[$__range])), 1) or vector(0)', 16,
+     desc="Generated tokens per prompt token: agents with long prompts are far below 1")
+stat("Requests", f'sum(increase({REQ}{{code=~"2.."}}[$__range])) or vector(0)', 20)
+for p_ in panels[-6:]:
+    p_["fieldConfig"]["defaults"]["decimals"] = 0
+panels[-3]["fieldConfig"]["defaults"]["decimals"] = 1
+panels[-2]["fieldConfig"]["defaults"]["decimals"] = 2
+y[0] += 4
+
+row("Who and where")
+bars("By phone (time range)", [(f'sum by (node_id) (increase({TOK}{{{IN}}}[$__range]))', "{{node_id}} input"),
+                               (f'sum by (node_id) (increase({TOK}{{{OUT}}}[$__range]))', "{{node_id}} output")], 0, 8)
+bars("By model (time range)", [(f'sum by (model) (increase({TOK}{{{IN}}}[$__range]))', "{{model}} input"),
+                               (f'sum by (model) (increase({TOK}{{{OUT}}}[$__range]))', "{{model}} output")], 8, 8)
+bars("By API key (time range)", [(f'sum by (principal) (increase({TOK}{{{IN}}}[$__range]))', "{{principal}} input"),
+                                 (f'sum by (principal) (increase({TOK}{{{OUT}}}[$__range]))', "{{principal}} output")], 16, 8)
+y[0] += 8
+
+row("Over time")
+ts("Output tokens per minute by model", [(f'sum by (model) (increase({TOK}{{{OUT}}}[1m]))', "{{model}}")], 0, stack=True)
+ts("Input tokens per minute by phone", [(f'sum by (node_id) (increase({TOK}{{{IN}}}[1m]))', "{{node_id}}")], 12, stack=True)
+y[0] += 8
+ts("Tokens per minute by API key", [(f'sum by (principal) (increase({TOK}{{{IO}}}[1m]))', "{{principal}}")], 0, stack=True)
+ts("Prompt cache hit ratio by model", [(f'sum by (model) (rate({TOK}{{kind="prompt_cached"}}[5m])) / clamp_min(sum by (model) (rate({TOK}{{{IN}}}[5m])), 1e-9)', "{{model}}")],
+   12, unit="percentunit", desc="Gemma, LFM2 and Granite-H get no cache reuse in llama.cpp (BENCHMARKS.md)")
+y[0] += 8
+
+row("Request size and speed")
+ts("Average input tokens per request by model", [
+    (f'sum by (model) (increase({TOK}{{{IN}}}[5m])) / clamp_min(sum by (model) (increase({REQ}{{code=~"2.."}}[5m])), 1)', "{{model}}")], 0, w=8,
+   desc="How long the prompts are; every token must be read at the phone's prompt speed")
+ts("Average output tokens per request by model", [
+    (f'sum by (model) (increase({TOK}{{{OUT}}}[5m])) / clamp_min(sum by (model) (increase({REQ}{{code=~"2.."}}[5m])), 1)', "{{model}}")], 8, w=8)
+ts("Output tokens / s by phone", [(f'sum by (node_id) (rate({TOK}{{{OUT}}}[1m]))', "{{node_id}}")], 16, w=8, stack=True)
+y[0] += 8
+
+save("phoneborg-tokens", "PhoneBorg tokens", "phoneborg-tokens.json", [], time_from="now-24h")

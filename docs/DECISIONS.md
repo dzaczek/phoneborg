@@ -39,6 +39,7 @@ text.
 | [029](#adr-029-external-orchestrators) | External orchestrators | accepted | External nodes with `role=orchestrator` get no normal traffic and orchestrate only the Super Borg pools that name them. |
 | [030](#adr-030-firmware-check) | Firmware check | accepted | Agents report build, patch and bootloader; with `-firmware-check` the controller compares them daily with LineageOS, Google's OTA page and the Xiaomi tracker. |
 | [031](#adr-031-grafana-in-the-panel) | Grafana in the panel | accepted | The controller serves Grafana under `/grafana/`; the panel embeds the dashboard and per-node charts with a cookie-based session. |
+| [032](#adr-032-token-analyzer) | Token analyzer | accepted | The phones' own tokenizers count a text per served model; Grafana dashboards break token usage down per phone, model and key, and show one phone at a time. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 
@@ -1817,3 +1818,32 @@ Grafana decides what the embedded user may do: with anonymous Viewer access
 read-only; editing still needs a Grafana login. Grafana's own port, if left
 open, now answers under `/grafana/`. A controller restart invalidates the
 cookies; the panel asks for a new one when it loads.
+
+## ADR-032: Token analyzer
+
+**Problem.** On phones every prompt token costs seconds (Qwen3-4B reads
+about 12 tokens/s, see BENCHMARKS.md), and the context is 16k tokens. An
+operator needs to know how long a prompt is for each served model before
+sending it, and where the cluster's tokens go. Models tokenize differently,
+so a character count or one generic tokenizer is not enough.
+
+**Decision.**
+- `POST /admin/tokenize {text, model?}` sends the text (up to 256 KiB) to
+  llama-server's `/tokenize` on one phone per served model, in parallel, and
+  returns each model's token count, its context size and the phone's
+  self-test prompt speed, plus the token pieces for one model (up to 20,000).
+  Tokenizing needs no slot, so busy phones answer too; external nodes are
+  skipped because other servers have no `/tokenize`.
+- The panel's **Tokens** view shows the counts with the share of the
+  context, an estimated reading time on that phone and the text split into
+  coloured tokens; below it, the token usage dashboard.
+- Two more generated Grafana dashboards: `phoneborg-tokens` (totals, cache
+  share, output per input, tokens by phone, model and key, request sizes)
+  and `phoneborg-node` (one phone at a time: now, tokens, requests, health,
+  model and Super Borg work). The Dashboards view switches between the
+  cluster and the node dashboard and picks the phone by alias.
+
+**Consequences.** Counts are exact for each model because the phones'
+tokenizers are used; they include no chat template, so a chat request is a
+few tokens longer. The reading time uses the self-test prompt speed from a
+short prompt, so long prompts take longer than shown.

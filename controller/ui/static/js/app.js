@@ -1,5 +1,6 @@
 // Panel shell: login, navigation, auto-refresh and settings.
-import { api, token, setAuthErrorHandler, grafanaSession as startGrafanaSession } from './api.js';
+import { api, token, setAuthErrorHandler } from './api.js';
+import { grafana } from './grafana.js';
 import { h } from './dom.js';
 import { toast, errorToast, anyDialogOpen, formDialog, field } from './ui.js';
 import overview from './views/overview.js';
@@ -15,10 +16,11 @@ import mmb from './views/mmb.js';
 import keys from './views/keys.js';
 import usage from './views/usage.js';
 import dashboards from './views/dashboards.js';
+import tokens from './views/tokens.js';
 
 // Each view factory returns {title, el, live, refresh()}; live views are
 // refreshed every REFRESH_MS while the tab is visible and no dialog is open.
-const VIEWS = { overview, dashboards, nodes, devices, models, placement, pools, proxy, chat, jobs, mmb, keys, usage };
+const VIEWS = { overview, dashboards, tokens, nodes, devices, models, placement, pools, proxy, chat, jobs, mmb, keys, usage };
 const REFRESH_MS = 5000;
 
 const $ = (id) => document.getElementById(id);
@@ -161,9 +163,8 @@ function linkURL(name) {
 // and the Dashboards view work without a separate Grafana login.
 async function grafanaSession() {
   try {
-    const g = await api('GET', '/admin/grafana');
-    if (!g.enabled) return;
-    await startGrafanaSession();
+    const g = await grafana();
+    if (!g) return;
     grafanaPath = `${g.prefix}d/${g.dashboard_uid}/phoneborg`;
     applyLinks();
   } catch { /* the default links stay */ }

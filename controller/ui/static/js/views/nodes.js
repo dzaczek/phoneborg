@@ -5,6 +5,8 @@
 import { api, get } from '../api.js';
 import { h, fill, table, badge, bytes, int, tps, ago, classOf } from '../dom.js';
 import { toast, errorToast, confirmDialog, formDialog, field, drawer } from '../ui.js';
+import { grafana } from '../grafana.js';
+import { showNodeAnalytics } from './dashboards.js';
 
 const refreshNow = () => window.dispatchEvent(new Event('pb:refresh'));
 const ALIAS_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -131,11 +133,12 @@ function firmwareSection(fw, online) {
 // controller serves Grafana under /grafana/ (ADR-031).
 function nodeCharts(n) {
   const box = h('div');
-  get('/admin/grafana').then((g) => {
-    if (!g.enabled) return;
+  grafana().then((g) => {
+    if (!g) return;
     const theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     const q = new URLSearchParams({ orgId: '1', panelId: '17', 'var-node': n.id, from: 'now-6h', to: 'now', theme, refresh: '30s' });
-    fill(box, h('h3', null, 'Tokens per minute (6 h)'),
+    fill(box, h('h3', null, 'Tokens per minute (6 h) ',
+      h('button.small', { type: 'button', onclick: () => { document.querySelector('dialog[open]')?.close(); showNodeAnalytics(n.id); } }, 'Open analytics')),
       h('iframe.node-chart', { src: `${g.prefix}d-solo/${g.dashboard_uid}/phoneborg?${q}`, title: `Tokens per minute on ${n.id}`, loading: 'lazy' }));
   }).catch(() => {});
   return box;
