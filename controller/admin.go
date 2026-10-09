@@ -528,7 +528,7 @@ func applyRouterUpdate(c gateway.RouterConfig, u RouterUpdate) (gateway.RouterCo
 		c.Timeout = d
 	}
 	if c.Enabled && c.Classifier == "" {
-		return c, errors.New(`the router needs a classifier target, e.g. "node/mi8"`)
+		return c, errors.New(`the router needs a classifier target, e.g. "node/pixel"`)
 	}
 	if c.Enabled && c.Easy == "" && c.Hard == "" {
 		return c, errors.New(`the router needs an easy or a hard target, e.g. "pool/small"`)

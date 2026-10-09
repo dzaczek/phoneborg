@@ -793,7 +793,7 @@ no Python on the phone or the host). Requests for a model id, a pool or a
 node are not touched.
 
 ```sh
-pbctl gateway set router=on router_classifier=node/mi8 router_easy=pool/small router_hard=pool/big
+pbctl gateway set router=on router_classifier=node/pixel router_easy=pool/small router_hard=pool/big
 pbctl gateway set router_threshold=0.6 router_timeout=30s   # P(hard) needed for "hard"; classifier wait
 pbctl gateway set router=off                                # back to plain auto; targets are kept
 ```
@@ -820,10 +820,27 @@ curl -si http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: applicatio
 
 Choosing a classifier: the classifier prompt is fixed (system prompt with
 six examples, cached by the phone), and the request text is clipped to
-2000 bytes. With llama.cpp b11136, Gemma 3 1B, Gemma 3n E2B and
-Llama 3.2 3B classified all seven test requests correctly; Llama 3.2 1B got
-3–4 of 7 and is not suitable. Reasoning models that open with `<think>`
-are asked not to think (`chat_template_kwargs.enable_thinking=false`).
+2000 bytes. With llama.cpp b11136, Gemma 3 1B, Gemma 3n E2B, Llama 3.2 3B
+and Qwen3-4B-Instruct-2507 classified all seven test requests correctly;
+Llama 3.2 1B got 3–4 of 7 and is not suitable. Reasoning models that open
+with `<think>` are asked not to think (`chat_template_kwargs.enable_thinking=false`).
+
+Prefer a classifier whose model has no sliding-window attention (Qwen3,
+Llama). On a Gemma 3/3n model llama-server (b11136, default flags) can only
+roll its cache back to a saved context checkpoint, and the checkpoints sit
+at the start and near the end of the previous prompt; a new request that
+differs after the cached system prompt invalidates the end one, so every
+decision reprocesses the whole prompt. Measured on the cluster:
+
+| Classifier | Model | Per decision (system prompt cached) | First decision |
+|---|---|---|---|
+| Pixel 8 Pro | Qwen3-4B-Instruct-2507 | 1.4–1.8 s | 9 s |
+| Mi 8 | Gemma 3n E2B (SWA) | 30–41 s (no cache reuse) | 30 s |
+
+With the default 20 s timeout the Mi 8 therefore always falls back. The
+classifier phone has one slot: while it generates for other traffic,
+decisions wait, and other prompts evict the cached system prompt.
+
 Check a model before relying on it, against a phone (`adb forward`) or any
 llama-server:
 
@@ -1254,7 +1271,7 @@ pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 
 pbctl gateway set timeout=900s                   # silence limit once a response has started
 pbctl gateway set first_token_timeout=45m        # wait for the first token (prompt processing)
 pbctl gateway set thermal_limit=70               # phones at/above 70 °C get no new sessions; 0 disables
-pbctl gateway set router=on router_classifier=node/mi8 router_hard=pool/big   # semantic router, see below
+pbctl gateway set router=on router_classifier=node/pixel router_hard=pool/big   # semantic router, see below
 ```
 
 Two time limits apply to every proxied call (ADR-024). Until the node sends

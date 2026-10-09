@@ -85,7 +85,7 @@ export default function proxyView() {
   // touches nothing else.
   function routerForm(r) {
     const enabled = h('input', { type: 'checkbox', name: 'router_enabled', checked: r.enabled });
-    const classifier = h('input', { name: 'router_classifier', value: r.classifier, placeholder: 'node/mi8', spellcheck: 'false' });
+    const classifier = h('input', { name: 'router_classifier', value: r.classifier, placeholder: 'node/pixel', spellcheck: 'false' });
     const easy = h('input', { name: 'router_easy', value: r.easy, placeholder: 'auto', spellcheck: 'false' });
     const hard = h('input', { name: 'router_hard', value: r.hard, placeholder: 'auto', spellcheck: 'false' });
     const threshold = h('input', { type: 'number', name: 'router_threshold', min: 0.01, max: 0.99, step: 0.01, required: true, value: String(r.threshold) });
@@ -96,7 +96,7 @@ export default function proxyView() {
       h('h2', null, 'Semantic router ', badge(r.enabled ? 'on' : 'off', r.enabled ? 'ok' : 'idle'), ' ', badge('experimental', 'warn')),
       h('p.muted', null, 'Requests for "auto" are first classified as easy or hard by one phone (a one-token answer read from its logprobs), then sent to the easy or the hard target. Any classifier failure serves the request as plain auto. Other models, pools and nodes are not affected.'),
       h('label', null, enabled, ' Enabled'),
-      field('Classifier', classifier, 'The phone that classifies, e.g. node/mi8. Instruction models of 1B and up worked in tests.'),
+      field('Classifier', classifier, 'The phone that classifies, e.g. node/pixel. Prefer a Qwen3 or Llama model: Gemma 3/3n reprocess the whole prompt every time (see OPERATIONS.md).'),
       field('Easy target', easy, 'Where easy requests go: pool/<name>, node/<alias>, a model id or auto. Empty = auto.'),
       field('Hard target', hard, 'Where hard requests go. Empty = auto.'),
       field('Threshold', threshold, 'P(hard) at or above which a request is hard (0–1).'),

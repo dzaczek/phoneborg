@@ -1892,7 +1892,10 @@ a phone a few hundred prompt tokens, one to a few seconds with the system
 prompt cached. The classifier phone takes that load, and its in-flight
 count shows it to the pickers. The router uses llama-server's
 OpenAI-compatible logprobs (verified against b11136); external engines that
-do not return `top_logprobs` fall back every time. The settings are not
+do not return `top_logprobs` fall back every time. Models with
+sliding-window attention (Gemma 3/3n) get no prompt-cache reuse for these
+requests in b11136, so a decision costs the full prompt (30–40 s on the
+Mi 8); a Qwen3-4B phone decides in about 1.5 s. The settings are not
 persisted, like the other gateway settings. Two classes only; more classes,
 calibration per model and other decisions (retry, verification in Super
 Borg) are left for later.
