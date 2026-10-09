@@ -1847,3 +1847,52 @@ so a character count or one generic tokenizer is not enough.
 tokenizers are used; they include no chat template, so a chat request is a
 few tokens longer. The reading time uses the self-test prompt speed from a
 short prompt, so long prompts take longer than shown.
+
+## ADR-033: Semantic router for "auto" (experimental)
+
+**Problem.** `auto` sends every request to any ready phone. A greeting and
+a request to write a red-black tree land on the same kind of phone, though
+the small, fast models answer the first well and only the bigger ones the
+second. Generation on a phone is slow (3–17 tok/s), prompt processing much
+faster, so a decision that needs no generation is cheap enough to make per
+request. The "semantic if" pattern (SemIf/OpenJev) reads such a decision
+from the logits of a single forward pass; its reference code is Python,
+which does not belong on the phones or in the controller.
+
+**Alternatives.**
+- Rules on the request (length, keywords, tools): cheap, but blind to what
+  the request asks.
+- A classifier answering in text or JSON: needs generation and output
+  repair, and gives no confidence.
+- SemIf's Python harness next to the controller, loading its own GGUF:
+  a second runtime and a second copy of a model the phones already serve.
+- Reading the answer probabilities over HTTP from a phone's own
+  llama-server (chosen).
+
+**Decision.**
+- An optional router in the gateway, off by default, configured at runtime
+  through `PUT /admin/gateway {"router": {...}}`, `pbctl gateway set
+  router=on ...` and the panel: a classifier target, an easy and a hard
+  target, a threshold on P(hard) (default 0.5) and a timeout (default 20 s).
+- Only requests for `auto` are routed. The gateway sends the least busy
+  classifier phone one chat completion with `max_tokens: 1`, `logprobs`,
+  `top_logprobs: 10` and `enable_thinking: false`: a fixed few-shot system
+  prompt (cached by llama-server) and the last user message (or the
+  completion prompt) clipped to 2000 bytes. P(hard) = P(B) / (P(A) + P(B))
+  over the first token's top logprobs.
+- Every failure is a fallback to plain `auto`, never a failed request,
+  including answers with P(A) + P(B) below 0.5, which a small model gives
+  when it starts doing the request instead of classifying it.
+- Observability: `X-Phoneborg-Route` on the response,
+  `phoneborg_gateway_router_decisions_total{result}`,
+  `phoneborg_gateway_router_duration_seconds`, a log line per decision.
+
+**Consequences.** An `auto` request waits for one classification first: on
+a phone a few hundred prompt tokens, one to a few seconds with the system
+prompt cached. The classifier phone takes that load, and its in-flight
+count shows it to the pickers. The router uses llama-server's
+OpenAI-compatible logprobs (verified against b11136); external engines that
+do not return `top_logprobs` fall back every time. The settings are not
+persisted, like the other gateway settings. Two classes only; more classes,
+calibration per model and other decisions (retry, verification in Super
+Borg) are left for later.

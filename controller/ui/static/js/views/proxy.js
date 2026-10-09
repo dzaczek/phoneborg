@@ -78,7 +78,50 @@ export default function proxyView() {
         : [h('p', null, 'The gateway is open: requests without a key, or with an unknown one, are served as "anonymous". Requests with a known key are counted under its name.'),
           h('div.row', null, enforce, h('a', { href: '#/keys' }, 'Manage API keys'))]);
 
-    fill(body, form, auth);
+    fill(body, form, routerForm(s.router), auth);
+  }
+
+  // Semantic router (ADR-033): its own form, so switching it on or off
+  // touches nothing else.
+  function routerForm(r) {
+    const enabled = h('input', { type: 'checkbox', name: 'router_enabled', checked: r.enabled });
+    const classifier = h('input', { name: 'router_classifier', value: r.classifier, placeholder: 'node/mi8', spellcheck: 'false' });
+    const easy = h('input', { name: 'router_easy', value: r.easy, placeholder: 'auto', spellcheck: 'false' });
+    const hard = h('input', { name: 'router_hard', value: r.hard, placeholder: 'auto', spellcheck: 'false' });
+    const threshold = h('input', { type: 'number', name: 'router_threshold', min: 0.01, max: 0.99, step: 0.01, required: true, value: String(r.threshold) });
+    const timeout = h('input', { name: 'router_timeout', required: true, value: r.timeout, spellcheck: 'false' });
+    const err = h('p.form-error', { role: 'alert', hidden: true });
+    const save = h('button.primary', { type: 'submit' }, 'Save router');
+    const f = h('form.card.section', null,
+      h('h2', null, 'Semantic router ', badge(r.enabled ? 'on' : 'off', r.enabled ? 'ok' : 'idle'), ' ', badge('experimental', 'warn')),
+      h('p.muted', null, 'Requests for "auto" are first classified as easy or hard by one phone (a one-token answer read from its logprobs), then sent to the easy or the hard target. Any classifier failure serves the request as plain auto. Other models, pools and nodes are not affected.'),
+      h('label', null, enabled, ' Enabled'),
+      field('Classifier', classifier, 'The phone that classifies, e.g. node/mi8. Instruction models of 1B and up worked in tests.'),
+      field('Easy target', easy, 'Where easy requests go: pool/<name>, node/<alias>, a model id or auto. Empty = auto.'),
+      field('Hard target', hard, 'Where hard requests go. Empty = auto.'),
+      field('Threshold', threshold, 'P(hard) at or above which a request is hard (0–1).'),
+      field('Timeout', timeout, 'Longest wait for the classifier, e.g. 20s; after it the request is plain auto.'),
+      err,
+      h('div.row', null, save, h('span.muted.small', null, 'Applies at once, not saved across a controller restart.')));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const u = {
+        enabled: enabled.checked, classifier: classifier.value.trim(), easy: easy.value.trim(), hard: hard.value.trim(),
+        threshold: Number(threshold.value), timeout: timeout.value.trim(),
+      };
+      save.disabled = true;
+      err.hidden = true;
+      try {
+        render(await api('PUT', '/admin/gateway', { router: u }));
+        toast(u.enabled ? 'Semantic router on.' : 'Semantic router off.');
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      } finally {
+        save.disabled = false;
+      }
+    });
+    return f;
   }
 
   async function refresh() {

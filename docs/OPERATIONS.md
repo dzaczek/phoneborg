@@ -19,6 +19,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Multi-model benchmark (MMB)](#multi-model-benchmark-mmb)
 - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
 - [Tool-capable routing](#tool-capable-routing)
+- [Semantic router (experimental)](#semantic-router-experimental)
 - [Super Borg pools](#super-borg-pools)
 - [Super Borg jobs](#super-borg-jobs)
 - [External nodes (Mac / PC)](#external-nodes-mac--pc)
@@ -781,6 +782,58 @@ pbctl models tag qwen3-4b-instruct-2507-q4_k_m general,tools   # mark a model as
 
 Metric: `phoneborg_gateway_tool_requests_total{result="capable|fallback"}`.
 
+## Semantic router (experimental)
+
+Off by default (ADR-033). When on, every request for **`auto`** is first
+classified as *easy* or *hard* by one phone, then served by the easy or the
+hard target. The classifier answers with one token; the gateway reads the
+probabilities of the letters `A` (easy) and `B` (hard) from llama-server's
+`top_logprobs`, so a decision costs prompt processing only (no generation,
+no Python on the phone or the host). Requests for a model id, a pool or a
+node are not touched.
+
+```sh
+pbctl gateway set router=on router_classifier=node/mi8 router_easy=pool/small router_hard=pool/big
+pbctl gateway set router_threshold=0.6 router_timeout=30s   # P(hard) needed for "hard"; classifier wait
+pbctl gateway set router=off                                # back to plain auto; targets are kept
+```
+
+The same settings are in the panel: **Proxy → Semantic router**. Targets
+are anything a request may name: `pool/<name>`, `node/<alias>`, a model id
+or `auto` (an empty target means `auto`). Like the other gateway settings
+they apply at once and are not saved across a controller restart.
+
+Any failure serves the request as plain `auto`, never as an error: no ready
+classifier, an HTTP error or timeout, an answer that puts less than half of
+its probability on `A` and `B` together (the model started doing the
+request instead of classifying it), or a target that is unknown, disabled
+or has no ready phone. Every response to an `auto` request carries
+`X-Phoneborg-Route: easy|hard|fallback`, and the controller logs
+`router decision` (with `p_hard`) or `router fallback to auto` (with the
+reason).
+
+```sh
+curl -si http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Prove that sqrt(2) is irrational."}]}' \
+  | grep -i x-phoneborg-route
+```
+
+Choosing a classifier: the classifier prompt is fixed (system prompt with
+six examples, cached by the phone), and the request text is clipped to
+2000 bytes. With llama.cpp b11136, Gemma 3 1B, Gemma 3n E2B and
+Llama 3.2 3B classified all seven test requests correctly; Llama 3.2 1B got
+3–4 of 7 and is not suitable. Reasoning models that open with `<think>`
+are asked not to think (`chat_template_kwargs.enable_thinking=false`).
+Check a model before relying on it, against a phone (`adb forward`) or any
+llama-server:
+
+```sh
+PHONEBORG_LLAMA_URL=http://127.0.0.1:18431 go test ./controller/gateway -run TestRouterLive -v
+```
+
+Metrics: `phoneborg_gateway_router_decisions_total{result="easy|hard|fallback"}`,
+`phoneborg_gateway_router_duration_seconds`.
+
 ## Super Borg pools
 
 A pool with routing **`superborg`** answers as one model (ADR-020, ADR-022).
@@ -1201,6 +1254,7 @@ pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 
 pbctl gateway set timeout=900s                   # silence limit once a response has started
 pbctl gateway set first_token_timeout=45m        # wait for the first token (prompt processing)
 pbctl gateway set thermal_limit=70               # phones at/above 70 °C get no new sessions; 0 disables
+pbctl gateway set router=on router_classifier=node/mi8 router_hard=pool/big   # semantic router, see below
 ```
 
 Two time limits apply to every proxied call (ADR-024). Until the node sends

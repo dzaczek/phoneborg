@@ -121,6 +121,29 @@ type GatewaySettings struct {
 	// "open"): "keys" whenever key authentication is enforced, whichever way
 	// it got enforced (ADR-017).
 	Access string `json:"access"`
+	// Router is the semantic router for "auto" requests (ADR-033).
+	Router RouterSettings `json:"router"`
+}
+
+// RouterSettings are the semantic router's settings (ADR-033).
+type RouterSettings struct {
+	Enabled    bool    `json:"enabled"`
+	Classifier string  `json:"classifier"`
+	Easy       string  `json:"easy"`
+	Hard       string  `json:"hard"`
+	Threshold  float64 `json:"threshold"`
+	Timeout    string  `json:"timeout"`
+}
+
+// RouterUpdate is the "router" part of PUT /admin/gateway; nil fields are
+// unchanged.
+type RouterUpdate struct {
+	Enabled    *bool    `json:"enabled,omitempty"`
+	Classifier *string  `json:"classifier,omitempty"`
+	Easy       *string  `json:"easy,omitempty"`
+	Hard       *string  `json:"hard,omitempty"`
+	Threshold  *float64 `json:"threshold,omitempty"`
+	Timeout    *string  `json:"timeout,omitempty"`
 }
 
 // GatewayUpdate is the body of PUT /admin/gateway; nil fields are unchanged.
@@ -129,9 +152,10 @@ type GatewayUpdate struct {
 	AffinitySpill   *int    `json:"affinity_spill,omitempty"`
 	UpstreamTimeout *string `json:"upstream_timeout,omitempty"`
 	// FirstTokenTimeout: a duration between 1s and 24h.
-	FirstTokenTimeout *string  `json:"first_token_timeout,omitempty"`
-	AuthMode          *string  `json:"auth_mode,omitempty"`
-	ThermalLimitC     *float64 `json:"thermal_limit_c,omitempty"`
+	FirstTokenTimeout *string       `json:"first_token_timeout,omitempty"`
+	AuthMode          *string       `json:"auth_mode,omitempty"`
+	ThermalLimitC     *float64      `json:"thermal_limit_c,omitempty"`
+	Router            *RouterUpdate `json:"router,omitempty"`
 }
 
 // ClusterSummary is part of GET /admin/stats.
@@ -468,7 +492,48 @@ func (s *Server) gatewaySettings() GatewaySettings {
 	return GatewaySettings{Policy: policy, AffinitySpill: s.affinity.SpillThreshold(),
 		UpstreamTimeout: s.gw.UpstreamTimeout().String(), FirstTokenTimeout: s.gw.FirstTokenTimeout().String(),
 		AuthMode: s.authMode(), ThermalLimitC: s.ThermalLimitC(),
-		Access: s.accessMode()}
+		Access: s.accessMode(), Router: routerSettings(s.gw.Router())}
+}
+
+func routerSettings(c gateway.RouterConfig) RouterSettings {
+	return RouterSettings{Enabled: c.Enabled, Classifier: c.Classifier, Easy: c.Easy, Hard: c.Hard,
+		Threshold: c.Threshold, Timeout: c.Timeout.String()}
+}
+
+// applyRouterUpdate returns c with u applied, or an error if the result is
+// invalid.
+func applyRouterUpdate(c gateway.RouterConfig, u RouterUpdate) (gateway.RouterConfig, error) {
+	if u.Enabled != nil {
+		c.Enabled = *u.Enabled
+	}
+	for _, f := range []struct {
+		dst *string
+		src *string
+	}{{&c.Classifier, u.Classifier}, {&c.Easy, u.Easy}, {&c.Hard, u.Hard}} {
+		if f.src != nil {
+			*f.dst = strings.TrimSpace(*f.src)
+		}
+	}
+	if u.Threshold != nil {
+		if *u.Threshold <= 0 || *u.Threshold >= 1 {
+			return c, errors.New("router threshold must be between 0 and 1, e.g. 0.5")
+		}
+		c.Threshold = *u.Threshold
+	}
+	if u.Timeout != nil {
+		d, err := time.ParseDuration(*u.Timeout)
+		if err != nil || d < time.Second || d > 10*time.Minute {
+			return c, errors.New("router timeout must be a duration between 1s and 10m, e.g. \"20s\"")
+		}
+		c.Timeout = d
+	}
+	if c.Enabled && c.Classifier == "" {
+		return c, errors.New(`the router needs a classifier target, e.g. "node/mi8"`)
+	}
+	if c.Enabled && c.Easy == "" && c.Hard == "" {
+		return c, errors.New(`the router needs an easy or a hard target, e.g. "pool/small"`)
+	}
+	return c, nil
 }
 
 func (s *Server) adminGateway(w http.ResponseWriter, r *http.Request) {
@@ -499,6 +564,10 @@ func (s *Server) adminSetGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.ThermalLimitC != nil {
 		attrs = append(attrs, "thermal_limit_c", *u.ThermalLimitC)
+	}
+	if u.Router != nil {
+		r, _ := json.Marshal(u.Router)
+		attrs = append(attrs, "router", string(r))
 	}
 	s.audit(r, "gateway_set", err, attrs...)
 	if err != nil {
@@ -560,6 +629,13 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 	if u.ThermalLimitC != nil && (*u.ThermalLimitC < 0 || *u.ThermalLimitC > 150) {
 		return http.StatusBadRequest, errors.New("thermal_limit_c must be between 0 (disabled) and 150")
 	}
+	router := s.gw.Router()
+	if u.Router != nil {
+		var err error
+		if router, err = applyRouterUpdate(router, *u.Router); err != nil {
+			return http.StatusBadRequest, err
+		}
+	}
 	if picker != nil {
 		s.gw.SetPicker(picker)
 		s.policy = *u.Policy
@@ -575,6 +651,9 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 	}
 	if u.ThermalLimitC != nil {
 		s.SetThermalLimitC(*u.ThermalLimitC)
+	}
+	if u.Router != nil {
+		s.gw.SetRouter(router)
 	}
 	return 0, nil
 }

@@ -50,6 +50,9 @@ commands:
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> first_token_timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
+                              semantic router for "auto" (ADR-033, experimental): router=on|off
+                              router_classifier=node/<alias> router_easy=<target> router_hard=<target>
+                              router_threshold=<0..1> router_timeout=<duration>
   jobs                        Super Borg jobs: long multi-step work in the background (ADR-021)
   jobs new [title=T] [pool=P] <goal>
                               start a job on Super Borg pool P (default: the first one)
@@ -262,11 +265,38 @@ func parseGatewaySet(kvs []string) (controller.GatewayUpdate, error) {
 				return u, fmt.Errorf("thermal_limit: %w", err)
 			}
 			u.ThermalLimitC = &f
+		case "router":
+			if v != "on" && v != "off" {
+				return u, fmt.Errorf("router: want on or off, got %q", v)
+			}
+			on := v == "on"
+			routerUpdate(&u).Enabled = &on
+		case "router_classifier":
+			routerUpdate(&u).Classifier = &v
+		case "router_easy":
+			routerUpdate(&u).Easy = &v
+		case "router_hard":
+			routerUpdate(&u).Hard = &v
+		case "router_threshold":
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return u, fmt.Errorf("router_threshold: %w", err)
+			}
+			routerUpdate(&u).Threshold = &f
+		case "router_timeout":
+			routerUpdate(&u).Timeout = &v
 		default:
-			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, first_token_timeout, auth, thermal_limit)", k)
+			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, first_token_timeout, auth, thermal_limit, router, router_classifier, router_easy, router_hard, router_threshold, router_timeout)", k)
 		}
 	}
 	return u, nil
+}
+
+func routerUpdate(u *controller.GatewayUpdate) *controller.RouterUpdate {
+	if u.Router == nil {
+		u.Router = &controller.RouterUpdate{}
+	}
+	return u.Router
 }
 
 type client struct {
@@ -567,9 +597,15 @@ func showGateway(o *out, raw []byte, err error) error {
 	if g.ThermalLimitC > 0 {
 		thermalLimit = fmt.Sprintf("%.1f", g.ThermalLimitC)
 	}
+	router := "off"
+	if g.Router.Enabled {
+		router = "on"
+	}
 	o.table("SETTING\tVALUE", [][]string{
 		{"policy", g.Policy}, {"spill", strconv.Itoa(g.AffinitySpill)},
-		{"timeout", g.UpstreamTimeout}, {"first_token_timeout", g.FirstTokenTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit}})
+		{"timeout", g.UpstreamTimeout}, {"first_token_timeout", g.FirstTokenTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit},
+		{"router", router}, {"router_classifier", g.Router.Classifier}, {"router_easy", g.Router.Easy}, {"router_hard", g.Router.Hard},
+		{"router_threshold", strconv.FormatFloat(g.Router.Threshold, 'f', -1, 64)}, {"router_timeout", g.Router.Timeout}})
 	return nil
 }
 

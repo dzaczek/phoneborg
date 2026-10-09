@@ -51,6 +51,9 @@ func TestCommands(t *testing.T) {
 		{[]string{"nodes"}, []string{"NODE", "TOK/S", "n1", "BENCHMARKING", "Xiaomi Mi 8"}},
 		{[]string{"gateway", "set", "thermal_limit=60"}, []string{"thermal_limit", "60"}},
 		{[]string{"gateway"}, []string{"thermal_limit", "60"}},
+		{[]string{"gateway", "set", "router=on", "router_classifier=node/n1", "router_hard=pool/big", "router_threshold=0.7"},
+			[]string{"router", "on", "node/n1", "pool/big", "0.7", "20s"}},
+		{[]string{"gateway", "set", "router=off"}, []string{"router", "off"}},
 		{[]string{"drain", "n1"}, []string{"node n1 drained"}},
 		{[]string{"nodes"}, []string{"DRAINED"}},
 		{[]string{"undrain", "n1"}, []string{"node n1 undrained"}},
@@ -126,7 +129,11 @@ func TestParseGatewaySet(t *testing.T) {
 	if err != nil || *u.Policy != "affinity" || *u.AffinitySpill != 3 || *u.UpstreamTimeout != "600s" || *u.AuthMode != "keys" || *u.ThermalLimitC != 60 {
 		t.Fatalf("%+v %v", u, err)
 	}
-	for _, bad := range [][]string{{"spill=x"}, {"policy"}, {"policy="}, {"color=red"}, {"thermal_limit=hot"}} {
+	u, err = parseGatewaySet([]string{"router=on", "router_classifier=node/mi8", "router_easy=pool/small", "router_hard=auto", "router_threshold=0.6", "router_timeout=30s"})
+	if r := u.Router; err != nil || r == nil || !*r.Enabled || *r.Classifier != "node/mi8" || *r.Easy != "pool/small" || *r.Hard != "auto" || *r.Threshold != 0.6 || *r.Timeout != "30s" {
+		t.Fatalf("router: %+v %v", u.Router, err)
+	}
+	for _, bad := range [][]string{{"spill=x"}, {"policy"}, {"policy="}, {"color=red"}, {"thermal_limit=hot"}, {"router=yes"}, {"router_threshold=x"}} {
 		if _, err := parseGatewaySet(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
