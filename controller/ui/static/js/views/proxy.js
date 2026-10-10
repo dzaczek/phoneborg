@@ -5,6 +5,7 @@ import { toast, errorToast, confirmDialog, field } from '../ui.js';
 
 export default function proxyView() {
   let current = null;
+  let targets = []; // GET /admin/chat/models entries: auto, pools, nodes, models
   const body = h('div', null, h('p.muted', null, 'Loading…'));
   const reload = h('button', { type: 'button' }, 'Reload');
   const el = h('section', null, h('div.page-head', null, h('h1', null, 'Proxy'), reload), body);
@@ -78,11 +79,130 @@ export default function proxyView() {
         : [h('p', null, 'The gateway is open: requests without a key, or with an unknown one, are served as "anonymous". Requests with a known key are counted under its name.'),
           h('div.row', null, enforce, h('a', { href: '#/keys' }, 'Manage API keys'))]);
 
-    fill(body, form, auth);
+    fill(body, form, routerForm(s.router), auth);
+  }
+
+  // Semantic router (ADR-033): its own form, so switching it on or off
+  // touches nothing else. Classes are edited in place and saved together.
+  function routerForm(r) {
+    const enabled = h('input', { type: 'checkbox', name: 'router_enabled', checked: r.enabled });
+    const classifier = targetSelect('router_classifier', r.classifier, true);
+    const timeout = h('input', { name: 'router_timeout', required: true, value: r.timeout, spellcheck: 'false' });
+    const list = h('div');
+    const rows = [];
+    const letters = () => rows.forEach((row, i) => { row.letter.textContent = String.fromCharCode(65 + i); });
+    const addRow = (c) => {
+      const row = {
+        letter: h('strong'),
+        name: h('input', { value: c.name || '', placeholder: 'e.g. hard_coding', required: true, spellcheck: 'false', pattern: '[a-z][a-z0-9_]{0,31}' }),
+        desc: h('input', { value: c.description || '', placeholder: 'what requests of this class ask for', required: true, maxlength: 300 }),
+        examples: h('textarea', { rows: 2, placeholder: 'example requests, one per line (optional, up to 5)' }),
+        target: targetSelect('', c.target || '', false),
+      };
+      row.examples.value = (c.examples || []).join('\n');
+      const remove = h('button', { type: 'button', title: 'Remove this class' }, 'Remove');
+      row.el = h('fieldset', null,
+        h('legend', null, 'Class ', row.letter),
+        field('Name', row.name, 'Lower-case letters, digits and _. Shown in X-Phoneborg-Route and the metrics.'),
+        field('Description', row.desc, 'What the classifier is told about this class.'),
+        field('Examples', row.examples),
+        field('Target', row.target, 'Where requests of this class go.'),
+        h('div.row', null, remove));
+      remove.addEventListener('click', () => {
+        rows.splice(rows.indexOf(row), 1);
+        row.el.remove();
+        letters();
+      });
+      rows.push(row);
+      list.append(row.el);
+      letters();
+    };
+    (r.classes || []).forEach(addRow);
+
+    const add = h('button', { type: 'button' }, 'Add class');
+    add.addEventListener('click', () => {
+      if (rows.length >= 12) { toast('At most 12 classes.'); return; }
+      addRow({});
+      rows[rows.length - 1].name.focus();
+    });
+    const reset = h('button', { type: 'button' }, 'Reset classes to defaults');
+    reset.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: 'Reset the router classes?',
+        body: ['The classes go back to the six defaults (easy/hard chat, writing, coding, reasoning) with no targets. Your own classes are lost.'],
+        confirm: 'Reset classes', danger: true,
+      });
+      if (!ok) return;
+      try {
+        render(await api('PUT', '/admin/gateway', { router: { reset_classes: true } }));
+        toast('Router classes reset.');
+      } catch (ex) {
+        errorToast(ex);
+      }
+    });
+
+    const err = h('p.form-error', { role: 'alert', hidden: true });
+    const save = h('button.primary', { type: 'submit' }, 'Save router');
+    const f = h('form.card.section', null,
+      h('h2', null, 'Semantic router ', badge(r.enabled ? 'on' : 'off', r.enabled ? 'ok' : 'idle'), ' ', badge('experimental', 'warn')),
+      h('p.muted', null, 'Requests for "auto" are first sorted into one of the classes below by one phone (a one-token answer read from its logprobs), then sent to that class\'s target. Any classifier failure serves the request as plain auto. Other models, pools and nodes are not affected.'),
+      h('label', null, enabled, ' Enabled'),
+      field('Classifier', classifier, 'The phone that classifies. Prefer a Qwen3 or Llama model: Gemma 3/3n reprocess the whole prompt every time (see OPERATIONS.md).'),
+      field('Timeout', timeout, 'Longest wait for the classifier, e.g. 20s; after it the request is plain auto.'),
+      h('h3', null, 'Classes'),
+      h('p.muted.small', null, 'Each class gets the answer letter of its position. Short, distinct descriptions and an example or two work best; every class makes the classifier prompt longer.'),
+      list,
+      h('div.row', null, add, reset),
+      err,
+      h('div.row', null, save, h('span.muted.small', null, 'Applies at once and is kept across restarts (with -state-dir).')));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const u = {
+        enabled: enabled.checked, classifier: classifier.value, timeout: timeout.value.trim(),
+        classes: rows.map((row) => ({
+          name: row.name.value.trim(), description: row.desc.value.trim(), target: row.target.value,
+          examples: row.examples.value.split('\n').map((x) => x.trim()).filter(Boolean),
+        })),
+      };
+      save.disabled = true;
+      err.hidden = true;
+      try {
+        render(await api('PUT', '/admin/gateway', { router: u }));
+        toast(u.enabled ? 'Semantic router saved and on.' : 'Semantic router saved (off).');
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      } finally {
+        save.disabled = false;
+      }
+    });
+    return f;
+  }
+
+  // targetSelect lists the routing targets grouped as pools, phones and
+  // models (phones only for the classifier). A configured target that is
+  // gone (phone offline, pool deleted) stays selectable, marked.
+  function targetSelect(name, value, phonesOnly) {
+    const groups = phonesOnly
+      ? [['Phones', 'node']]
+      : [['Pools', 'pool'], ['Phones', 'node'], ['Models', 'model']];
+    const opt = (id, label) => h('option', { value: id }, label || id);
+    const known = new Set(targets.map((t) => t.id));
+    const first = phonesOnly ? opt('', '— choose a phone —') : opt('', 'auto (any phone)');
+    const missing = value && !known.has(value) ? opt(value, `${value} (not available now)`) : null;
+    return h('select', { name: name || null, value },
+      first, missing,
+      groups.map(([label, kind]) => {
+        const items = targets.filter((t) => t.kind === kind);
+        return items.length ? h('optgroup', { label }, items.map((t) =>
+          opt(t.id, kind === 'node' && t.model ? `${t.id} — ${t.model}` : t.id))) : null;
+      }));
   }
 
   async function refresh() {
-    render(await get('/admin/gateway'));
+    const [s, models] = await Promise.all([get('/admin/gateway'), get('/admin/chat/models').catch(() => ({ data: [] }))]);
+    targets = models.data || [];
+    render(s);
   }
   reload.addEventListener('click', () => window.dispatchEvent(new Event('pb:refresh')));
 

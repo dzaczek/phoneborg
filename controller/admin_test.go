@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -249,7 +250,8 @@ func TestAdminGatewaySettings(t *testing.T) {
 	e := newEnv(t, testToken, nil)
 	var gs GatewaySettings
 	e.admin(http.MethodGet, "/admin/gateway", "", 200, &gs)
-	if gs != (GatewaySettings{Policy: "affinity", AffinitySpill: 2, UpstreamTimeout: "5s", FirstTokenTimeout: "5s", AuthMode: "open", Access: "open"}) {
+	router := routerSettings(gateway.DefaultRouterConfig())
+	if !reflect.DeepEqual(gs, GatewaySettings{Policy: "affinity", AffinitySpill: 2, UpstreamTimeout: "5s", FirstTokenTimeout: "5s", AuthMode: "open", Access: "open", Router: router}) {
 		t.Fatalf("defaults = %+v", gs)
 	}
 	for _, bad := range []string{
@@ -263,6 +265,9 @@ func TestAdminGatewaySettings(t *testing.T) {
 		`{"auth_mode":"maybe"}`,
 		`{"thermal_limit_c":-1}`,
 		`{"thermal_limit_c":151}`,
+		`{"router":{"enabled":true}}`, // no classifier
+		`{"router":{"timeout":"1h"}}`,
+		`{"router":{"enabld":true}}`,
 	} {
 		e.admin(http.MethodPut, "/admin/gateway", bad, http.StatusBadRequest, nil)
 	}
@@ -275,7 +280,7 @@ func TestAdminGatewaySettings(t *testing.T) {
 		t.Fatalf("first-token timeout not applied: %+v", gs)
 	}
 	e.admin(http.MethodPut, "/admin/gateway", `{"policy":"least_inflight","affinity_spill":3,"upstream_timeout":"10m"}`, 200, &gs)
-	if gs != (GatewaySettings{Policy: "least_inflight", AffinitySpill: 3, UpstreamTimeout: "10m0s", FirstTokenTimeout: "30m0s", AuthMode: "open", Access: "open"}) {
+	if !reflect.DeepEqual(gs, GatewaySettings{Policy: "least_inflight", AffinitySpill: 3, UpstreamTimeout: "10m0s", FirstTokenTimeout: "30m0s", AuthMode: "open", Access: "open", Router: router}) {
 		t.Fatalf("updated = %+v", gs)
 	}
 	if _, ok := e.srv.gw.Picker().(*gateway.LeastInflight); !ok || e.srv.gw.UpstreamTimeout() != 10*time.Minute {
@@ -289,6 +294,18 @@ func TestAdminGatewaySettings(t *testing.T) {
 	e.admin(http.MethodPut, "/admin/gateway", `{"thermal_limit_c":0}`, 200, &gs)
 	if gs.ThermalLimitC != 0 {
 		t.Fatalf("thermal limit not disabled: %+v", gs)
+	}
+
+	e.admin(http.MethodPut, "/admin/gateway", `{"router":{"enabled":true,"classifier":" node/a ","timeout":"30s"}}`, 200, &gs)
+	if !gs.Router.Enabled || gs.Router.Classifier != "node/a" || gs.Router.Timeout != "30s" || len(gs.Router.Classes) != 6 {
+		t.Fatalf("router = %+v", gs.Router)
+	}
+	if r := e.srv.gw.Router(); !r.Enabled || r.Timeout != 30*time.Second {
+		t.Fatalf("router not applied to the gateway: %+v", r)
+	}
+	e.admin(http.MethodPut, "/admin/gateway", `{"router":{"enabled":false}}`, 200, &gs)
+	if gs.Router.Enabled || gs.Router.Classifier != "node/a" {
+		t.Fatalf("router off should keep its classifier: %+v", gs.Router)
 	}
 }
 

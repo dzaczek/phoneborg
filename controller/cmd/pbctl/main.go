@@ -50,6 +50,16 @@ commands:
   gateway set k=v ...         change settings: policy=affinity|least_inflight
                               spill=<n> timeout=<duration> first_token_timeout=<duration> auth=keys
                               thermal_limit=<celsius, 0 disables>
+                              semantic router for "auto" (ADR-033, experimental): router=on|off
+                              router_classifier=node/<alias> router_timeout=<duration>
+  router                      semantic router: state and classes (letter, name, target, description)
+  router on|off               switch it on (classes and targets are kept while off) or off
+  router class add <name> desc=<text> [target=<t>] [example=<text>]...
+                              add a class; target: pool/<name>, node/<alias>, a model id or auto
+  router class set <name> [name=<new>] [desc=<text>] [target=<t>] [example=<text>]...
+                              change a class; examples given replace all of its examples
+  router class rm <name>      remove a class
+  router classes reset        back to the default classes (easy/hard chat, writing, coding, reasoning)
   jobs                        Super Borg jobs: long multi-step work in the background (ADR-021)
   jobs new [title=T] [pool=P] <goal>
                               start a job on Super Borg pool P (default: the first one)
@@ -200,6 +210,8 @@ func dispatch(c *client, o *out, args []string) error {
 		return o.done(raw, err, fmt.Sprintf("keys of %s revoked", rest[1]))
 	case cmd == "stats" && len(rest) == 0:
 		return stats(c, o)
+	case cmd == "router":
+		return routerCmd(c, o, rest)
 	case cmd == "gateway" && len(rest) == 0:
 		raw, err := c.do(http.MethodGet, "/admin/gateway", nil)
 		return showGateway(o, raw, err)
@@ -262,11 +274,28 @@ func parseGatewaySet(kvs []string) (controller.GatewayUpdate, error) {
 				return u, fmt.Errorf("thermal_limit: %w", err)
 			}
 			u.ThermalLimitC = &f
+		case "router":
+			if v != "on" && v != "off" {
+				return u, fmt.Errorf("router: want on or off, got %q", v)
+			}
+			on := v == "on"
+			routerUpdate(&u).Enabled = &on
+		case "router_classifier":
+			routerUpdate(&u).Classifier = &v
+		case "router_timeout":
+			routerUpdate(&u).Timeout = &v
 		default:
-			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, first_token_timeout, auth, thermal_limit)", k)
+			return u, fmt.Errorf("unknown setting %q (policy, spill, timeout, first_token_timeout, auth, thermal_limit, router, router_classifier, router_timeout)", k)
 		}
 	}
 	return u, nil
+}
+
+func routerUpdate(u *controller.GatewayUpdate) *controller.RouterUpdate {
+	if u.Router == nil {
+		u.Router = &controller.RouterUpdate{}
+	}
+	return u.Router
 }
 
 type client struct {
@@ -567,9 +596,15 @@ func showGateway(o *out, raw []byte, err error) error {
 	if g.ThermalLimitC > 0 {
 		thermalLimit = fmt.Sprintf("%.1f", g.ThermalLimitC)
 	}
+	router := "off"
+	if g.Router.Enabled {
+		router = "on"
+	}
 	o.table("SETTING\tVALUE", [][]string{
 		{"policy", g.Policy}, {"spill", strconv.Itoa(g.AffinitySpill)},
-		{"timeout", g.UpstreamTimeout}, {"first_token_timeout", g.FirstTokenTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit}})
+		{"timeout", g.UpstreamTimeout}, {"first_token_timeout", g.FirstTokenTimeout}, {"auth", g.AuthMode}, {"access", g.Access}, {"thermal_limit", thermalLimit},
+		{"router", router}, {"router_classifier", g.Router.Classifier}, {"router_timeout", g.Router.Timeout},
+		{"router_classes", fmt.Sprintf("%d (pbctl router)", len(g.Router.Classes))}})
 	return nil
 }
 

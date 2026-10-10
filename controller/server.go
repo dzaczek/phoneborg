@@ -48,6 +48,10 @@ type Server struct {
 	// thermalLimitC holds a float64 (math.Float64bits), read on every routing
 	// decision; 0 disables thermal-aware routing (ADR-010).
 	thermalLimitC atomic.Uint64
+	// routerStored: the semantic router was loaded or changed, so
+	// saveRouting writes it; until then the defaults stay unwritten and
+	// follow the code (ADR-033).
+	routerStored atomic.Bool
 
 	// accessModeCfg is the configured -gateway-access mode ("local", "keys"
 	// or "open"); accessMode() reports the effective mode, which is "keys"
@@ -177,6 +181,14 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), s.ext.backends()...)
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
+	if st := gwOpts.Routing.State.Router; st != nil {
+		if cfg, err := routerFromSettings(*st); err != nil {
+			log.Error("stored semantic router is invalid, using the defaults (off)", "err", err)
+		} else {
+			s.gw.SetRouter(cfg)
+			s.routerStored.Store(true)
+		}
+	}
 	if migrated {
 		if err := s.saveRouting(); err != nil {
 			log.Warn("cannot store the migrated superborg pool", "err", err)
