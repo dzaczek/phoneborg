@@ -7,6 +7,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | Document | Covers |
 |---|---|
 | [QUICKSTART.md](QUICKSTART.md) | fast track: a test cluster with one or two phones in 30–45 minutes, from build to pools, Super Borg and a job |
+| [INSTALL.md](INSTALL.md) | permanent install on a Debian/Ubuntu host, step by step: packages, Go, llama.cpp, systemd services, phones, the panel, models, Grafana, every config file, updating, backup |
 | [CONCEPTS.md](CONCEPTS.md) | ways to use the cluster (models, pools, Super Borg with an internal or external orchestrator, jobs, agents through MCP, benchmarks) with their pros and cons, a comparison and which one to pick |
 | [REAL_PHONES.md](REAL_PHONES.md) | choosing phones, preparing them, adb checks, provisioning, verification, slim, model storage, files and logs on the phone, removal, phone-side troubleshooting, which model suits which phone |
 | [OPERATIONS.md](OPERATIONS.md) | controller flags, sending requests, web panel, full `pbctl` reference, models and placement, pools and aliases, API keys, draining, gateway settings, semantic router, usage, OpenCode bridge, Grafana, controller-side troubleshooting |
@@ -25,6 +26,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | Task | Go to |
 |---|---|
 | set up a test cluster with one or two phones, fast | [QUICKSTART.md](QUICKSTART.md) |
+| install the cluster for good, as services with the panel | [INSTALL.md](INSTALL.md) |
 | choose between pools, Super Borg, jobs and agents | [CONCEPTS.md](CONCEPTS.md#which-one-should-i-use) |
 | compare models and phones on real numbers | [CONCEPTS.md](CONCEPTS.md#7-benchmarks-to-choose-models-and-phones), [BENCHMARKS.md](BENCHMARKS.md#multi-model-benchmark-four-phones) |
 | plug in a desktop or API model as orchestrator | [OPERATIONS.md](OPERATIONS.md#external-orchestrators) |

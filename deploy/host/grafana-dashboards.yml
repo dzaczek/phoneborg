@@ -1,0 +1,9 @@
+# Install: sudo cp deploy/host/grafana-dashboards.yml /etc/grafana/provisioning/dashboards/phoneborg.yml
+# The grafana user must be able to read the dashboards directory.
+apiVersion: 1
+providers:
+  - name: phoneborg
+    folder: PhoneBorg
+    type: file
+    options:
+      path: /srv/phoneborg/app/deploy/grafana/dashboards

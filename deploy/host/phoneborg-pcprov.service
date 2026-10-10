@@ -1,0 +1,18 @@
+# PhoneBorg provisioner: installs the agent, llama.cpp and the bootstrap
+# model on every phone plugged in over USB (docs/INSTALL.md).
+# Install: sed "s/__USER__/$USER/" deploy/host/phoneborg-pcprov.service | sudo tee /etc/systemd/system/phoneborg-pcprov.service
+# __USER__ must be the user whose adb key the phones accepted (~/.android/adbkey).
+[Unit]
+Description=PhoneBorg provisioner (adb watch)
+After=phoneborg-controller.service
+Requires=phoneborg-controller.service
+
+[Service]
+User=__USER__
+WorkingDirectory=/srv/phoneborg/app
+ExecStart=/srv/phoneborg/app/bin/pcprov watch -model /srv/phoneborg/state/models/qwen2.5-0.5b-instruct-q4_k_m.gguf -agent-args "-ctx-size 16384" -admin-token-file /srv/phoneborg/admin-token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

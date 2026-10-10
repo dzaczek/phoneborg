@@ -1,0 +1,19 @@
+# PhoneBorg controller: gateway, admin API, web panel (docs/INSTALL.md).
+# Install: sed "s/__USER__/$USER/" deploy/host/phoneborg-controller.service | sudo tee /etc/systemd/system/phoneborg-controller.service
+# -trusted-cidrs: networks that may use the gateway without an API key
+# ("local" access, ADR-017); add your LAN, e.g. 192.168.1.0/24.
+# Drop -grafana-url if you skip Grafana, -firmware-check if the host has no internet.
+[Unit]
+Description=PhoneBorg controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=/srv/phoneborg/app
+ExecStart=/srv/phoneborg/app/bin/controller -listen :18080 -ollama-listen :11434 -upstream-timeout 600s -admin-token-file /srv/phoneborg/admin-token -state-dir /srv/phoneborg/state -firmware-check -grafana-url http://127.0.0.1:3000 -gateway-access local -trusted-cidrs 127.0.0.0/8,::1/128
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

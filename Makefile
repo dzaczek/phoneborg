@@ -44,10 +44,12 @@ e2e:
 # Each variant is built into bin/llama/<ARM_ARCH>/, so pcprov can pick the
 # right one per phone at provision time.
 # Override: make llama LLAMA_TAG=bXXXX, or ARM_ARCH=armv8-a for SoCs without dotprod.
+# The build runs on linux/arm64 also on an x86-64 host (via QEMU, see
+# docs/INSTALL.md), so the binaries are always arm64.
 LLAMA_TAG ?= b11136
 ARM_ARCH ?= armv8.2-a+dotprod+fp16
 llama:
-	docker build --build-arg LLAMA_TAG=$(LLAMA_TAG) --build-arg ARM_ARCH=$(ARM_ARCH) \
+	docker build --platform linux/arm64 --build-arg LLAMA_TAG=$(LLAMA_TAG) --build-arg ARM_ARCH=$(ARM_ARCH) \
 		-f runtime/llama/Dockerfile -o type=local,dest=bin/llama/$(ARM_ARCH) runtime/llama
 
 # Builds every variant pcprov knows how to select between.
