@@ -1,0 +1,9 @@
+# Prometheus on the controller host (docs/INSTALL.md).
+# Install: sudo cp deploy/host/prometheus.yml /etc/prometheus/prometheus.yml
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: phoneborg-controller
+    static_configs:
+      - targets: ["127.0.0.1:18080"]

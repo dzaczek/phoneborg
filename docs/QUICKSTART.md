@@ -4,7 +4,8 @@ This is the shortest path from a phone in a drawer to a working
 OpenAI-compatible endpoint, a web panel and, with a second phone, a pool
 and a Super Borg job. It takes about 30–45 minutes, most of it builds and
 downloads. Details for every step are in [REAL_PHONES.md](REAL_PHONES.md)
-and [OPERATIONS.md](OPERATIONS.md).
+and [OPERATIONS.md](OPERATIONS.md). To install the cluster for good, as
+services that start at boot, follow [INSTALL.md](INSTALL.md) instead.
 
 ```mermaid
 flowchart LR

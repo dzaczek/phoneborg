@@ -86,6 +86,10 @@ More screenshots of the web panel and the Grafana dashboard: [docs/OPERATIONS.md
 **Fast track with one or two phones**, step by step, including pools,
 Super Borg and a job: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
+**Permanent install with the web panel** on a Debian or Ubuntu host
+(packages, systemd services, phones, models, Grafana in the panel, every
+config file), step by step: [docs/INSTALL.md](docs/INSTALL.md).
+
 Requirements: Go 1.25+, `adb`, and Docker (for the llama.cpp build,
 monitoring and emulation).
 

@@ -460,7 +460,8 @@ for them with `read_doc`. Rationale: ADR-021.
 ## Production deployment
 
 The reference deployment is one Linux VM next to the phones; the phones
-reach it only over USB.
+reach it only over USB. [INSTALL.md](INSTALL.md) installs it step by step
+with the templates in `deploy/host/`.
 
 ```mermaid
 flowchart TB
