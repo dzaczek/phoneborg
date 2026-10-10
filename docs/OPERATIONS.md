@@ -392,7 +392,13 @@ bin/pbctl nodes
 | `pbctl admin-tokens` | admin tokens: `admin` (from `-admin-token-file`) and the named ones |
 | `pbctl admin-tokens create <name>` / `revoke <name>` | create a named admin token (printed once) / revoke it |
 | `pbctl gateway` | current gateway settings |
-| `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>` |
+| `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>`, `router=on\|off`, `router_classifier=node/<alias>`, `router_timeout=<duration>` |
+| `pbctl router` | semantic router: on/off, classifier, timeout and the class table (letter, class, target, description, examples) ([details](#semantic-router-experimental)) |
+| `pbctl router on\|off` | switch the router; classes and targets are kept while off |
+| `pbctl router class add <name> desc=<text> [target=<t>] [example=<text>]...` | add a class; target `pool/<name>`, `node/<alias>`, a model id or `auto` |
+| `pbctl router class set <name> [name=<new>] [desc=<text>] [target=<t>] [example=<text>]...` | change a class; examples given replace all of its examples |
+| `pbctl router class rm <name>` | remove a class |
+| `pbctl router classes reset` | back to the six default classes, targets cleared |
 | `pbctl stats` | uptime, cluster summary, usage by key and node |
 | `pbctl mmb` | multi-model benchmark runs |
 | `pbctl mmb run [nodes=a,b] [pool=P] [models=x,y] [parallel]` | benchmark every model that fits (or the given ones) on each phone, one by one or at the same time ([details](#multi-model-benchmark-mmb)) |
@@ -866,6 +872,23 @@ Measured with llama.cpp b11136 (`TestRouterLive`):
 
 The one miss of the six classes was "Plan a migration of our monolith to
 microservices" (hard_reasoning) answered as hard_writing.
+
+Example setup on a four-phone cluster (Pixel 8 Pro and POCO with
+Qwen3-4B, OnePlus with Qwen3-8B, Mi 8 with Gemma 3n E2B), the one
+measured end to end in [BENCHMARKS.md](BENCHMARKS.md#semantic-router-classifier):
+
+```sh
+pbctl gateway set router=on router_classifier=node/pixel
+pbctl router class set easy_chat target=node/mi8            # the weakest phone answers small talk
+pbctl router class set easy_writing target=pool/translate
+pbctl router class set hard_writing target=pool/writer      # a Super Borg pool: long texts as jobs
+pbctl router class set easy_coding target=pool/fast
+pbctl router class set hard_coding target=pool/code
+pbctl router class set hard_reasoning target=pool/think     # the 8B model only
+```
+
+A target may be a Super Borg pool: the request then runs the orchestrator
+loop of that pool.
 
 Prefer a classifier whose model has no sliding-window attention (Qwen3,
 Llama). On a Gemma 3/3n model llama-server (b11136, default flags) can only

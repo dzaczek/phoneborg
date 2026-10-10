@@ -33,6 +33,7 @@ token generation).
 - [Effective bandwidth and performance tiers](#effective-bandwidth-and-performance-tiers)
 - [Multi-model benchmark, four phones](#multi-model-benchmark-four-phones)
 - [Super Borg and jobs: observed timings](#super-borg-and-jobs-observed-timings)
+- [Semantic router classifier](#semantic-router-classifier)
 - [Memory: what Android leaves free](#memory-what-android-leaves-free)
 - [Other small measurements](#other-small-measurements)
 
@@ -402,6 +403,40 @@ Borg (ADR-020..022) on the four phones, useful to set expectations.
 Most of the time goes to the orchestrator reading its prompt on a phone.
 An external orchestrator (ADR-029) removes that part; the writing time on
 the phones stays.
+
+## Semantic router classifier
+
+One-token classification of `auto` requests (ADR-033), llama.cpp b11136,
+measured with `TestRouterLive` (12 requests, 2 per default class, none of
+them among the prompt's examples) and with the earlier two-class
+easy/hard prompt (7 requests).
+
+| Classifier | Prompt | Right | Per decision, prompt cached | First decision |
+|---|---|---|---|---|
+| Pixel 8 Pro, Qwen3-4B-Instruct-2507 | 6 default classes | 11 of 12 | 1.7–2.7 s | 17 s |
+| Pixel 8 Pro, Qwen3-4B-Instruct-2507 | easy/hard | 7 of 7 | 1.4–1.8 s | 9 s |
+| Mi 8, Gemma 3n E2B | easy/hard | 7 of 7 | 30–41 s | 30 s |
+| Mac (Metal), Gemma 3 1B / Gemma 3n E2B / Llama 3.2 3B | easy/hard | 7 of 7 each | 0.05–0.25 s | |
+| Mac (Metal), Llama 3.2 1B | easy/hard | 3–4 of 7 | 0.02 s | |
+
+- The miss with six classes: "Plan a migration of our monolith to
+  microservices, with rollback steps" (hard_reasoning) went to
+  hard_writing with p = 0.70.
+- Gemma 3/3n never reuse the cached prompt here: they use sliding-window
+  attention, and llama-server can only roll back to a context checkpoint
+  near the end of the previous prompt, which a different request
+  invalidates (log: `erased invalidated context checkpoint`), so the Mi 8
+  reprocesses ~250 tokens at ~6 tok/s every time. The same prefix with a
+  different 5–9-token tail is reused (about 1 s), which is why it is not
+  obvious in a quick test.
+- Llama 3.2 1B often starts doing the request (first token a code fence)
+  instead of answering a letter; the gateway treats answers with less
+  than 0.5 on the class letters as a fallback.
+- End to end on the cluster (classifier `node/pixel`, 2026-10-10): six
+  requests, one per class, all classified right (p = 1.0) and served by
+  their targets (Mi 8, `pool/translate`, `pool/writer`, `pool/fast`,
+  `pool/code`, `pool/think`); 17.5 s for the first, 1.8–2.2 s for the
+  rest.
 
 ## Memory: what Android leaves free
 

@@ -175,7 +175,7 @@ flowchart TD
   auth -->|"auth mode keys, no valid key"| e401["401"]
   auth -->|"open (anonymous) or a valid key"| res{"resolve model"}
   res -->|"model id"| c1["ready nodes serving it"]
-  res -->|"auto"| c2["any ready node"]
+  res -->|"auto"| c2["any ready node<br>(semantic router on: the target<br>of the request's class)"]
   res -->|"pool/name"| c3["eligible pool members<br>(picker spread or affinity)"]
   res -->|"pool with routing superborg"| sb["orchestrator loop<br>(see Super Borg pools)"]
   res -->|"node/alias or id,<br>an external node's name or ext:name"| c4["exactly that node<br>no picker, no failover<br>503 node_unavailable"]
@@ -204,6 +204,17 @@ flowchart TD
 
 Hot nodes get no new sessions unless every candidate is hot.
 
+- **Semantic router (ADR-033, experimental, off by default).** Before
+  routing an `auto` request, the gateway asks the least busy node of the
+  classifier target for one token: a system prompt built from the
+  router's classes (cached by llama-server) plus the last user message,
+  with `max_tokens: 1` and `top_logprobs`. Class i answers with letter i;
+  the most probable class's target (pool, node, model or `auto`) replaces
+  `auto`, and the normal path below continues from it, Super Borg pools
+  included. Any failure keeps plain `auto`. `X-Phoneborg-Route` names the
+  class or `fallback`. The router and its classes are stored in
+  `routing.json`.
+
 - **Reaping.** Every second the controller sweeps node states and cancels
   in-flight requests on nodes that left the ready set (e.g. `SUSPECT`); those
   requests are retried elsewhere instead of waiting for the timeout. Drained
@@ -213,7 +224,7 @@ Hot nodes get no new sessions unless every candidate is hot.
 - Once response bytes have reached the client, a request cannot be retried.
 - `X-PhoneBorg-Node` on the response names the node that answered.
 - Rationale: ADR-006 (gateway, affinity, failover), ADR-010 (measured speed,
-  thermal), ADR-014 (targets, pools, spread).
+  thermal), ADR-014 (targets, pools, spread), ADR-033 (semantic router).
 
 ## External engine nodes
 
