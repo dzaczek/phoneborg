@@ -5,6 +5,7 @@ import { toast, errorToast, confirmDialog, field } from '../ui.js';
 
 export default function proxyView() {
   let current = null;
+  let targets = []; // GET /admin/chat/models entries: auto, pools, nodes, models
   const body = h('div', null, h('p.muted', null, 'Loading…'));
   const reload = h('button', { type: 'button' }, 'Reload');
   const el = h('section', null, h('div.page-head', null, h('h1', null, 'Proxy'), reload), body);
@@ -85,9 +86,9 @@ export default function proxyView() {
   // touches nothing else.
   function routerForm(r) {
     const enabled = h('input', { type: 'checkbox', name: 'router_enabled', checked: r.enabled });
-    const classifier = h('input', { name: 'router_classifier', value: r.classifier, placeholder: 'node/pixel', spellcheck: 'false' });
-    const easy = h('input', { name: 'router_easy', value: r.easy, placeholder: 'auto', spellcheck: 'false' });
-    const hard = h('input', { name: 'router_hard', value: r.hard, placeholder: 'auto', spellcheck: 'false' });
+    const classifier = targetSelect('router_classifier', r.classifier, true);
+    const easy = targetSelect('router_easy', r.easy, false);
+    const hard = targetSelect('router_hard', r.hard, false);
     const threshold = h('input', { type: 'number', name: 'router_threshold', min: 0.01, max: 0.99, step: 0.01, required: true, value: String(r.threshold) });
     const timeout = h('input', { name: 'router_timeout', required: true, value: r.timeout, spellcheck: 'false' });
     const err = h('p.form-error', { role: 'alert', hidden: true });
@@ -96,9 +97,9 @@ export default function proxyView() {
       h('h2', null, 'Semantic router ', badge(r.enabled ? 'on' : 'off', r.enabled ? 'ok' : 'idle'), ' ', badge('experimental', 'warn')),
       h('p.muted', null, 'Requests for "auto" are first classified as easy or hard by one phone (a one-token answer read from its logprobs), then sent to the easy or the hard target. Any classifier failure serves the request as plain auto. Other models, pools and nodes are not affected.'),
       h('label', null, enabled, ' Enabled'),
-      field('Classifier', classifier, 'The phone that classifies, e.g. node/pixel. Prefer a Qwen3 or Llama model: Gemma 3/3n reprocess the whole prompt every time (see OPERATIONS.md).'),
-      field('Easy target', easy, 'Where easy requests go: pool/<name>, node/<alias>, a model id or auto. Empty = auto.'),
-      field('Hard target', hard, 'Where hard requests go. Empty = auto.'),
+      field('Classifier', classifier, 'The phone that classifies. Prefer a Qwen3 or Llama model: Gemma 3/3n reprocess the whole prompt every time (see OPERATIONS.md).'),
+      field('Easy target', easy, 'Where easy requests go: a pool, a phone or a model.'),
+      field('Hard target', hard, 'Where hard requests go.'),
       field('Threshold', threshold, 'P(hard) at or above which a request is hard (0–1).'),
       field('Timeout', timeout, 'Longest wait for the classifier, e.g. 20s; after it the request is plain auto.'),
       err,
@@ -106,7 +107,7 @@ export default function proxyView() {
     f.addEventListener('submit', async (e) => {
       e.preventDefault();
       const u = {
-        enabled: enabled.checked, classifier: classifier.value.trim(), easy: easy.value.trim(), hard: hard.value.trim(),
+        enabled: enabled.checked, classifier: classifier.value, easy: easy.value, hard: hard.value,
         threshold: Number(threshold.value), timeout: timeout.value.trim(),
       };
       save.disabled = true;
@@ -124,8 +125,30 @@ export default function proxyView() {
     return f;
   }
 
+  // targetSelect lists the routing targets grouped as pools, phones and
+  // models (phones only for the classifier). A configured target that is
+  // gone (phone offline, pool deleted) stays selectable, marked.
+  function targetSelect(name, value, phonesOnly) {
+    const groups = phonesOnly
+      ? [['Phones', 'node']]
+      : [['Pools', 'pool'], ['Phones', 'node'], ['Models', 'model']];
+    const opt = (id, label) => h('option', { value: id }, label || id);
+    const known = new Set(targets.map((t) => t.id));
+    const first = phonesOnly ? opt('', '— choose a phone —') : opt('', 'auto (any phone)');
+    const missing = value && !known.has(value) ? opt(value, `${value} (not available now)`) : null;
+    return h('select', { name, value },
+      first, missing,
+      groups.map(([label, kind]) => {
+        const items = targets.filter((t) => t.kind === kind);
+        return items.length ? h('optgroup', { label }, items.map((t) =>
+          opt(t.id, kind === 'node' && t.model ? `${t.id} — ${t.model}` : t.id))) : null;
+      }));
+  }
+
   async function refresh() {
-    render(await get('/admin/gateway'));
+    const [s, models] = await Promise.all([get('/admin/gateway'), get('/admin/chat/models').catch(() => ({ data: [] }))]);
+    targets = models.data || [];
+    render(s);
   }
   reload.addEventListener('click', () => window.dispatchEvent(new Event('pb:refresh')));
 
