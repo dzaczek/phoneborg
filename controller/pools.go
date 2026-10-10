@@ -119,6 +119,9 @@ type RoutingState struct {
 	Aliases     map[string]string      `json:"aliases"`
 	Pools       []Pool                 `json:"pools"`
 	Performance map[string]models.Perf `json:"performance,omitempty"`
+	// Router is the semantic router with its classes (ADR-033); nil = the
+	// defaults (off).
+	Router *RouterSettings `json:"router,omitempty"`
 	// Superborg is the cluster-wide Super Borg mode of ADR-020, read only to
 	// migrate it into a "superborg" pool (ADR-022) and never written.
 	Superborg *legacySuperborg `json:"superborg,omitempty"`
@@ -267,6 +270,10 @@ func (s *Server) saveRouting() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	st := RoutingState{Aliases: s.reg.Aliases(), Pools: []Pool{}, Performance: s.perf.snapshot()}
+	if s.routerStored.Load() {
+		router := routerSettings(s.gw.Router())
+		st.Router = &router
+	}
 	for _, p := range ps.byName {
 		st.Pools = append(st.Pools, p)
 	}

@@ -125,27 +125,6 @@ type GatewaySettings struct {
 	Router RouterSettings `json:"router"`
 }
 
-// RouterSettings are the semantic router's settings (ADR-033).
-type RouterSettings struct {
-	Enabled    bool    `json:"enabled"`
-	Classifier string  `json:"classifier"`
-	Easy       string  `json:"easy"`
-	Hard       string  `json:"hard"`
-	Threshold  float64 `json:"threshold"`
-	Timeout    string  `json:"timeout"`
-}
-
-// RouterUpdate is the "router" part of PUT /admin/gateway; nil fields are
-// unchanged.
-type RouterUpdate struct {
-	Enabled    *bool    `json:"enabled,omitempty"`
-	Classifier *string  `json:"classifier,omitempty"`
-	Easy       *string  `json:"easy,omitempty"`
-	Hard       *string  `json:"hard,omitempty"`
-	Threshold  *float64 `json:"threshold,omitempty"`
-	Timeout    *string  `json:"timeout,omitempty"`
-}
-
 // GatewayUpdate is the body of PUT /admin/gateway; nil fields are unchanged.
 type GatewayUpdate struct {
 	Policy          *string `json:"policy,omitempty"`
@@ -495,47 +474,6 @@ func (s *Server) gatewaySettings() GatewaySettings {
 		Access: s.accessMode(), Router: routerSettings(s.gw.Router())}
 }
 
-func routerSettings(c gateway.RouterConfig) RouterSettings {
-	return RouterSettings{Enabled: c.Enabled, Classifier: c.Classifier, Easy: c.Easy, Hard: c.Hard,
-		Threshold: c.Threshold, Timeout: c.Timeout.String()}
-}
-
-// applyRouterUpdate returns c with u applied, or an error if the result is
-// invalid.
-func applyRouterUpdate(c gateway.RouterConfig, u RouterUpdate) (gateway.RouterConfig, error) {
-	if u.Enabled != nil {
-		c.Enabled = *u.Enabled
-	}
-	for _, f := range []struct {
-		dst *string
-		src *string
-	}{{&c.Classifier, u.Classifier}, {&c.Easy, u.Easy}, {&c.Hard, u.Hard}} {
-		if f.src != nil {
-			*f.dst = strings.TrimSpace(*f.src)
-		}
-	}
-	if u.Threshold != nil {
-		if *u.Threshold <= 0 || *u.Threshold >= 1 {
-			return c, errors.New("router threshold must be between 0 and 1, e.g. 0.5")
-		}
-		c.Threshold = *u.Threshold
-	}
-	if u.Timeout != nil {
-		d, err := time.ParseDuration(*u.Timeout)
-		if err != nil || d < time.Second || d > 10*time.Minute {
-			return c, errors.New("router timeout must be a duration between 1s and 10m, e.g. \"20s\"")
-		}
-		c.Timeout = d
-	}
-	if c.Enabled && c.Classifier == "" {
-		return c, errors.New(`the router needs a classifier target, e.g. "node/pixel"`)
-	}
-	if c.Enabled && c.Easy == "" && c.Hard == "" {
-		return c, errors.New(`the router needs an easy or a hard target, e.g. "pool/small"`)
-	}
-	return c, nil
-}
-
 func (s *Server) adminGateway(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.gatewaySettings())
 }
@@ -654,6 +592,10 @@ func (s *Server) applyGatewayUpdate(u GatewayUpdate) (int, error) {
 	}
 	if u.Router != nil {
 		s.gw.SetRouter(router)
+		s.routerStored.Store(true)
+		if err := s.saveRouting(); err != nil { // the router is kept with the pools (routing.json)
+			return http.StatusInternalServerError, fmt.Errorf("router applied but not stored: %w", err)
+		}
 	}
 	return 0, nil
 }

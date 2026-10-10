@@ -1870,32 +1870,46 @@ which does not belong on the phones or in the controller.
   llama-server (chosen).
 
 **Decision.**
-- An optional router in the gateway, off by default, configured at runtime
-  through `PUT /admin/gateway {"router": {...}}`, `pbctl gateway set
-  router=on ...` and the panel: a classifier target, an easy and a hard
-  target, a threshold on P(hard) (default 0.5) and a timeout (default 20 s).
+- An optional router in the gateway, off by default, configured through
+  `PUT /admin/gateway {"router": {...}}`, `pbctl gateway set router=on
+  router_classifier=...`, `pbctl router ...` and the panel: a classifier
+  target, a timeout (default 20 s) and a list of **classes**, each with a
+  name, a description, optional example requests and a target.
+- The classes are the operator's: 2–12 of them, added, changed and removed
+  at will (the whole list is replaced on update; `reset_classes` restores
+  the defaults). The defaults are six: easy/hard chat, writing, coding and
+  reasoning (`easy_chat`, `easy_writing`, `hard_writing`, `easy_coding`,
+  `hard_coding`, `hard_reasoning`). Class i answers with letter i (A, B,
+  ...), a single token in every tokenizer we use.
 - Only requests for `auto` are routed. The gateway sends the least busy
   classifier phone one chat completion with `max_tokens: 1`, `logprobs`,
-  `top_logprobs: 10` and `enable_thinking: false`: a fixed few-shot system
-  prompt (cached by llama-server) and the last user message (or the
-  completion prompt) clipped to 2000 bytes. P(hard) = P(B) / (P(A) + P(B))
-  over the first token's top logprobs.
+  `top_logprobs: 20` and `enable_thinking: false`: a system prompt built
+  from the classes (one line per class, then the examples; constant per
+  configuration, so llama-server caches it) and the last user message (or
+  the completion prompt) clipped to 2000 bytes. The class with the most
+  probable letter wins; its target serves the request (empty = `auto`).
 - Every failure is a fallback to plain `auto`, never a failed request,
-  including answers with P(A) + P(B) below 0.5, which a small model gives
-  when it starts doing the request instead of classifying it.
-- Observability: `X-Phoneborg-Route` on the response,
+  including answers that put less than 0.5 on the class letters together,
+  which a small model gives when it starts doing the request instead of
+  classifying it.
+- The router, classes included, is stored with the pools and aliases in
+  `routing.json` and loaded at start; an invalid stored router is logged
+  and replaced by the defaults (off).
+- Observability: `X-Phoneborg-Route: <class>|fallback` on the response,
   `phoneborg_gateway_router_decisions_total{result}`,
   `phoneborg_gateway_router_duration_seconds`, a log line per decision.
 
 **Consequences.** An `auto` request waits for one classification first: on
-a phone a few hundred prompt tokens, one to a few seconds with the system
+a phone a few hundred prompt tokens, one to three seconds with the system
 prompt cached. The classifier phone takes that load, and its in-flight
-count shows it to the pickers. The router uses llama-server's
-OpenAI-compatible logprobs (verified against b11136); external engines that
-do not return `top_logprobs` fall back every time. Models with
-sliding-window attention (Gemma 3/3n) get no prompt-cache reuse for these
-requests in b11136, so a decision costs the full prompt (30–40 s on the
-Mi 8); a Qwen3-4B phone decides in about 1.5 s. The settings are not
-persisted, like the other gateway settings. Two classes only; more classes,
-calibration per model and other decisions (retry, verification in Super
-Borg) are left for later.
+count shows it to the pickers. More classes and examples make the prompt,
+and the first decision after a change, longer (17 s on the Pixel for the
+six defaults). Overlapping classes split close requests between them; the
+quality of the classes is the operator's to tune, checked with
+`TestRouterLive`. The router uses llama-server's OpenAI-compatible logprobs
+(verified against b11136); external engines that do not return
+`top_logprobs` fall back every time. Models with sliding-window attention
+(Gemma 3/3n) get no prompt-cache reuse for these requests in b11136, so a
+decision costs the full prompt (30–40 s on the Mi 8); a Qwen3-4B phone
+decides in about 2 s. Calibration per model and other decisions (retry,
+verification in Super Borg) are left for later.

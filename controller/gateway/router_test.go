@@ -65,7 +65,8 @@ func fakeClassifier(t *testing.T, status int, first string, tops map[string]floa
 }
 
 // routerGW is a gateway with nodes cls (classifier), small and big, all
-// serving model m, the router on: easy → node/small, hard → node/big.
+// serving model m, the router on: easy_chat → node/small, hard_coding →
+// node/big, every other class → auto.
 func routerGW(t *testing.T, cls *httptest.Server) (*Gateway, http.Handler) {
 	small, big := fakeLlama(t, "small"), fakeLlama(t, "big")
 	g, h := newGW(t, AllowAll{},
@@ -73,14 +74,23 @@ func routerGW(t *testing.T, cls *httptest.Server) (*Gateway, http.Handler) {
 		Backend{NodeID: "small", Model: "m", URL: small.URL},
 		Backend{NodeID: "big", Model: "m", URL: big.URL})
 	g.SetTargets(routerTargets{})
-	g.SetRouter(RouterConfig{Enabled: true, Classifier: "node/cls", Easy: "node/small", Hard: "node/big",
-		Threshold: 0.5, Timeout: 5 * time.Second})
+	g.SetRouter(RouterConfig{Enabled: true, Classifier: "node/cls",
+		Classes: classesWith(map[string]string{"easy_chat": "node/small", "hard_coding": "node/big"}), Timeout: 5 * time.Second})
 	return g, h
+}
+
+// classesWith returns the default classes with the given targets.
+func classesWith(targets map[string]string) []RouterClass {
+	cs := DefaultRouterClasses()
+	for i := range cs {
+		cs[i].Target = targets[cs[i].Name]
+	}
+	return cs
 }
 
 const autoChat = `{"model":"auto","messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi there"}]}`
 
-func TestRouterSendsEasyAndHard(t *testing.T) {
+func TestRouterSendsEachClassToItsTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		first string
@@ -88,8 +98,9 @@ func TestRouterSendsEasyAndHard(t *testing.T) {
 		route string
 		node  string
 	}{
-		{"easy", "A", map[string]float64{"A": 0.9, "B": 0.08}, RouteEasy, "small"},
-		{"hard", " B", map[string]float64{" B": 0.7, "A": 0.2, "```": 0.05}, RouteHard, "big"},
+		{"easy chat", "A", map[string]float64{"A": 0.9, "B": 0.08}, "easy_chat", "small"},
+		{"hard coding", " E", map[string]float64{" E": 0.5, "e": 0.2, "D": 0.2, "```": 0.05}, "hard_coding", "big"},
+		{"class without a target", "C", map[string]float64{"C": 0.9}, "hard_writing", ""}, // auto: any node
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -122,10 +133,12 @@ func TestRouterFallsBackToAuto(t *testing.T) {
 	}{
 		{"server error", 500, "", nil, nil},
 		{"not a letter", 200, "```", map[string]float64{"```": 0.9}, nil},
-		{"little mass on A and B", 200, "Here", map[string]float64{"Here": 0.6, "A": 0.1, "B": 0.05}, nil},
+		{"little mass on the letters", 200, "Here", map[string]float64{"Here": 0.6, "A": 0.1, "B": 0.05}, nil},
+		{"letter of no class", 200, "Z", map[string]float64{"Z": 0.9}, nil},
+		{"no classes", 200, "A", map[string]float64{"A": 1}, func(c *RouterConfig) { c.Classes = nil }},
 		{"unknown classifier", 200, "A", map[string]float64{"A": 1}, func(c *RouterConfig) { c.Classifier = "node/nope" }},
-		{"unknown target", 200, "A", map[string]float64{"A": 1}, func(c *RouterConfig) { c.Easy = "pool/nope" }},
-		{"disabled target", 200, "B", map[string]float64{"B": 1}, func(c *RouterConfig) { c.Hard = "pool/off" }},
+		{"unknown target", 200, "A", map[string]float64{"A": 1}, func(c *RouterConfig) { c.Classes = classesWith(map[string]string{"easy_chat": "pool/nope"}) }},
+		{"disabled target", 200, "E", map[string]float64{"E": 1}, func(c *RouterConfig) { c.Classes = classesWith(map[string]string{"hard_coding": "pool/off"}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -187,5 +200,47 @@ func TestRequestText(t *testing.T) {
 	long := requestText(meta(`{"prompt":"` + strings.Repeat("x", 3*routerMaxText) + `"}`))
 	if len(long) > routerMaxText+len("…") {
 		t.Errorf("long text not clipped: %d bytes", len(long))
+	}
+}
+
+// Operator classes: their own letters, descriptions, examples and targets.
+func TestRouterCustomClasses(t *testing.T) {
+	var calls atomic.Int32
+	g, h := routerGW(t, fakeClassifier(t, 200, "B", map[string]float64{"B": 0.8, "A": 0.1}, &calls))
+	c := g.Router()
+	c.Classes = []RouterClass{
+		{Name: "polish", Description: "a request written in Polish."},
+		{Name: "english", Description: "a request written in English", Examples: []string{"Hello there"}, Target: "node/big"},
+	}
+	g.SetRouter(c)
+	w := post(h, autoChat)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "hi from big") || w.Header().Get("X-Phoneborg-Route") != "english" {
+		t.Fatalf("status %d route %q: %s", w.Code, w.Header().Get("X-Phoneborg-Route"), w.Body)
+	}
+	if got := testutil.ToFloat64(g.mRouter.WithLabelValues("english")); got != 1 {
+		t.Errorf("decisions{english} = %v", got)
+	}
+	if got := g.Router().Classes; len(got) != 2 || got[1].Target != "node/big" {
+		t.Errorf("Router() = %+v", got)
+	}
+}
+
+func TestBuildRouterSystem(t *testing.T) {
+	sys, letters := buildRouterSystem([]RouterClass{
+		{Name: "easy_chat", Description: "small talk.", Examples: []string{"hi"}},
+		{Name: "hard_coding", Description: "big code"},
+		{Name: "other", Description: "anything else"},
+	})
+	if letters != "A, B or C" {
+		t.Errorf("letters = %q", letters)
+	}
+	for _, want := range []string{"A = EASY_CHAT: small talk.\n", "B = HARD_CODING: big code.\n", "C = OTHER: anything else.\n",
+		"<request>hi</request> Answer: A\n", "Reply with one letter only: A, B or C."} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, sys)
+		}
+	}
+	if _, one := buildRouterSystem([]RouterClass{{Name: "x", Description: "y"}}); one != "A" {
+		t.Errorf("one class: letters = %q", one)
 	}
 }

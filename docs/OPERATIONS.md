@@ -785,32 +785,59 @@ Metric: `phoneborg_gateway_tool_requests_total{result="capable|fallback"}`.
 ## Semantic router (experimental)
 
 Off by default (ADR-033). When on, every request for **`auto`** is first
-classified as *easy* or *hard* by one phone, then served by the easy or the
-hard target. The classifier answers with one token; the gateway reads the
-probabilities of the letters `A` (easy) and `B` (hard) from llama-server's
-`top_logprobs`, so a decision costs prompt processing only (no generation,
-no Python on the phone or the host). Requests for a model id, a pool or a
-node are not touched.
+sorted into one of the router's **classes** by one phone, then served by
+that class's target. The classifier answers with one token: each class
+has a letter (A, B, C, ... by position), and the gateway reads the
+probability of each letter from llama-server's `top_logprobs`, so a
+decision costs prompt processing only (no generation, no Python on the
+phone or the host). Requests for a model id, a pool or a node are not
+touched.
+
+The default classes:
+
+| Letter | Class | For |
+|---|---|---|
+| A | `easy_chat` | greeting, chit-chat, a short factual question |
+| B | `easy_writing` | a short text, a simple rewrite, a translation, a short summary |
+| C | `hard_writing` | a long, creative or technical text |
+| D | `easy_coding` | a small snippet, a one-liner, explaining short code |
+| E | `hard_coding` | implementing, debugging or reviewing non-trivial code, design |
+| F | `hard_reasoning` | math, proofs, multi-step reasoning, analysis, planning |
+
+Classes are yours to change: add, edit, remove (2–12 classes; name of
+lower-case letters, digits and `_`; a description of up to 300 characters;
+up to 5 example requests). Each class's target is anything a request may
+name: `pool/<name>`, `node/<alias>`, a model id, or `auto` (empty).
 
 ```sh
-pbctl gateway set router=on router_classifier=node/pixel router_easy=pool/small router_hard=pool/big
-pbctl gateway set router_threshold=0.6 router_timeout=30s   # P(hard) needed for "hard"; classifier wait
-pbctl gateway set router=off                                # back to plain auto; targets are kept
+pbctl gateway set router=on router_classifier=node/pixel   # switch on, choose the classifier phone
+pbctl router                                                # state and the class table
+pbctl router class set hard_coding target=pool/code         # send hard coding to pool/code
+pbctl router class set hard_reasoning target=pool/think
+pbctl router class add polish desc="a request written in Polish" target=pool/translate example="Napisz maila do szefa"
+pbctl router class set polish name=pl example="Cześć" example="Przetłumacz to"   # examples given replace all
+pbctl router class rm easy_chat
+pbctl router classes reset                                  # back to the six defaults, targets cleared
+pbctl router off                                            # plain auto again; classes and targets are kept
+pbctl router on
+pbctl gateway set router_timeout=30s                        # longest wait for the classifier
 ```
 
-The same settings are in the panel: **Proxy → Semantic router**. Targets
-are anything a request may name: `pool/<name>`, `node/<alias>`, a model id
-or `auto` (an empty target means `auto`). Like the other gateway settings
-they apply at once and are not saved across a controller restart.
+The same is in the panel: **Proxy → Semantic router**, with the classifier
+and the targets picked from lists of the cluster's phones, pools and
+models, one block per class (**Add class**, **Remove**, **Reset classes to
+defaults**) and **Save router**. The router, its classes included, is
+stored in `<state-dir>/routing.json` with the pools and survives a
+restart; without `-state-dir` it is in memory only.
 
 Any failure serves the request as plain `auto`, never as an error: no ready
 classifier, an HTTP error or timeout, an answer that puts less than half of
-its probability on `A` and `B` together (the model started doing the
+its probability on the class letters together (the model started doing the
 request instead of classifying it), or a target that is unknown, disabled
 or has no ready phone. Every response to an `auto` request carries
-`X-Phoneborg-Route: easy|hard|fallback`, and the controller logs
-`router decision` (with `p_hard`) or `router fallback to auto` (with the
-reason).
+`X-Phoneborg-Route: <class>|fallback`, and the controller logs
+`router decision` (with the class's share `p`) or `router fallback to
+auto` (with the reason).
 
 ```sh
 curl -si http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: application/json' \
@@ -818,37 +845,46 @@ curl -si http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: applicatio
   | grep -i x-phoneborg-route
 ```
 
-Choosing a classifier: the classifier prompt is fixed (system prompt with
-six examples, cached by the phone), and the request text is clipped to
-2000 bytes. With llama.cpp b11136, Gemma 3 1B, Gemma 3n E2B, Llama 3.2 3B
-and Qwen3-4B-Instruct-2507 classified all seven test requests correctly;
-Llama 3.2 1B got 3–4 of 7 and is not suitable. Reasoning models that open
-with `<think>` are asked not to think (`chat_template_kwargs.enable_thinking=false`).
+Writing classes: the classifier prompt is built from the classes (one line
+per class with its description, then the examples) and cached by the
+phone; any change makes the next decision process it once more. Short,
+distinct descriptions and an example or two per class work best; classes
+that overlap (say "planning" and "long writing") split close requests
+between them. The request text is clipped to 2000 bytes. Reasoning models
+that open with `<think>` are asked not to think
+(`chat_template_kwargs.enable_thinking=false`).
+
+Measured with llama.cpp b11136 (`TestRouterLive`):
+
+| Classifier | Classes | Right | Per decision (prompt cached) | First decision |
+|---|---|---|---|---|
+| Pixel 8 Pro, Qwen3-4B-Instruct-2507 | 6 default | 11 of 12 | 1.7–2.7 s | 17 s |
+| Pixel 8 Pro, Qwen3-4B-Instruct-2507 | easy/hard | 7 of 7 | 1.4–1.8 s | 9 s |
+| Mi 8, Gemma 3n E2B | easy/hard | 7 of 7 | 30–41 s (no cache reuse) | 30 s |
+| Mac, Gemma 3 1B, Gemma 3n E2B, Llama 3.2 3B | easy/hard | 7 of 7 | | |
+| Mac, Llama 3.2 1B | easy/hard | 3–4 of 7 | | |
+
+The one miss of the six classes was "Plan a migration of our monolith to
+microservices" (hard_reasoning) answered as hard_writing.
 
 Prefer a classifier whose model has no sliding-window attention (Qwen3,
 Llama). On a Gemma 3/3n model llama-server (b11136, default flags) can only
 roll its cache back to a saved context checkpoint, and the checkpoints sit
 at the start and near the end of the previous prompt; a new request that
 differs after the cached system prompt invalidates the end one, so every
-decision reprocesses the whole prompt. Measured on the cluster:
-
-| Classifier | Model | Per decision (system prompt cached) | First decision |
-|---|---|---|---|
-| Pixel 8 Pro | Qwen3-4B-Instruct-2507 | 1.4–1.8 s | 9 s |
-| Mi 8 | Gemma 3n E2B (SWA) | 30–41 s (no cache reuse) | 30 s |
-
-With the default 20 s timeout the Mi 8 therefore always falls back. The
-classifier phone has one slot: while it generates for other traffic,
-decisions wait, and other prompts evict the cached system prompt.
+decision reprocesses the whole prompt. With the default 20 s timeout the
+Mi 8 therefore always falls back. The classifier phone has one slot: while
+it generates for other traffic, decisions wait, and other prompts evict
+the cached system prompt.
 
 Check a model before relying on it, against a phone (`adb forward`) or any
-llama-server:
+llama-server (it uses the default classes):
 
 ```sh
 PHONEBORG_LLAMA_URL=http://127.0.0.1:18431 go test ./controller/gateway -run TestRouterLive -v
 ```
 
-Metrics: `phoneborg_gateway_router_decisions_total{result="easy|hard|fallback"}`,
+Metrics: `phoneborg_gateway_router_decisions_total{result="<class>|fallback"}`,
 `phoneborg_gateway_router_duration_seconds`.
 
 ## Super Borg pools
@@ -1271,7 +1307,7 @@ pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 
 pbctl gateway set timeout=900s                   # silence limit once a response has started
 pbctl gateway set first_token_timeout=45m        # wait for the first token (prompt processing)
 pbctl gateway set thermal_limit=70               # phones at/above 70 °C get no new sessions; 0 disables
-pbctl gateway set router=on router_classifier=node/pixel router_hard=pool/big   # semantic router, see below
+pbctl gateway set router=on router_classifier=node/pixel   # semantic router and its classes: pbctl router, see above
 ```
 
 Two time limits apply to every proxied call (ADR-024). Until the node sends

@@ -69,7 +69,7 @@ type Gateway struct {
 	targets    atomic.Pointer[Targets]
 	modelInfo  atomic.Pointer[ModelInfoFunc] // catalog metadata for Ollama responses (ADR-017)
 	jobs       atomic.Pointer[Jobs]          // nil = no Super Borg jobs (ADR-021)
-	router     atomic.Pointer[RouterConfig]  // semantic router for "auto" (ADR-033)
+	router     atomic.Pointer[routerState]   // semantic router for "auto" (ADR-033)
 	timeout    atomic.Int64                  // upstream timeout, ns
 	firstToken atomic.Int64                  // first-token timeout, ns; 0 = timeout
 	backends   BackendSource
@@ -157,7 +157,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 			Name: "phoneborg_gateway_tool_requests_total", Help: "Requests with tools: routed to tool-capable models (capable) or, with none eligible, to any (fallback)."},
 			[]string{"result"}),
 		mRouter: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "phoneborg_gateway_router_decisions_total", Help: "Semantic router decisions for \"auto\" requests: easy, hard or fallback (plain auto) (ADR-033)."},
+			Name: "phoneborg_gateway_router_decisions_total", Help: "Semantic router decisions for \"auto\" requests: the class chosen, or fallback (plain auto) (ADR-033)."},
 			[]string{"result"}),
 		mRouterSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "phoneborg_gateway_router_duration_seconds", Help: "Time the semantic router spent classifying a request (ADR-033).", Buckets: buckets}),
@@ -168,7 +168,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	g.SetPicker(picker)
 	g.SetUpstreamTimeout(cfg.UpstreamTimeout)
 	g.SetFirstTokenTimeout(cfg.FirstTokenTimeout)
-	g.SetRouter(DefaultRouterConfig)
+	g.SetRouter(DefaultRouterConfig()) // also exports the default classes' metric labels
 	g.prewarmTimeout = PrewarmTimeout
 	reg.MustRegister(g.mRequests, g.mDuration, g.mTTFB, g.mInflight, g.mUpstream, g.mRejected, g.mTokens, g.mGenTPS, g.mPromptTPS, g.mTargets, g.mSuperborg, g.mDelegations, g.mJobSteps, g.mToolRouting, g.mRouter, g.mRouterSeconds)
 	// Export known reasons at 0 so the first rejection shows up in rate()/increase().
@@ -181,9 +181,7 @@ func New(auth Authenticator, picker Picker, backends BackendSource, cfg Config, 
 	for _, result := range []string{"ok", "error"} {
 		g.mSuperborg.WithLabelValues(result)
 	}
-	for _, result := range []string{RouteEasy, RouteHard, RouteFallback} {
-		g.mRouter.WithLabelValues(result)
-	}
+	g.mRouter.WithLabelValues(RouteFallback)
 	return g
 }
 

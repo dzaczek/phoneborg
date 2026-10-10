@@ -51,9 +51,18 @@ func TestCommands(t *testing.T) {
 		{[]string{"nodes"}, []string{"NODE", "TOK/S", "n1", "BENCHMARKING", "Xiaomi Mi 8"}},
 		{[]string{"gateway", "set", "thermal_limit=60"}, []string{"thermal_limit", "60"}},
 		{[]string{"gateway"}, []string{"thermal_limit", "60"}},
-		{[]string{"gateway", "set", "router=on", "router_classifier=node/n1", "router_hard=pool/big", "router_threshold=0.7"},
-			[]string{"router", "on", "node/n1", "pool/big", "0.7", "20s"}},
-		{[]string{"gateway", "set", "router=off"}, []string{"router", "off"}},
+		{[]string{"gateway", "set", "router=on", "router_classifier=node/n1", "router_timeout=30s"},
+			[]string{"router", "on", "node/n1", "30s", "6 (pbctl router)"}},
+		{[]string{"router"}, []string{"router on, classifier node/n1", "LETTER", "A", "easy_chat", "auto", "F", "hard_reasoning"}},
+		{[]string{"router", "class", "add", "polish", "desc=a request in Polish", "target=pool/pl", "example=Cześć", "example=Dzień dobry"},
+			[]string{"router class polish added"}},
+		{[]string{"router"}, []string{"G", "polish", "pool/pl", "a request in Polish", "2"}},
+		{[]string{"router", "class", "set", "polish", "name=pl", "target=auto"}, []string{"router class pl changed"}},
+		{[]string{"router", "class", "rm", "easy_chat"}, []string{"router class easy_chat removed"}},
+		{[]string{"router"}, []string{"A", "easy_writing", "F", "pl"}},
+		{[]string{"router", "off"}, []string{"semantic router off"}},
+		{[]string{"router", "classes", "reset"}, []string{"router classes reset"}},
+		{[]string{"router"}, []string{"router off", "easy_chat"}},
 		{[]string{"drain", "n1"}, []string{"node n1 drained"}},
 		{[]string{"nodes"}, []string{"DRAINED"}},
 		{[]string{"undrain", "n1"}, []string{"node n1 undrained"}},
@@ -100,6 +109,11 @@ func TestJSONOutputAndErrors(t *testing.T) {
 		{map[string]string{"PHONEBORG_URL": ts.URL, "PHONEBORG_ADMIN_TOKEN": "wrong"}, []string{"nodes"}, 1, "HTTP 401"},
 		{env, []string{"gateway", "set", "policy=random"}, 1, "policy must be"},
 		{env, []string{"gateway", "set", "bogus=1"}, 1, "unknown setting"},
+		{env, []string{"router", "class", "add", "Bad", "desc=x"}, 1, "router class name"},
+		{env, []string{"router", "class", "add", "easy_chat", "desc=x"}, 1, "exists"},
+		{env, []string{"router", "class", "set", "ghost", "desc=x"}, 1, "no router class ghost"},
+		{env, []string{"router", "class", "set", "easy_chat", "colour=red"}, 1, "unknown class field"},
+		{env, []string{"router", "maybe"}, 2, "usage:"},
 		{env, []string{"frobnicate"}, 2, "usage:"},
 		{env, []string{"drain"}, 2, "usage:"},
 		{env, nil, 2, "usage:"},
@@ -129,11 +143,11 @@ func TestParseGatewaySet(t *testing.T) {
 	if err != nil || *u.Policy != "affinity" || *u.AffinitySpill != 3 || *u.UpstreamTimeout != "600s" || *u.AuthMode != "keys" || *u.ThermalLimitC != 60 {
 		t.Fatalf("%+v %v", u, err)
 	}
-	u, err = parseGatewaySet([]string{"router=on", "router_classifier=node/mi8", "router_easy=pool/small", "router_hard=auto", "router_threshold=0.6", "router_timeout=30s"})
-	if r := u.Router; err != nil || r == nil || !*r.Enabled || *r.Classifier != "node/mi8" || *r.Easy != "pool/small" || *r.Hard != "auto" || *r.Threshold != 0.6 || *r.Timeout != "30s" {
+	u, err = parseGatewaySet([]string{"router=on", "router_classifier=node/mi8", "router_timeout=30s"})
+	if r := u.Router; err != nil || r == nil || !*r.Enabled || *r.Classifier != "node/mi8" || *r.Timeout != "30s" {
 		t.Fatalf("router: %+v %v", u.Router, err)
 	}
-	for _, bad := range [][]string{{"spill=x"}, {"policy"}, {"policy="}, {"color=red"}, {"thermal_limit=hot"}, {"router=yes"}, {"router_threshold=x"}} {
+	for _, bad := range [][]string{{"spill=x"}, {"policy"}, {"policy="}, {"color=red"}, {"thermal_limit=hot"}, {"router=yes"}, {"router_easy=pool/x"}} {
 		if _, err := parseGatewaySet(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
