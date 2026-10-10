@@ -8,6 +8,7 @@ its go criteria.
 - [x] [Laya: smart routing for the phone cluster](#2-laya-smart-routing-for-the-phone-cluster):
   superseded by the semantic router (ADR-033), which classifies on a phone
   through llama-server instead of a Python encoder on the host
+- [ ] [Cluster map: a live picture of the cluster in the panel](#3-cluster-map-a-live-picture-of-the-cluster-in-the-panel)
 
 ## 1. Image generation engine on phones
 
@@ -245,3 +246,60 @@ Uses, in priority order:
   prompts with `model: "smart"` from the panel Chat: easy → fast pool, no
   thinking, fast reply; hard → POCO with thinking; stop laya-serve → requests
   still succeed (fallback to auto), header shows `fallback`.
+
+## 3. Cluster map: a live picture of the cluster in the panel
+
+### Context
+
+Idea from StarNet (github.com/androoAGI/starnet, MIT code; its name and
+pixel art are not licensed, so take the idea only): agents drawn as crew
+in a pixel-art station, rendered from live harness state, with the rule
+"the interface must never assert state the harness cannot prove". For
+PhoneBorg: a panel view that shows the whole cluster at once, which today
+takes the Nodes, Pools, Proxy and Jobs views plus Grafana.
+
+Fits the panel as it is: vanilla JS, no build step, one more file in
+`controller/ui/static/js/views/`. Canvas 2D, no libraries (the panel's CSP
+is `script-src 'self'`, so no CDN).
+
+| On the map | Data, already available |
+|---|---|
+| phone as a workstation: colour = state, glow = temperature, bar = tok/s, label = model, in-flight, HOT/DRAINED | `GET /admin/nodes` |
+| pools as rooms, Super Borg pools with the orchestrator at the head | `GET /admin/pools` |
+| the semantic router's classifier at the entrance, its classes as doors to their targets | `GET /admin/gateway` (`router`) |
+| jobs in progress | `GET /admin/jobs` |
+| Mac/PC external nodes | `GET /admin/external` |
+
+### Phase 1: static map (about 1 day, no backend change)
+
+- New view "Map": rooms from pools (a phone in several pools: its first
+  pool, with a marker), unassigned phones in a hall, the controller and
+  classifier at the entrance.
+- Refresh like the other live views; click a phone for its details (reuse
+  the Nodes view's details).
+- Go criteria: readable at 4 and at 20 phones, on a phone-width screen too.
+
+### Phase 2: live traffic (about 1–2 days)
+
+- Controller: `GET /admin/events`, a stream (SSE or NDJSON) of request
+  start/end (target, node, class), router decisions, Super Borg
+  delegations, node state changes. Today these exist only as logs and
+  metrics.
+- The panel sends the admin token as a header, which `EventSource` cannot:
+  read the stream with `fetch` streaming, or use a short-lived cookie as for
+  `/grafana/` (ADR-031).
+- Map: packets moving entrance → classifier → room → phone; delegation
+  lines from an orchestrator to its workers. Traffic on phones is slow
+  (seconds to minutes per request), so animation stays calm and cheap.
+- Bounded buffer per client; drop events for slow clients, never block the
+  gateway.
+
+### Phase 3: pixel-art style (optional)
+
+- Own sprites (phones, desks, rooms, crew); StarNet's art may not be used.
+  Mostly drawing work; keep a plain mode for small screens.
+
+### Docs when built
+
+- Next free ADR (event stream, its auth), OPERATIONS.md (Map view, the
+  events endpoint), screenshots in OPERATIONS.md#screenshots.
