@@ -9,7 +9,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | [QUICKSTART.md](QUICKSTART.md) | fast track: a test cluster with one or two phones in 30–45 minutes, from build to pools, Super Borg and a job |
 | [CONCEPTS.md](CONCEPTS.md) | ways to use the cluster (models, pools, Super Borg with an internal or external orchestrator, jobs, agents through MCP, benchmarks) with their pros and cons, a comparison and which one to pick |
 | [REAL_PHONES.md](REAL_PHONES.md) | choosing phones, preparing them, adb checks, provisioning, verification, slim, model storage, files and logs on the phone, removal, phone-side troubleshooting, which model suits which phone |
-| [OPERATIONS.md](OPERATIONS.md) | controller flags, sending requests, web panel, full `pbctl` reference, models and placement, pools and aliases, API keys, draining, gateway settings, usage, OpenCode bridge, Grafana, controller-side troubleshooting |
+| [OPERATIONS.md](OPERATIONS.md) | controller flags, sending requests, web panel, full `pbctl` reference, models and placement, pools and aliases, API keys, draining, gateway settings, semantic router, usage, OpenCode bridge, Grafana, controller-side troubleshooting |
 | [BENCHMARKS.md](BENCHMARKS.md) | what to expect: tok/s per model, threads, endurance, failover, prompt cache, parallel agents, bandwidth tiers, the four-phone multi-model benchmark, Super Borg and job timings |
 
 ## Developers: architecture, decisions, tests
@@ -17,7 +17,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | Document | Covers |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | components, provisioning, node lifecycle, request routing, model placement and switching, persistence, ports, security model, limitations |
-| [DECISIONS.md](DECISIONS.md) | ADR-001..032 with an index and dated updates |
+| [DECISIONS.md](DECISIONS.md) | ADR-001..033 with an index and dated updates |
 | [DEV_EMULATION.md](DEV_EMULATION.md) | colima + redroid setup, `make test`, `make e2e`, `make llm-smoke`, load generator |
 
 ## I want to…
@@ -34,6 +34,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | send a request / use the OpenAI SDK | [OPERATIONS.md](OPERATIONS.md#sending-requests) |
 | use the cluster from opencode | [OPERATIONS.md](OPERATIONS.md#opencode-agent-bridge) |
 | add a model and assign it to phones | [OPERATIONS.md](OPERATIONS.md#models-and-placement) |
+| send each `auto` request to the right pool by its kind (classifier) | [OPERATIONS.md](OPERATIONS.md#semantic-router-experimental), [CONCEPTS.md](CONCEPTS.md#1-a-model-auto-or-a-phone) |
 | give agents their own phones (pools, aliases) | [OPERATIONS.md](OPERATIONS.md#virtual-models-pools-and-aliases) |
 | require API keys | [OPERATIONS.md](OPERATIONS.md#api-keys) |
 | take a phone out for maintenance | [OPERATIONS.md](OPERATIONS.md#draining-a-phone-for-maintenance) |

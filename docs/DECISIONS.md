@@ -40,6 +40,7 @@ text.
 | [030](#adr-030-firmware-check) | Firmware check | accepted | Agents report build, patch and bootloader; with `-firmware-check` the controller compares them daily with LineageOS, Google's OTA page and the Xiaomi tracker. |
 | [031](#adr-031-grafana-in-the-panel) | Grafana in the panel | accepted | The controller serves Grafana under `/grafana/`; the panel embeds the dashboard and per-node charts with a cookie-based session. |
 | [032](#adr-032-token-analyzer) | Token analyzer | accepted | The phones' own tokenizers count a text per served model; Grafana dashboards break token usage down per phone, model and key, and show one phone at a time. |
+| [033](#adr-033-semantic-router-for-auto-experimental) | Semantic router for "auto" | accepted, experimental | One phone sorts each `auto` request into operator-editable classes from a one-token logprobs answer; each class has a target; any failure is plain `auto`. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
 

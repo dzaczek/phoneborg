@@ -53,6 +53,11 @@ flowchart TB
   speed-aware routing.
 - **Virtual models:** `auto`, `pool/<name>` and `node/<alias>` let each
   agent of a tool like opencode get its own phones.
+- **Semantic router (experimental):** one phone sorts each `auto`
+  request into a class (easy/hard chat, writing, coding, reasoning, or
+  your own) from a one-token answer read from its logprobs, and the
+  gateway sends it to that class's pool or phone; editable in `pbctl` and
+  the panel.
 - **Super Borg pools:** a pool that answers as a single model: its
   strongest phone orchestrates and delegates subtasks to the others in
   parallel, and runs long background jobs; other phones stay free for

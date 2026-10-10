@@ -54,6 +54,14 @@ needs "a model", tests of one phone.
 | session affinity keeps a conversation on the phone that has its prompt cache (warm answers in about 1 s) | with mixed models, `auto` may land on a weak one |
 | failover to another phone if one dies before answering | |
 
+The experimental **semantic router** takes the guesswork out of `auto`:
+one phone sorts each request into a class (easy/hard chat, writing,
+coding, reasoning, or classes you define) and the request goes to that
+class's pool or phone, for example greetings to the Mi 8 and proofs to
+the 8B model. It costs about 2 s per request on a Qwen3-4B phone and falls
+back to plain `auto` on any problem. See
+[OPERATIONS.md](OPERATIONS.md#semantic-router-experimental).
+
 ## 2. Pools
 
 A pool groups phones for one purpose, e.g. `pool/fast` (any phone, small

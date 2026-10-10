@@ -5,7 +5,9 @@ concept on the real cluster; build it into PhoneBorg only if the PoC meets
 its go criteria.
 
 - [ ] [Image generation engine on phones](#1-image-generation-engine-on-phones)
-- [ ] [Laya: smart routing for the phone cluster](#2-laya-smart-routing-for-the-phone-cluster)
+- [x] [Laya: smart routing for the phone cluster](#2-laya-smart-routing-for-the-phone-cluster):
+  superseded by the semantic router (ADR-033), which classifies on a phone
+  through llama-server instead of a Python encoder on the host
 
 ## 1. Image generation engine on phones
 
@@ -143,6 +145,13 @@ shutdown over 10 consecutive images.
   at the cost of reloading the model per request.
 
 ## 2. Laya: smart routing for the phone cluster
+
+> **Done differently (2026-10-10).** Use 1, smart routing, is the semantic
+> router of ADR-033: a phone's own llama-server classifies `auto`
+> requests into operator-editable classes with a one-token logprobs
+> answer, so no Python service or second model runs on the host. Uses 2
+> (thinking on/off per request) and 3 (guard) remain open. The plan below
+> is kept for reference.
 
 ### Context
 
