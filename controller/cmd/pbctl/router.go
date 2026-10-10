@@ -91,7 +91,7 @@ func routerClassCmd(c *client, o *out, verb, name string, kvs []string) error {
 	switch verb {
 	case "add":
 		if i >= 0 {
-			return fmt.Errorf("class %s exists; change it with: router class set %s ...", name, name)
+			return fmt.Errorf("class %s exists, change it with pbctl router class set %s", name, name)
 		}
 		cl := controller.RouterClassSettings{}
 		cl.Name = name
