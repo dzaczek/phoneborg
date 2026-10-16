@@ -38,6 +38,7 @@ const (
 	BigBrainLoading   = "loading"   // the head is pushing the weights to the members
 	BigBrainReady     = "ready"
 	BigBrainError     = "error"
+	BigBrainStopped   = "stopped" // the pool is disabled; its phones serve their own models
 )
 
 // ReasonNotRPC: a Big Brain member that does not run ggml-rpc-server (yet).

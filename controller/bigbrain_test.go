@@ -235,7 +235,7 @@ func TestBigBrainPool(t *testing.T) {
 		t.Fatalf("disabled pool still claims a: %+v", d)
 	}
 	e.srv.bigBrainTick(context.Background())
-	if p := e.bigBrain("brain"); p.Status != PoolDisabled {
+	if p := e.bigBrain("brain"); p.Status != PoolDisabled || p.BigBrain.State != BigBrainStopped {
 		t.Fatalf("disabled: %+v", p)
 	}
 }

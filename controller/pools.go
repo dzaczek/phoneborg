@@ -361,6 +361,9 @@ func (s *Server) withMembers(p Pool) Pool {
 	if p.Routing == RoutingBigBrain {
 		p.Members = s.bigBrainPoolMembers(p)
 		st := s.bb.status(p.Name)
+		if p.Disabled {
+			st = BigBrainStatus{State: BigBrainStopped}
+		}
 		p.BigBrain = &st
 		p.Status, p.StatusReason = bigBrainPoolStatus(p)
 		return p

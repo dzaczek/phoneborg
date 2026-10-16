@@ -151,7 +151,7 @@ function bigBrainDialog(existing, nodes, catalog) {
   });
 }
 
-const BB_STATE = { ready: 'ok', loading: 'warn', preparing: 'info', error: 'bad' };
+const BB_STATE = { ready: 'ok', loading: 'warn', preparing: 'info', error: 'bad', stopped: 'idle' };
 
 function bigBrainPanel(p) {
   const bb = p.big_brain || {};
