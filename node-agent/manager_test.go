@@ -56,8 +56,10 @@ func TestManagerStatusReportsBudget(t *testing.T) {
 	m := NewManager(ManagerConfig{MemReserveMB: 100}, discardLog())
 	st := m.Status(context.Background())
 	want := MemoryBudget(AvailableRAM(), 0, 100*mib)
-	if st.BudgetBytes != want {
-		t.Fatalf("BudgetBytes = %d, want %d", st.BudgetBytes, want)
+	// MemAvailable moves between the two reads (other tests start processes),
+	// so compare within a margin.
+	if diff := st.BudgetBytes - want; diff > 64*mib || diff < -64*mib {
+		t.Fatalf("BudgetBytes = %d, want %d ± 64 MiB", st.BudgetBytes, want)
 	}
 }
 
