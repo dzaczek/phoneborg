@@ -1961,8 +1961,15 @@ rest serving as before.
   `ready` once `/health` answers, `error` with the log tail when it exits
   (restart with backoff 30 s → 10 min) or when the model does not fit
   (model × 1.05 > the members' usable RAM). A member that leaves RPC mode
-  (crash, unplugged, drained) stops the head; it restarts when the member
-  is back. After `ready` a 16-token self-test records tok/s.
+  or is drained stops the head; it restarts when the member is back.
+  Missing heartbeats (SUSPECT/OFFLINE) do not stop a running head: loading
+  saturates the USB link and delays them, and the head's own RPC
+  connection fails if a phone is really gone. After a head stops, the fit
+  check waits 15 s for the phones to report the freed RAM. After `ready` a
+  16-token self-test records tok/s.
+- The agent checks ggml-rpc-server with one TCP connect after each start
+  and then only that the process lives: the server takes one client at a
+  time, so probes with the head connected would pile up unaccepted.
 - The head is a gateway backend `bb:<pool>` with `MaxConcurrency 1` and the
   new `Backend.PoolOnly`: only `pool/<name>` reaches it, never `auto` or
   its model id, so a slow head never takes normal traffic.

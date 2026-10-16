@@ -34,6 +34,7 @@ token generation).
 - [Multi-model benchmark, four phones](#multi-model-benchmark-four-phones)
 - [Super Borg and jobs: observed timings](#super-borg-and-jobs-observed-timings)
 - [Semantic router classifier](#semantic-router-classifier)
+- [Big Brain: one model across phones](#big-brain-one-model-across-phones)
 - [Memory: what Android leaves free](#memory-what-android-leaves-free)
 - [Other small measurements](#other-small-measurements)
 
@@ -437,6 +438,70 @@ easy/hard prompt (7 requests).
   their targets (Mi 8, `pool/translate`, `pool/writer`, `pool/fast`,
   `pool/code`, `pool/think`); 17.5 s for the first, 1.8–2.2 s for the
   rest.
+
+## Big Brain: one model across phones
+
+Measured on 2026-10-16 through Big Brain pools (ADR-034) on the production
+cluster, llama.cpp b11136: the phones of the
+[four-phone table](#multi-model-benchmark-four-phones) plus **mi9**
+(`268ff7f1`, Xiaomi MI 9, Snapdragon 855, MIUI 12.5 / Android 11, 5.4 GiB).
+The head runs on the controller's VM; the phones are reached over USB 2.0
+(`adb forward`, round trip p50 2.6 ms, p90 3.1 ms).
+
+**Method.** A script sets the pool through the admin API
+(`PUT /admin/pools/brain`), waits for `ready`, then sends straight to the
+head two requests with a 34–38-token prompt and 128 generated tokens, one
+with a ~455-token prompt and 32 tokens (prompt speed), and one 32-token
+request through the gateway as `pool/brain` (served by `bb:brain`, same
+speed in every run). `cache_prompt` off, temperature 0.7, thinking off,
+context 4096, q8_0 KV cache, flash attention. Speeds are llama.cpp's
+`timings`; **load** is head start to `/health` 200. Threads per phone come
+from the agent's `rpc` policy (every core but the little cluster: pixel 5,
+oneplus 4, poco 4, mi9 4, mi8 4); `-ts` follows each phone's free RAM minus
+900 MiB. Raw records: one JSON line per run (script and data in the PR).
+
+| Model | File | Phones | Load | Generation tok/s | Prompt tok/s (short / 455 tokens) | RAM left free per phone, GB |
+|---|---|---|---|---|---|---|
+| Qwen3-30B-A3B-Instruct-2507 UD-Q3_K_XL (MoE, 3B active) | 13.8 GB | pixel, oneplus | 6.6 min | **2.57** | 10.6 / 10.8 | 1.5, 1.3 |
+| ″ | ″ | pixel, oneplus, poco | *in progress* | | | |
+| ″ | ″ | pixel, oneplus, mi8 | *in progress* | | | |
+| ″ | ″ | pixel, oneplus, poco, mi9 | 3.7 min ¹ | 1.96 | 9.9 / 10.4 | 3.6, 3.8, 2.2, 2.1 |
+| ″ | ″ | all five | 10.7 min | 1.66 | 8.6 / 9.5 | 4.1, 4.0, 2.9, 2.0, 2.1 |
+| Qwen3-32B Q4_K_M (dense) | 19.8 GB | pixel, oneplus, poco, mi9 | *in progress* | | | |
+| ″ | ″ | all five | 11.8 min | **0.75** | 1.45 / 1.16 | 2.3, 2.6, 1.6, 1.3, 1.3 |
+| Llama-3.3-70B-Instruct UD-IQ2_XXS (dense, 2-bit) | 19.4 GB | all five | *in progress* | | | |
+
+¹ The phones kept the tensors of the previous run in their RPC cache
+(`rpc-cache/`), so only the moved share crossed USB.
+
+Before ADR-034, by hand (same model and phones, 2026-10-15): generation
+1.8 tok/s with every core on both phones against 2.5 tok/s with the big
+cores only (the reason for the `rpc` thread policy); first load 8 min 22 s,
+a reload from the RPC cache 2 min 25 s; the head used 31 MB of RAM.
+
+**What it shows**
+
+- **A model no phone can hold runs.** 14–20 GB models on phones with 5–12
+  GB of RAM each, served as one OpenAI model through `pool/<name>`.
+- **More phones do not make it faster.** Generation visits the phones one
+  after the other for every token, so each phone adds its compute time and
+  a USB round trip, and the slowest phone sets the pace: the same 30B model
+  drops from 2.57 tok/s on two phones to 1.96 on four and 1.66 on five.
+  Add phones only to fit a bigger model, and prefer few, large phones.
+- **Active parameters set the speed.** The 30B mixture-of-experts model
+  (3B active per token) is 2–3× faster than the dense 32B on the same
+  phones. Prompt processing differs even more (~10 vs ~1.3 tok/s): a dense
+  model on phones is for short prompts only.
+- **Loading is bound by USB 2.0 through one host**: 7–12 min for 14–20 GB.
+  The RPC cache on each phone's flash cuts reloads of the same model.
+- **Memory**: the fit rule (model × 1.05 within free RAM minus 900 MiB per
+  phone) left 1.3–4 GB free on every phone; nothing was killed by Android.
+- **Bugs found by running it** (fixed in the same branch): probing
+  ggml-rpc-server on every heartbeat blocked heartbeats once the head was
+  connected (it serves one client at a time); loading delays heartbeats so
+  much that phones turn SUSPECT, which must not stop a running head; and on
+  MIUI 12.5 pcprov recorded setsid's pid instead of the agent's and kept
+  starting new agents.
 
 ## Memory: what Android leaves free
 
