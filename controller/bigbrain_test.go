@@ -86,6 +86,10 @@ func TestHeadArgs(t *testing.T) {
 // newBigBrainEnv is a controller with a catalog holding model "big", a
 // fake head binary, and nodes a, b, c serving model "m".
 func newBigBrainEnv(t *testing.T) (*env, string) {
+	return newBigBrainEnvTimes(t, time.Hour, time.Hour)
+}
+
+func newBigBrainEnvTimes(t *testing.T, suspect, offline time.Duration) (*env, string) {
 	t.Helper()
 	dir := t.TempDir()
 	logs := &bytes.Buffer{}
@@ -95,7 +99,7 @@ func newBigBrainEnv(t *testing.T) (*env, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(cat.Close)
-	reg := NewRegistry(time.Hour, time.Hour, log)
+	reg := NewRegistry(suspect, offline, log)
 	srv := NewServer(reg, time.Second, GatewayOptions{BackendHost: "127.0.0.1",
 		Models:   ModelOptions{Catalog: cat},
 		BigBrain: BigBrainOptions{HeadBin: os.Args[0], BasePort: freeTCPPort(t), LogDir: filepath.Join(dir, "bigbrain")},
@@ -249,5 +253,38 @@ func TestBigBrainDoesNotFit(t *testing.T) {
 	json.NewEncoder(&b).Encode(p)
 	if !strings.Contains(b.String(), `"big_brain":{"state":"error"`) {
 		t.Errorf("JSON: %s", b.String())
+	}
+}
+
+// Loading pushes gigabytes over each phone's USB link and delays its
+// heartbeats: a running head keeps members that turn SUSPECT or OFFLINE
+// (its RPC connection fails if a phone is really gone), but a head does
+// not start without fresh heartbeats.
+func TestBigBrainKeepsStaleMembers(t *testing.T) {
+	e, _ := newBigBrainEnvTimes(t, 100*time.Millisecond, 200*time.Millisecond)
+	e.admin(http.MethodPut, "/admin/pools/brain", `{"routing":"bigbrain","model":"big","nodes":["a","b"]}`, 200, nil)
+	e.rpcHeartbeat("a", 50052, 4<<30)
+	e.rpcHeartbeat("b", 50053, 4<<30)
+	p := e.tickUntil("brain", BigBrainReady)
+	port := p.BigBrain.Port
+
+	time.Sleep(300 * time.Millisecond)
+	e.reg.Sweep()
+	e.srv.bigBrainTick(context.Background())
+	if p := e.bigBrain("brain"); p.BigBrain.State != BigBrainReady || p.BigBrain.Port != port || p.Members[0].Reason != "offline" {
+		t.Fatalf("stale members stopped the head: %+v %+v", p.BigBrain, p.Members)
+	}
+
+	e.srv.bb.stop("brain", false) // e.g. the head exited
+	p = e.tickUntil("brain", BigBrainPreparing)
+	if !strings.Contains(p.BigBrain.Reason, "a is offline") {
+		t.Fatalf("reason %q", p.BigBrain.Reason)
+	}
+	// Back, but their RAM reports still show the old load for a while.
+	e.rpcHeartbeat("a", 50052, 1<<30)
+	e.rpcHeartbeat("b", 50053, 1<<30)
+	e.srv.bigBrainTick(context.Background())
+	if p := e.bigBrain("brain"); p.BigBrain.State != BigBrainPreparing || !strings.Contains(p.BigBrain.Reason, "free the previous load") {
+		t.Fatalf("settling: %+v", p.BigBrain)
 	}
 }

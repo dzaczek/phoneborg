@@ -51,11 +51,16 @@ const BB_MARGIN = 1.05; // KV cache and buffers on top of the weights
 const GB = (b) => (b / 1e9).toFixed(1) + ' GB';
 
 // rpcFree estimates a phone's free RAM once it lends it to a Big Brain: what
-// is free now plus the model it serves, which stops.
+// is free now plus what the model it serves takes (weights and KV cache),
+// which stops, capped at 60% of its RAM (what Android left free in RPC mode
+// on five phones: 57-69%). Phones already in RPC mode report the real figure;
+// the controller checks the fit with those.
 function rpcFree(n) {
   const hb = n.last_heartbeat || {};
   const rt = hb.runtime || {};
-  return (hb.ram_avail_bytes || 0) + (rt.state === 'rpc' ? 0 : rt.model_bytes || 0);
+  if (rt.state === 'rpc') return hb.ram_avail_bytes || 0;
+  const est = (hb.ram_avail_bytes || 0) + (rt.ram_estimate_bytes || rt.resident_bytes || rt.model_bytes || 0);
+  return Math.min(est, 0.6 * ((n.inventory || {}).ram_total_bytes || 0));
 }
 
 function bigBrainDialog(existing, nodes, catalog) {
@@ -73,7 +78,7 @@ function bigBrainDialog(existing, nodes, catalog) {
   const cls = h('select', { name: 'bb-class' }, h('option', { value: '' }, 'any class'), CLASSES.map((c) => h('option', { value: c.id }, `${c.id} (${c.label})`)));
   const minFree = h('input', { type: 'number', name: 'bb-min-free', min: 0, step: 0.5, value: '0', style: 'width:6em' });
   const list = h('div.checks');
-  const meter = h('meter', { min: 0, max: 1, value: 0, style: 'width:100%' });
+  const meter = h('meter', { min: 0, max: 1, value: 0, style: 'width:100%;height:12px' });
   const fit = h('p');
   const byName = new Map(nodes.map((n) => [n.alias || n.id, n]));
   const sorted = [...nodes].sort((a, b) => rpcFree(b) - rpcFree(a));

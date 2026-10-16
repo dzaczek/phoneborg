@@ -55,6 +55,10 @@ const (
 	bigBrainMinBackoff = 30 * time.Second
 	bigBrainMaxBackoff = 10 * time.Minute
 	bigBrainDefaultCtx = 4096
+	// bigBrainSettle is how long after a head stops its members' reports are
+	// not trusted for the fit check: the phones free the old weights, and
+	// their next heartbeats show it.
+	bigBrainSettle = 15 * time.Second
 )
 
 // BigBrainOptions configures Big Brain heads.
@@ -95,7 +99,12 @@ type bigBrainMember struct {
 	rpcAddr  string // host:port of its ggml-rpc-server; "" = not in RPC mode
 	state    string // its runtime state, for reasons
 	freeRAM  uint64
-	excluded string // drained, offline, ...; "" = usable
+	excluded string // drained or unknown; "" = usable
+	// stale: its heartbeats are late (SUSPECT/OFFLINE), so rpcAddr is its
+	// last report. Loading saturates the USB link and delays heartbeats, so
+	// a running head keeps a stale member; its RPC connection fails if the
+	// phone is really gone.
+	stale string
 }
 
 // head is one Big Brain pool's head process and state.
@@ -108,6 +117,7 @@ type head struct {
 	status  BigBrainStatus
 	retryAt time.Time // no restart before this after the head exited
 	backoff time.Duration
+	stopped time.Time // when a running head was last stopped
 }
 
 type bigBrains struct {
@@ -199,11 +209,12 @@ func (s *Server) bigBrainMembers(p Pool) []bigBrainMember {
 			m.freeRAM, rt = hb.RAMAvailBytes, hb.Runtime
 		}
 		m.state = runtimeState(rt)
+		if n.State != proto.StateActive {
+			m.stale = strings.ToLower(string(n.State))
+		}
 		switch {
 		case drained[id]:
 			m.excluded = ReasonDrained
-		case n.State != proto.StateActive:
-			m.excluded = strings.ToLower(string(n.State))
 		case rt != nil && rt.State == proto.ModeRPC && rt.AdvertisePort != 0:
 			host := rt.AdvertiseHost
 			if host == "" {
@@ -257,18 +268,6 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 		ctxSize = bigBrainDefaultCtx
 	}
 	need := int64(float64(m.SizeBytes) * bigBrainKVMargin)
-	var waiting []string
-	addrs := make([]string, 0, len(members))
-	for _, mb := range members {
-		switch {
-		case mb.excluded != "":
-			waiting = append(waiting, mb.name+" is "+mb.excluded)
-		case mb.rpcAddr == "":
-			waiting = append(waiting, mb.name+" is "+mb.state)
-		}
-		addrs = append(addrs, mb.rpcAddr)
-	}
-	key := fmt.Sprintf("%s|%s|%d|%s", p.Model, path, ctxSize, strings.Join(addrs, ","))
 
 	b.mu.Lock()
 	h := b.heads[p.Name]
@@ -277,6 +276,24 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 		b.heads[p.Name] = h
 	}
 	running := h.cancel != nil && !h.exited
+	b.mu.Unlock()
+
+	var waiting []string
+	addrs := make([]string, 0, len(members))
+	for _, mb := range members {
+		switch {
+		case mb.excluded != "":
+			waiting = append(waiting, mb.name+" is "+mb.excluded)
+		case mb.rpcAddr == "":
+			waiting = append(waiting, mb.name+" is "+mb.state)
+		case mb.stale != "" && !running:
+			waiting = append(waiting, mb.name+" is "+mb.stale)
+		}
+		addrs = append(addrs, mb.rpcAddr)
+	}
+	key := fmt.Sprintf("%s|%s|%d|%s", p.Model, path, ctxSize, strings.Join(addrs, ","))
+
+	b.mu.Lock()
 	h.status.NeedBytes = need
 	if !running {
 		h.status.HaveBytes, _ = bigBrainSplit(members)
@@ -320,8 +337,13 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 		b.mu.Unlock()
 		return
 	}
+	settled := time.Since(h.stopped) >= bigBrainSettle
 	b.mu.Unlock()
 
+	if !settled {
+		b.setState(p.Name, BigBrainPreparing, "waiting for the phones to free the previous load")
+		return
+	}
 	have, split := bigBrainSplit(members)
 	if have < need {
 		b.setState(p.Name, BigBrainError, fmt.Sprintf("the model needs %.1f GB, the members have %.1f GB free: add phones or pick a smaller model",
@@ -505,7 +527,7 @@ func (b *bigBrains) stop(pool string, forget bool) {
 	cancel, done := h.cancel, h.done
 	h.cancel, h.done, h.key = nil, nil, ""
 	if cancel != nil {
-		h.exited = false
+		h.exited, h.stopped = false, time.Now()
 	}
 	h.status.TensorSplit, h.status.Port, h.status.GenTPS, h.status.PromptTPS = nil, 0, 0, 0
 	h.status.LoadStartedAt, h.status.LoadSeconds = time.Time{}, 0
@@ -584,6 +606,8 @@ func (s *Server) bigBrainPoolMembers(p Pool) []PoolMember {
 			m.Reason = mb.excluded
 		case mb.rpcAddr == "":
 			m.Reason = ReasonNotRPC + " (" + mb.state + ")"
+		case mb.stale != "":
+			m.Reason = mb.stale
 		}
 		m.Eligible = m.Reason == ""
 		out = append(out, m)

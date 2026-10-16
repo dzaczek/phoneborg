@@ -53,6 +53,11 @@ type Runtime struct {
 	restarts atomic.Int64
 	http     *http.Client
 	pid      atomic.Int32 // 0 when no llama-server process is running
+	// rpcUp: this run of ggml-rpc-server accepted a probe. It serves one
+	// client at a time, so once the head is connected further probes sit
+	// unaccepted in its backlog; after the first success, a live process is
+	// enough.
+	rpcUp atomic.Bool
 
 	mu         sync.Mutex // guards the self-test result below
 	genTPS     float64
@@ -152,6 +157,7 @@ func (r *Runtime) runRPC(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", r.cfg.ServerBin, err)
 	}
+	r.rpcUp.Store(false)
 	r.pid.Store(int32(cmd.Process.Pid))
 	defer r.pid.Store(0)
 	_ = os.WriteFile(runtimePidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
@@ -210,12 +216,19 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 // or, in RPC mode, whether ggml-rpc-server accepts connections.
 func (r *Runtime) healthy(ctx context.Context) bool {
 	if r.cfg.RPC {
-		var d net.Dialer
+		if r.pid.Load() == 0 {
+			return false
+		}
+		if r.rpcUp.Load() {
+			return true
+		}
+		d := net.Dialer{Timeout: time.Second}
 		c, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", r.cfg.Port))
 		if err != nil {
 			return false
 		}
 		c.Close()
+		r.rpcUp.Store(true)
 		return true
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", r.cfg.Port), nil)
