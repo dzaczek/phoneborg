@@ -463,16 +463,22 @@ oneplus 4, poco 4, mi9 4, mi8 4); `-ts` follows each phone's free RAM minus
 | Model | File | Phones | Load | Generation tok/s | Prompt tok/s (short / 455 tokens) | RAM left free per phone, GB |
 |---|---|---|---|---|---|---|
 | Qwen3-30B-A3B-Instruct-2507 UD-Q3_K_XL (MoE, 3B active) | 13.8 GB | pixel, oneplus | 6.6 min | **2.57** | 10.6 / 10.8 | 1.5, 1.3 |
-| ″ | ″ | pixel, oneplus, poco | *in progress* | | | |
-| ″ | ″ | pixel, oneplus, mi8 | *in progress* | | | |
+| ″ | ″ | pixel, oneplus, poco | 4.0 min ¹ | 2.24 | 10.2 / 10.6 | 3.1, 2.9, 2.1 |
+| ″ | ″ | pixel, oneplus, mi8 | 4.6 min ¹ | 2.09 | 9.3 / 9.6 | 2.5, 2.6, 1.5 |
 | ″ | ″ | pixel, oneplus, poco, mi9 | 3.7 min ¹ | 1.96 | 9.9 / 10.4 | 3.6, 3.8, 2.2, 2.1 |
 | ″ | ″ | all five | 10.7 min | 1.66 | 8.6 / 9.5 | 4.1, 4.0, 2.9, 2.0, 2.1 |
-| Qwen3-32B Q4_K_M (dense) | 19.8 GB | pixel, oneplus, poco, mi9 | *in progress* | | | |
+| Qwen3-32B Q4_K_M (dense) | 19.8 GB | pixel, oneplus, poco, mi9 | 11.8 min | 0.89, then 0.29–0.32 ² | 1.6 / 1.3 | 1.4, 2.1, 1.2, **1.0** |
 | ″ | ″ | all five | 11.8 min | **0.75** | 1.45 / 1.16 | 2.3, 2.6, 1.6, 1.3, 1.3 |
-| Llama-3.3-70B-Instruct UD-IQ2_XXS (dense, 2-bit) | 19.4 GB | all five | *in progress* | | | |
+| Llama-3.3-70B-Instruct UD-IQ2_XXS (dense, 2-bit) | 19.4 GB | all five | 11.8 min | 0.21–0.30 | 0.30–0.34 / — ³ | 2.1, 2.2, 1.5, 1.2, **0.8** ⁴ |
 
 ¹ The phones kept the tensors of the previous run in their RPC cache
 (`rpc-cache/`), so only the moved share crossed USB.
+² The first 128-token run gave 0.89 tok/s; the next ones 0.29–0.32. The
+MI 9 was left with under 1 GB free, and Android reclaiming memory on it is
+the likely cause: one slow phone slows every token.
+³ The ~470-token prompt did not finish within the script's 30 min limit
+(about 26 min of prompt processing alone); speeds from the head's log.
+⁴ Measured at the end of the series; the Mi 8 had no swap left.
 
 Before ADR-034, by hand (same model and phones, 2026-10-15): generation
 1.8 tok/s with every core on both phones against 2.5 tok/s with the big
@@ -486,16 +492,23 @@ a reload from the RPC cache 2 min 25 s; the head used 31 MB of RAM.
 - **More phones do not make it faster.** Generation visits the phones one
   after the other for every token, so each phone adds its compute time and
   a USB round trip, and the slowest phone sets the pace: the same 30B model
-  drops from 2.57 tok/s on two phones to 1.96 on four and 1.66 on five.
-  Add phones only to fit a bigger model, and prefer few, large phones.
+  drops from 2.57 tok/s on two phones to 2.24 on three, 1.96 on four and
+  1.66 on five, and a slow third phone costs more than a fast one (2.09
+  tok/s with the Mi 8 against 2.24 with the POCO). Add phones only to fit
+  a bigger model, and prefer few, large phones.
 - **Active parameters set the speed.** The 30B mixture-of-experts model
   (3B active per token) is 2–3× faster than the dense 32B on the same
-  phones. Prompt processing differs even more (~10 vs ~1.3 tok/s): a dense
-  model on phones is for short prompts only.
+  phones, and the dense 70B at 2 bits crawls at 0.2–0.3 tok/s. Prompt
+  processing differs even more (~10 tok/s MoE, ~1.3 dense 32B, ~0.3 70B):
+  a dense model on phones is for short prompts only, and a 70B is a
+  demonstration that it runs, not a tool.
 - **Loading is bound by USB 2.0 through one host**: 7–12 min for 14–20 GB.
   The RPC cache on each phone's flash cuts reloads of the same model.
 - **Memory**: the fit rule (model × 1.05 within free RAM minus 900 MiB per
-  phone) left 1.3–4 GB free on every phone; nothing was killed by Android.
+  phone) never let Android kill anything, but on the 5–6 GiB phones (MI 9,
+  Mi 8) it left about 1 GB free, and a phone that short of memory slowed
+  the whole model (note ²). A larger reserve for small phones, or a share
+  capped by their total RAM, is the next improvement.
 - **Bugs found by running it** (fixed in the same branch): probing
   ggml-rpc-server on every heartbeat blocked heartbeats once the head was
   connected (it serves one client at a time); loading delays heartbeats so
