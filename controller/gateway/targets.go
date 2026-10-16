@@ -55,6 +55,8 @@ func (t Target) allows(b Backend) bool {
 		return false
 	case b.OrchestratorOnly && t.Node != b.NodeID:
 		return false
+	case b.PoolOnly && t.Node != b.NodeID && !t.Nodes[b.NodeID]:
+		return false
 	case t.Node != "":
 		return b.NodeID == t.Node
 	case t.Nodes != nil && !t.Nodes[b.NodeID]:

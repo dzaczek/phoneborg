@@ -1,4 +1,4 @@
-.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llama-all llm-smoke fmt lint clean help
+.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llama-all llama-head llm-smoke fmt lint clean help
 
 VERSION ?= $(shell date +%Y%m%d%H%M)
 
@@ -58,6 +58,17 @@ llama-all:
 	$(MAKE) llama ARM_ARCH=armv8.2-a+fp16
 	$(MAKE) llama ARM_ARCH=armv8-a
 
+# Big Brain head (ADR-034): llama-server with RPC, built natively for the
+# controller host (needs cmake and a C++ compiler there). Same LLAMA_TAG as
+# the phones: the RPC protocol must match.
+llama-head:
+	rm -rf bin/llama-head-src
+	git clone --depth 1 --branch $(LLAMA_TAG) https://github.com/ggml-org/llama.cpp bin/llama-head-src
+	cmake -S bin/llama-head-src -B bin/llama-head-src/build -DCMAKE_BUILD_TYPE=Release -DGGML_RPC=ON -DBUILD_SHARED_LIBS=OFF \
+		-DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
+	cmake --build bin/llama-head-src/build -j 4 --target llama-server
+	mkdir -p bin/llama-head && cp bin/llama-head-src/build/bin/llama-server bin/llama-head/ && rm -rf bin/llama-head-src
+
 models/qwen2.5-0.5b-instruct-q4_k_m.gguf:
 	mkdir -p models
 	curl -fL -o $@ https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
@@ -89,6 +100,7 @@ help:
 	@echo "  e2e          run the redroid end-to-end test"
 	@echo "  llama        build one llama.cpp variant (see ARM_ARCH/LLAMA_TAG)"
 	@echo "  llama-all    build all llama.cpp ARM variants"
+	@echo "  llama-head   build the Big Brain head (llama-server with RPC) for this host"
 	@echo "  llm-smoke    download the smoke-test model and run tests/e2e/llm_smoke.sh"
 	@echo "  fmt          format Go source with gofmt"
 	@echo "  lint         gofmt check, go vet, and staticcheck"

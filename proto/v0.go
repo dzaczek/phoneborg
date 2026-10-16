@@ -100,7 +100,15 @@ type DesiredRuntime struct {
 	Layers        int    `json:"layers"`   // GGUF metadata for the RAM estimate
 	KVHeads       int    `json:"kv_heads"`
 	HeadDim       int    `json:"head_dim"`
+	// Mode ModeRPC lends the node's RAM to a Big Brain pool (ADR-034): the
+	// agent stops llama-server and runs ggml-rpc-server on its serving port;
+	// the other fields are unused. "" = serve ModelID.
+	Mode string `json:"mode,omitempty"`
 }
+
+// ModeRPC is DesiredRuntime.Mode for a Big Brain member (ADR-034), and
+// RuntimeStatus.State while its ggml-rpc-server listens.
+const ModeRPC = "rpc"
 
 // RuntimeStatus describes the node's inference server. The controller reaches
 // it at AdvertiseHost:AdvertisePort; an empty host means "the controller's
@@ -124,7 +132,7 @@ type RuntimeStatus struct {
 	PromptTPS        float64   `json:"prompt_tps,omitempty"`
 	SelfTestAt       time.Time `json:"self_test_at,omitempty"`
 	ModelID          string    `json:"model_id,omitempty"`
-	State            string    `json:"state,omitempty"`    // "serving" | "downloading" | "loading" | "error" | "idle"
+	State            string    `json:"state,omitempty"`    // "serving" | "downloading" | "loading" | "error" | "idle" | "rpc"
 	Progress         float64   `json:"progress,omitempty"` // 0..1 while downloading
 	Error            string    `json:"error,omitempty"`
 	Slots            int       `json:"slots,omitempty"`

@@ -47,6 +47,12 @@ type ManagerConfig struct {
 
 	StaticModelPath string // -model; "" if the node only serves what the controller desires
 	StaticCtxSize   int
+
+	// Big Brain (ADR-034): ggml-rpc-server binary ("" = this node cannot
+	// join), its thread count, and its tensor cache directory.
+	RPCServerBin string
+	RPCThreads   int
+	RPCCacheDir  string
 }
 
 // Manager owns the currently active Runtime and switches it to a new model
@@ -81,8 +87,25 @@ type Manager struct {
 
 	verified shaCache // caches the on-disk model file's verified SHA-256
 
+	// Big Brain (ADR-034): rpc is set while the runtime is ggml-rpc-server;
+	// preRPC is what ran before it (nil = nothing), restored on leaving.
+	rpc    bool
+	preRPC *preRPCState
+
 	desiredCh chan *proto.DesiredRuntime // buffered 1; SetDesired keeps only the latest
 }
+
+// preRPCState is the runtime a node served before it joined a Big Brain pool.
+type preRPCState struct {
+	cfg           RuntimeConfig
+	current       string
+	residentBytes int64
+	lastApplied   *proto.DesiredRuntime
+}
+
+// releaseRPC is queued by SetDesired(nil) while the node is in RPC mode: a
+// controller that no longer names it as a Big Brain member sends nothing.
+var releaseRPC = &proto.DesiredRuntime{Mode: "release"}
 
 func NewManager(cfg ManagerConfig, log *slog.Logger) *Manager {
 	return &Manager{
@@ -126,11 +149,18 @@ func (m *Manager) startStatic(ctx context.Context) {
 }
 
 // SetDesired records the controller's latest desired state. nil means "keep
-// current runtime" and is a no-op. Only the most recent value is kept; Run's
-// reconcile loop applies one at a time.
+// current runtime" and is a no-op, except in RPC mode, which it leaves (the
+// controller names Big Brain members on every heartbeat, ADR-034). Only the
+// most recent value is kept; Run's reconcile loop applies one at a time.
 func (m *Manager) SetDesired(d *proto.DesiredRuntime) {
 	if d == nil {
-		return
+		m.mu.Lock()
+		rpc := m.rpc
+		m.mu.Unlock()
+		if !rpc {
+			return
+		}
+		d = releaseRPC
 	}
 	select {
 	case <-m.desiredCh:
@@ -145,7 +175,7 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 	m.mu.Lock()
 	rt := m.runtime
 	switching, subState, target, progress := m.switching, m.subState, m.target, m.progress
-	errMsg, ramBytes, residentBytes := m.lastErr, m.ramBytes, m.residentBytes
+	errMsg, ramBytes, residentBytes, rpc := m.lastErr, m.ramBytes, m.residentBytes, m.rpc
 	m.mu.Unlock()
 
 	var st *proto.RuntimeStatus
@@ -162,6 +192,20 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 		st.ModelID = target
 	}
 
+	if rpc {
+		// Never a backend itself: the controller's head serves the model.
+		listening := st.Ready
+		st.Model, st.ModelID, st.Ready, st.ModelBytes, st.Slots = "", "", false, 0, 0
+		switch {
+		case errMsg != "":
+			st.State = "error"
+		case listening:
+			st.State = proto.ModeRPC
+		default:
+			st.State = "loading"
+		}
+		return st
+	}
 	switch {
 	case errMsg != "":
 		st.State = "error"
@@ -184,6 +228,15 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 // desired state that failed and its retry backoff has not elapsed (see
 // shouldRetryNow).
 func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
+	switch {
+	case d.Mode == proto.ModeRPC:
+		m.enterRPC(ctx, d)
+		return
+	case d == releaseRPC:
+		m.leaveRPC(ctx)
+		return
+	}
+	m.leaveRPC(ctx) // a model to serve ends RPC mode
 	m.mu.Lock()
 	if m.lastApplied != nil && *m.lastApplied == *d {
 		m.mu.Unlock()
@@ -459,4 +512,83 @@ func waitHealthy(ctx context.Context, rt *Runtime, timeout time.Duration) error 
 		case <-t.C:
 		}
 	}
+}
+
+// enterRPC replaces the running llama-server with ggml-rpc-server on the
+// same port, so the controller's Big Brain head (ADR-034) reaches it over
+// the serving port's existing adb forward. The tensor cache holds one model:
+// it is wiped when d names another, so phones' flash does not fill up.
+func (m *Manager) enterRPC(ctx context.Context, d *proto.DesiredRuntime) {
+	m.mu.Lock()
+	if m.rpc && m.lastApplied != nil && *m.lastApplied == *d {
+		m.mu.Unlock()
+		return
+	}
+	if m.cfg.RPCServerBin == "" {
+		if m.lastErr == "" {
+			m.log.Error("asked to join a Big Brain pool, but this agent has no ggml-rpc-server")
+		}
+		m.lastErr = "rpc: no ggml-rpc-server on this node (re-provision with a llama.cpp build that has it)"
+		m.mu.Unlock()
+		return
+	}
+	prev, cancel, done := m.runtime, m.cancel, m.done
+	if !m.rpc {
+		m.preRPC = nil
+		if prev != nil {
+			m.preRPC = &preRPCState{cfg: prev.cfg, current: m.current, residentBytes: m.residentBytes, lastApplied: m.lastApplied}
+		}
+	}
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	cacheModel := filepath.Join(m.cfg.RPCCacheDir, ".model")
+	if b, _ := os.ReadFile(cacheModel); strings.TrimSpace(string(b)) != d.ModelID {
+		_ = os.RemoveAll(m.cfg.RPCCacheDir)
+		if err := os.MkdirAll(m.cfg.RPCCacheDir, 0o755); err == nil {
+			_ = os.WriteFile(cacheModel, []byte(d.ModelID+"\n"), 0o644)
+		}
+	}
+	rt := NewRuntime(RuntimeConfig{ServerBin: m.cfg.RPCServerBin, Port: m.cfg.Port, AdvertisePort: m.cfg.AdvertisePort,
+		Threads: m.cfg.RPCThreads, Variant: m.cfg.Variant, RPC: true, RPCCacheDir: m.cfg.RPCCacheDir}, m.log)
+	rtCtx, cancelRT := context.WithCancel(ctx)
+	doneRT := make(chan struct{})
+	go func() { rt.Run(rtCtx); close(doneRT) }()
+	m.mu.Lock()
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes, m.ramBytes = rt, cancelRT, doneRT, "", 0, 0
+	m.rpc, m.lastApplied, m.lastErr = true, d, ""
+	m.resetBackoffLocked()
+	m.mu.Unlock()
+	m.log.Info("joined a Big Brain pool: serving RAM over ggml-rpc-server", "model_id", d.ModelID, "threads", m.cfg.RPCThreads)
+}
+
+// leaveRPC stops ggml-rpc-server and restarts what ran before, if anything.
+// No-op outside RPC mode.
+func (m *Manager) leaveRPC(ctx context.Context) {
+	m.mu.Lock()
+	if !m.rpc {
+		m.mu.Unlock()
+		return
+	}
+	cancel, done, prev := m.cancel, m.done, m.preRPC
+	m.rpc, m.preRPC, m.lastApplied, m.lastErr = false, nil, nil, ""
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes = nil, nil, nil, "", 0
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	m.log.Info("left the Big Brain pool")
+	if prev == nil {
+		return
+	}
+	rt := NewRuntime(prev.cfg, m.log)
+	rtCtx, cancelRT := context.WithCancel(ctx)
+	doneRT := make(chan struct{})
+	go func() { rt.Run(rtCtx); close(doneRT) }()
+	m.mu.Lock()
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes, m.lastApplied = rt, cancelRT, doneRT, prev.current, prev.residentBytes, prev.lastApplied
+	m.mu.Unlock()
 }

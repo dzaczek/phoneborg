@@ -215,6 +215,12 @@ Hot nodes get no new sessions unless every candidate is hot.
   class or `fallback`. The router and its classes are stored in
   `routing.json`.
 
+- **Big Brain pools (ADR-034).** A `bigbrain` pool's phones run
+  `ggml-rpc-server` instead of llama-server; a head process on the
+  controller's host (`llama-server --rpc`, no weights of its own) splits
+  one catalog model over them and is the pool's only backend, `bb:<pool>`.
+  It is `PoolOnly`: `auto` and model ids never reach it.
+
 - **Reaping.** Every second the controller sweeps node states and cancels
   in-flight requests on nodes that left the ready set (e.g. `SUSPECT`); those
   requests are retried elsewhere instead of waiting for the timeout. Drained
@@ -224,7 +230,8 @@ Hot nodes get no new sessions unless every candidate is hot.
 - Once response bytes have reached the client, a request cannot be retried.
 - `X-PhoneBorg-Node` on the response names the node that answered.
 - Rationale: ADR-006 (gateway, affinity, failover), ADR-010 (measured speed,
-  thermal), ADR-014 (targets, pools, spread), ADR-033 (semantic router).
+  thermal), ADR-014 (targets, pools, spread), ADR-033 (semantic router),
+  ADR-034 (Big Brain pools).
 
 ## External engine nodes
 

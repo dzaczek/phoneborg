@@ -31,6 +31,8 @@ func main() {
 	suspect := flag.Int("suspect-after-missed", 3, "missed heartbeats before a node is SUSPECT")
 	offline := flag.Int("offline-after-missed", 6, "missed heartbeats before a node is OFFLINE")
 	debug := flag.Bool("debug", false, "debug logging (logs every heartbeat)")
+	bigBrainHead := flag.String("bigbrain-head", "", "llama-server built with RPC for this host (make llama-head); enables Big Brain pools (ADR-034)")
+	bigBrainPort := flag.Int("bigbrain-port", 18200, "first 127.0.0.1 port for Big Brain heads, one per pool")
 	backendHost := flag.String("backend-host", "127.0.0.1", "host where nodes' advertised ports (adb forwards) are reachable")
 	keysFile := flag.String("api-keys-file", "", "API keys file (\"<name> sha256:<hex>\" or legacy \"<name> <key>\" lines), reloaded on SIGHUP; empty = no auth (dev only)")
 	adminTokenFile := flag.String("admin-token-file", "", "file with the admin API bearer token (named \"admin\"); empty = admin API disabled")
@@ -158,6 +160,10 @@ func main() {
 	}
 
 	reg := controller.NewRegistry(time.Duration(*suspect)**hb, time.Duration(*offline)**hb, log)
+	bigBrainOpts := controller.BigBrainOptions{HeadBin: *bigBrainHead, BasePort: *bigBrainPort}
+	if *stateDir != "" {
+		bigBrainOpts.LogDir = filepath.Join(*stateDir, "bigbrain") // head logs, one per pool (ADR-034)
+	}
 	srv := controller.NewServer(reg, *hb, controller.GatewayOptions{
 		Keys:           keys,
 		Usage:          usage,
@@ -169,6 +175,7 @@ func main() {
 		Jobs:           jobs,
 		MMB:            controller.MMBOptions{Dir: mmbDir},
 		Firmware:       controller.FirmwareOptions{Online: *firmwareCheck},
+		BigBrain:       bigBrainOpts,
 		GrafanaURL:     *grafanaURL,
 		Devices:        devicesOpts,
 		AccessMode:     *gatewayAccess,
@@ -210,6 +217,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go srv.RunExternals(ctx)
+	go srv.RunBigBrain(ctx)
 	go srv.RunJobs(ctx)
 	go srv.RunFirmware(ctx)
 	hs := &http.Server{Addr: *addr, Handler: srv.Handler()}

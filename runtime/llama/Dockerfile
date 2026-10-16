@@ -1,5 +1,6 @@
 # Builds static arm64 llama.cpp binaries that run on Android without the NDK
 # (static musl: no dependency on bionic or /system libs). See ADR-005.
+# ggml-rpc-server lends a phone's RAM to a Big Brain pool (ADR-034).
 FROM alpine:3.22 AS build
 RUN apk add --no-cache build-base cmake git linux-headers
 ARG LLAMA_TAG=b11136
@@ -13,9 +14,9 @@ WORKDIR /src
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS=-static \
       -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=${ARM_ARCH} \
-      -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF \
- && cmake --build build -j ${JOBS} --target llama-bench llama-server \
- && mkdir /out && cp build/bin/llama-bench build/bin/llama-server /out/ && strip /out/*
+      -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DGGML_RPC=ON \
+ && cmake --build build -j ${JOBS} --target llama-bench llama-server ggml-rpc-server \
+ && mkdir /out && cp build/bin/llama-bench build/bin/llama-server build/bin/ggml-rpc-server /out/ && strip /out/*
 
 FROM scratch
 COPY --from=build /out/ /

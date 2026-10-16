@@ -66,6 +66,7 @@ type Server struct {
 	place   *placement
 	perf    *nodePerf  // measured memory bandwidth per node (ADR-015)
 	ext     *externals // external engine nodes (ADR-016)
+	bb      *bigBrains // Big Brain heads (ADR-034)
 	devices *devices   // USB device auto-detection, reported by pcprov (ADR-019)
 
 	jobs *gateway.Jobs // Super Borg jobs (ADR-021)
@@ -92,6 +93,7 @@ type GatewayOptions struct {
 	Jobs          JobsOptions     // Super Borg jobs, ADR-021
 	MMB           MMBOptions      // multi-model benchmark, ADR-028
 	Firmware      FirmwareOptions // firmware check, ADR-030
+	BigBrain      BigBrainOptions // Big Brain pools, ADR-034; Host defaults to BackendHost
 	// GrafanaURL is Grafana's address, served under /grafana/ (ADR-031); "" = off.
 	GrafanaURL string
 	// AccessMode is "local", "keys" or "open" (gateway.AccessLocal etc.),
@@ -133,6 +135,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 			spec: gwOpts.Models.Placement, byNode: map[string]models.Assignment{}},
 		perf:         newNodePerf(),
 		ext:          newExternals(gwOpts.External, log),
+		bb:           newBigBrains(bigBrainOpts(gwOpts), log),
 		devices:      newDevices(gwOpts.Devices.File, gwOpts.Devices.AutoProvision),
 		keys:         gwOpts.Keys,
 		usage:        gwOpts.Usage,
@@ -178,7 +181,7 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	access := gateway.AccessControl{Keys: gwOpts.Keys, Mode: accessMode, Trusted: gwOpts.TrustedCIDRs, TrustedProxies: gwOpts.TrustedProxies}
 	s.gw = gateway.New(access, s.affinity, func() []gateway.Backend {
 		nodes, drained := reg.View()
-		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), s.ext.backends()...)
+		return Backends(nodes, drained, gwOpts.BackendHost, s.ThermalLimitC(), append(s.ext.backends(), s.bigBrainBackends()...)...)
 	}, gwOpts.Config, s.promReg, log)
 	s.gw.SetTargets(serverTargets{s})
 	if st := gwOpts.Routing.State.Router; st != nil {
@@ -216,6 +219,13 @@ func NewServer(reg *Registry, heartbeatInterval time.Duration, gwOpts GatewayOpt
 	s.catalog.SetOnChange(s.Replan)
 	s.Replan()
 	return s
+}
+
+func bigBrainOpts(o GatewayOptions) BigBrainOptions {
+	if o.BigBrain.Host == "" {
+		o.BigBrain.Host = o.BackendHost
+	}
+	return o.BigBrain
 }
 
 // ThermalLimitC returns the current thermal-routing limit in Celsius; 0

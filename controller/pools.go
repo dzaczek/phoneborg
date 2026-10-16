@@ -63,11 +63,15 @@ type Pool struct {
 	Nodes       []string `json:"nodes"`       // aliases or node ids; empty = any
 	Classes     []string `json:"classes"`     // device classes; empty = any
 	MinGenTPS   float64  `json:"min_gen_tps"` // self-test generation tok/s; 0 = no limit
-	Routing     string   `json:"routing"`     // RoutingSpread (default), RoutingAffinity or RoutingSuperborg
+	Routing     string   `json:"routing"`     // RoutingSpread (default), RoutingAffinity, RoutingSuperborg or RoutingBigBrain
 	// Orchestrator (alias or node id; "" = the member serving the largest
 	// model) and Thinking configure a Super Borg pool; ignored otherwise.
 	Orchestrator string `json:"orchestrator,omitempty"`
 	Thinking     bool   `json:"thinking,omitempty"`
+	// Model (a catalog id) and CtxSize (0 = 4096) configure a Big Brain
+	// pool (ADR-034): the model split across Nodes; ignored otherwise.
+	Model   string `json:"model,omitempty"`
+	CtxSize int    `json:"ctx_size,omitempty"`
 	// Disabled pools keep their settings but are not listed in /v1/models
 	// and refuse requests (ADR-027).
 	Disabled bool `json:"disabled,omitempty"`
@@ -80,6 +84,8 @@ type Pool struct {
 	StatusReason string `json:"status_reason,omitempty"`
 	// Members is computed in responses and ignored in requests.
 	Members []PoolMember `json:"members,omitempty"`
+	// BigBrain is computed in responses for Big Brain pools.
+	BigBrain *BigBrainStatus `json:"big_brain,omitempty"`
 }
 
 // PoolMember is one node's eligibility for a pool.
@@ -196,7 +202,7 @@ type pools struct {
 
 // normPool validates a pool definition and fills defaults. Members are dropped.
 func normPool(p Pool) (Pool, error) {
-	p.Members, p.ActiveOrchestrator, p.Status, p.StatusReason = nil, "", "", ""
+	p.Members, p.ActiveOrchestrator, p.Status, p.StatusReason, p.BigBrain = nil, "", "", "", nil
 	p.Orchestrator = strings.TrimSpace(p.Orchestrator)
 	if !nameRE.MatchString(p.Name) {
 		return p, errors.New("pool name must match ^[a-z0-9][a-z0-9-]{0,31}$")
@@ -236,8 +242,20 @@ func normPool(p Pool) (Pool, error) {
 	case "":
 		p.Routing = RoutingSpread
 	case RoutingSpread, RoutingAffinity, RoutingSuperborg:
+	case RoutingBigBrain:
+		p.Model = strings.TrimSpace(p.Model)
+		switch {
+		case p.Model == "":
+			return p, errors.New("a Big Brain pool needs a model (a catalog id)")
+		case len(p.Nodes) < 2:
+			return p, errors.New("a Big Brain pool needs at least 2 nodes")
+		case len(p.Models) > 0 || len(p.Classes) > 0 || p.MinGenTPS > 0:
+			return p, errors.New("a Big Brain pool serves its model on its nodes: models, classes and min_gen_tps do not apply")
+		case p.CtxSize != 0 && (p.CtxSize < 512 || p.CtxSize > 131072):
+			return p, errors.New("ctx_size must be 0 (4096) or 512..131072")
+		}
 	default:
-		return p, fmt.Errorf("routing must be %q, %q or %q", RoutingSpread, RoutingAffinity, RoutingSuperborg)
+		return p, fmt.Errorf("routing must be %q, %q, %q or %q", RoutingSpread, RoutingAffinity, RoutingSuperborg, RoutingBigBrain)
 	}
 	return p, nil
 }
@@ -340,6 +358,13 @@ func poolMembers(p Pool, nodes []proto.Node, drained map[string]bool, thermalLim
 // withMembers returns p with its members computed from the registry and
 // the external nodes.
 func (s *Server) withMembers(p Pool) Pool {
+	if p.Routing == RoutingBigBrain {
+		p.Members = s.bigBrainPoolMembers(p)
+		st := s.bb.status(p.Name)
+		p.BigBrain = &st
+		p.Status, p.StatusReason = bigBrainPoolStatus(p)
+		return p
+	}
 	nodes, drained := s.reg.View()
 	p.Members = append(poolMembers(p, nodes, drained, s.ThermalLimitC()), externalMembers(p, s.ext.list(nil, nil))...)
 	if p.Routing == RoutingSuperborg && !p.Disabled {
@@ -381,20 +406,49 @@ func poolStatus(p Pool) (string, string) {
 	return PoolNoReadyNode, "nodes are " + best
 }
 
+// bigBrainPoolStatus summarises a Big Brain pool with computed members and
+// head state: ready only while its head serves.
+func bigBrainPoolStatus(p Pool) (string, string) {
+	switch {
+	case p.Disabled:
+		return PoolDisabled, ""
+	case p.BigBrain.State == BigBrainReady:
+		return PoolReady, fmt.Sprintf("%d phone(s)", len(p.Members))
+	case p.BigBrain.Reason != "":
+		return PoolNoReadyNode, p.BigBrain.State + ": " + p.BigBrain.Reason
+	}
+	return PoolNoReadyNode, p.BigBrain.State
+}
+
 // poolConflict reports why p cannot be enabled next to the other enabled
 // pools, or "": a node named in two enabled pools must be able to serve
 // both, so their model lists (when both are restricted) must share a model.
 // A node serves one model at a time (ADR-027). Pools that take any node do
 // not claim nodes and never conflict.
 func (s *Server) poolConflict(p Pool, others []Pool) string {
-	if p.Disabled || len(p.Nodes) == 0 || len(p.Models) == 0 {
-		return ""
-	}
 	id := func(n string) string {
 		if v, ok := s.reg.Lookup(n); ok {
 			return v
 		}
 		return n
+	}
+	// A phone lends its RAM to one Big Brain at a time (ADR-034).
+	if p.Routing == RoutingBigBrain && !p.Disabled {
+		for _, o := range others {
+			if o.Name == p.Name || o.Routing != RoutingBigBrain || o.Disabled {
+				continue
+			}
+			for _, n := range o.Nodes {
+				if slices.ContainsFunc(p.Nodes, func(m string) bool { return id(m) == id(n) }) {
+					return fmt.Sprintf("pool/%s and pool/%s are both Big Brain pools with node %s; a phone joins one at a time: drop it from one pool or disable one",
+						p.Name, o.Name, n)
+				}
+			}
+		}
+		return ""
+	}
+	if p.Disabled || len(p.Nodes) == 0 || len(p.Models) == 0 {
+		return ""
 	}
 	mine := map[string]string{}
 	for _, n := range p.Nodes {
@@ -440,6 +494,10 @@ func poolTarget(p Pool) gateway.Target {
 	if p.Routing == RoutingSuperborg {
 		tgt.Superborg = &gateway.Superborg{Orchestrator: p.Orchestrator, Thinking: p.Thinking}
 	}
+	if p.Routing == RoutingBigBrain {
+		// Only the head serves; the phones are its RPC servers.
+		tgt.Nodes, tgt.Models = map[string]bool{bigBrainNodeID(p.Name): p.BigBrain != nil && p.BigBrain.State == BigBrainReady}, nil
+	}
 	return tgt
 }
 
@@ -483,8 +541,16 @@ func (t serverTargets) Models() []gateway.ModelEntry {
 		if p.Disabled {
 			continue
 		}
+		n := 0
+		if p.Routing == RoutingBigBrain {
+			if s.bb.status(p.Name).State == BigBrainReady {
+				n = 1
+			}
+		} else {
+			n = eligible(append(poolMembers(p, nodes, drained, limit), externalMembers(p, exts)...))
+		}
 		out = append(out, gateway.ModelEntry{ID: poolPrefix + p.Name, Object: "model", OwnedBy: "phoneborg", Kind: gateway.KindPool,
-			Nodes: eligible(append(poolMembers(p, nodes, drained, limit), externalMembers(p, exts)...)), Description: p.Description})
+			Nodes: n, Description: p.Description})
 	}
 	for _, n := range nodes {
 		if n.Alias == "" {
@@ -593,6 +659,11 @@ func (s *Server) adminSetPool(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Name = r.PathValue("name")
 	p, err := normPool(p)
+	if err == nil && p.Routing == RoutingBigBrain {
+		if _, ok := s.catalog.Get(p.Model); !ok {
+			err = fmt.Errorf("model %q is not in the catalog", p.Model)
+		}
+	}
 	if err != nil {
 		s.audit(r, "pool_set", err, "pool", p.Name)
 		httpError(w, http.StatusBadRequest, err.Error())
@@ -610,8 +681,12 @@ func (s *Server) adminSetPool(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, conflict)
 		return
 	}
+	old := s.pools.byName[p.Name]
 	s.pools.byName[p.Name] = p
 	s.pools.mu.Unlock()
+	if p.Routing == RoutingBigBrain || old.Routing == RoutingBigBrain {
+		s.Replan() // members leave or rejoin the planner
+	}
 	err = s.saveRouting()
 	s.audit(r, "pool_set", err, "pool", p.Name, "routing", p.Routing, "disabled", p.Disabled)
 	if err != nil {
@@ -624,9 +699,12 @@ func (s *Server) adminSetPool(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminDeletePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	s.pools.mu.Lock()
-	_, ok := s.pools.byName[name]
+	old, ok := s.pools.byName[name]
 	delete(s.pools.byName, name)
 	s.pools.mu.Unlock()
+	if old.Routing == RoutingBigBrain {
+		s.Replan()
+	}
 	var err error
 	if !ok {
 		err = errors.New("unknown pool")
