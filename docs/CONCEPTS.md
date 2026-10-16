@@ -8,10 +8,13 @@ Commands and options are in [OPERATIONS.md](OPERATIONS.md), design reasons in
 
 Numbers quoted here were measured on the four-phone cluster in 2026-10
 (OnePlus 10 Pro, POCO F3, Pixel 8 Pro, Mi 8; see
-[BENCHMARKS.md](BENCHMARKS.md#multi-model-benchmark-four-phones)).
+[BENCHMARKS.md](BENCHMARKS.md#multi-model-benchmark-four-phones)); the Big
+Brain numbers on the same phones plus a MI 9
+([BENCHMARKS.md](BENCHMARKS.md#big-brain-one-model-across-phones)).
 
 ## Contents
 
+- [Modes at a glance](#modes-at-a-glance)
 - [The building blocks](#the-building-blocks)
 - [1. A model, `auto` or a phone](#1-a-model-auto-or-a-phone)
 - [2. Pools](#2-pools)
@@ -20,11 +23,32 @@ Numbers quoted here were measured on the four-phone cluster in 2026-10
 - [5. Jobs](#5-jobs)
 - [6. An agent drives the cluster (opencode + MCP)](#6-an-agent-drives-the-cluster-opencode--mcp)
 - [7. Benchmarks to choose models and phones](#7-benchmarks-to-choose-models-and-phones)
+- [8. Big Brain: one large model across phones](#8-big-brain-one-large-model-across-phones)
 - [Function calling (tools)](#function-calling-tools)
 - [Comparison](#comparison)
 - [Which one should I use?](#which-one-should-i-use)
 - [Splitting a fleet](#splitting-a-fleet)
 - [Limits that apply to all of them](#limits-that-apply-to-all-of-them)
+
+## Modes at a glance
+
+How a request (or a piece of work) meets the phones, and what that was
+measured to cost. "Phone speed" is one phone running its own model.
+
+| Mode | Target | How the phones work | Measured |
+|---|---|---|---|
+| **1. One phone per request** | model id, `auto`, `node/<alias>` | the gateway picks one phone; sessions stick to the phone with their prompt cache | generation 25–29 tok/s (0.5B), 5–7 (4B), ~3 (8B); a warm follow-up in ~1 s |
+| **Semantic router** (on top of 1) | `auto` | one phone classifies the request first, then it goes to the class's pool or phone | ~2 s extra per request on a Qwen3-4B phone (17 s for the first, uncached) |
+| **2. Pools** | `pool/<name>`, routing `spread` or `affinity` | many requests at once on the pool's phones, one phone each | 3 agent tasks: 9.9 s on a 3-phone pool against 23.8 s queued on one phone |
+| **3./4. Super Borg pool** | `pool/<name>`, routing `superborg` | an orchestrator (a phone, or a desktop/API with `role=orchestrator`) splits one request into subtasks for the other phones | a three-part request: ~2 min (4B orchestrator), ~6 min (8B) |
+| **5. Jobs** | a Super Borg pool, `pbctl jobs` | long work in steps and documents, several phones writing in parallel | a 12-document story in ~70 min on three phones; 5–10 min per orchestrator step on a phone |
+| **6. Agent + MCP** | `pbctl mcp`, opencode | a strong main model plans; the phones do small pieces, votes and jobs | as 2 and 5 for the phone part |
+| **8. Big Brain pool** | `pool/<name>`, routing `bigbrain` | the phones together hold **one** model too large for any of them; a head on the controller's host runs it across them | 30B MoE: 2.6 tok/s on two phones, 2.2 on three, 1.7 on five; dense 32B: 0.75–0.9 tok/s; 70B at 2 bits: 0.2–0.3 tok/s; 4–12 min to load |
+
+Modes 1–6 make the cluster do **more at once** with models that fit a
+phone. Mode 8 makes it run a **bigger model**, one request at a time, at
+the cost of the phones it takes. All of them can run side by side on
+different phones (see [Splitting a fleet](#splitting-a-fleet)).
 
 ## The building blocks
 
@@ -38,6 +62,7 @@ Numbers quoted here were measured on the four-phone cluster in 2026-10
 | **Job** | long, multi-step work run in the background on a Super Borg pool, with a task list and a workspace of documents kept by the controller. |
 | **MCP tools** | `pbctl mcp`: lets an agent (opencode) use the cluster as tools: ask, map tasks in parallel, vote, run and follow jobs. |
 | **MMB** | the multi-model benchmark: loads every model that fits on chosen phones and measures them the same way. |
+| **Big Brain pool** | a pool with routing `bigbrain`: its phones lend their RAM to one catalog model through llama.cpp RPC, and the controller runs it. |
 
 ## 1. A model, `auto` or a phone
 
@@ -179,6 +204,35 @@ legend of what each one means.
 check a suspected throttling or memory problem. A benchmark takes phones out
 of service for minutes per model.
 
+## 8. Big Brain: one large model across phones
+
+A Big Brain pool (ADR-034) names a catalog model and two or more phones.
+The phones stop serving their own model and run `ggml-rpc-server`; the
+controller starts a head (`llama-server --rpc`) on its own host that puts
+every layer on the phones, in proportion to their free RAM, and answers as
+`pool/<name>`. With 100 phones, set ten aside as a Big Brain and keep the
+rest in pools; several Big Brains can run at once on different phones.
+In the panel: **Pools → Add Big Brain** (pick the model, filter the phones
+by class and free RAM, watch the "fits" meter), then **Stop/Start**.
+
+**Good for:** answers that need a bigger model than any phone can hold
+(30B instead of 4–8B), with short prompts and patience; trying large models
+on hardware you already have.
+
+| Pros | Cons |
+|---|---|
+| models of 14–20 GB on phones with 5–12 GB each, as one OpenAI model | slow: 2.6 tok/s at best (30B MoE on the two fastest phones), 0.75–0.9 tok/s for a dense 32B, 0.2–0.3 for a 70B |
+| a 30B mixture-of-experts model answers better than any single phone's 4–8B model | **more phones make it slower, not faster**: the same model ran at 2.57, 2.24, 1.96 and 1.66 tok/s on 2, 3, 4 and 5 phones |
+| fully local, no cost per token | prompts are slow (~10 tok/s MoE, ~1.3 dense): long prompts and agents with big tool lists do not fit in a sensible time |
+| the controller checks the fit, splits by free RAM and restarts the head if it exits | the phones serve nothing else while they are in it, and one phone failing stops the whole model until it is back |
+| reloads of the same model are faster: each phone caches its share on flash | loading crosses USB 2.0 through one host: 4–12 min |
+
+**Choose the phones:** few and large beats many and small. Use the
+fewest phones whose free RAM holds the model, the fastest first; a slow
+phone (the Mi 8) slows every token. **Choose the model:** a
+mixture-of-experts model (Qwen3-30B-A3B) rather than a dense one of the
+same size; a dense 32B or a 2-bit 70B is a demonstration more than a tool.
+
 ## Function calling (tools)
 
 Function calling (OpenAI `tools` / `tool_calls`) appears in PhoneBorg at
@@ -241,6 +295,7 @@ keep agents on phones tool-less (`pbctl opencode init` without
 | 4. Super Borg, external orchestrator | desktop/API | inside one request | tens of seconds to minutes | no (one answer) | per token for an API | a pool + an external node |
 | 5. jobs | pool's orchestrator | tasks on several phones | minutes per step | **yes** (hours) | as 3 or 4 | a pool (optional) |
 | 6. agent + MCP | the agent's model | `cluster_map`, subagents, jobs | depends on the agent | yes, through jobs | the agent's model | `pbctl opencode init`, a strong main model |
+| 8. Big Brain | nobody (one large model) | no: one request at a time on all its phones | tens of seconds to minutes (0.75–2.6 tok/s) | no | none | a catalog model, `-bigbrain-head`, a pool |
 
 ## Which one should I use?
 
@@ -253,6 +308,7 @@ keep agents on phones tool-less (`pbctl opencode init` without
 | a long text in many parts (a story, a report) | 5, with an external orchestrator if available |
 | programming help with the phones as helpers | 6 with `pool/code` |
 | to know which model to put on which phone | 7 (MMB) |
+| a bigger model than any phone can hold, and I can wait | 8 (Big Brain, a MoE model on the fewest large phones) |
 
 ## Splitting a fleet
 
@@ -263,10 +319,12 @@ pool membership, e.g. 100 phones:
 pbctl pools set borg   routing=superborg nodes=<50 phones> orchestrator=desktop   # jobs and Super Borg answers
 pbctl pools set code   nodes=<30 phones> models=qwen3-4b-instruct-2507-q4_k_m       # opencode coding helpers
 pbctl pools set fast   nodes=<20 phones>                                         # chat and small subagents
+pbctl pools set brain  routing=bigbrain model=qwen3-30b-a3b-2507-ud-q3_k_xl nodes=<2-3 large phones>  # one 30B model
 ```
 
 Pools that name the same phone must share a model, otherwise saving or
-enabling the second one is refused (ADR-027). Placement still decides the
+enabling the second one is refused (ADR-027). A phone joins one Big Brain
+at a time; while it is in one, its other pools see it as not ready. Placement still decides the
 models; give the phones of each pool a policy that matches the pool.
 
 ## Limits that apply to all of them

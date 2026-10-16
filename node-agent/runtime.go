@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -33,6 +34,11 @@ type RuntimeConfig struct {
 	Slots         int    // parallel slots (-np); <=0 is treated as 1
 	KVType        string // "" or "f16" (default), or "q8_0" (adds -ctk/-ctv/-fa, see ADR-012)
 	Variant       string // llama.cpp build variant selected by pcprov (ADR-007); empty if unknown
+	// RPC runs ServerBin as ggml-rpc-server (Big Brain, ADR-034) instead of
+	// llama-server: no model, no /health, no self-test. Its tensor cache
+	// goes to RPCCacheDir (Android's HOME=/ is not writable).
+	RPC         bool
+	RPCCacheDir string
 }
 
 // ModelName is the model identifier clients use: the file name without .gguf.
@@ -47,6 +53,11 @@ type Runtime struct {
 	restarts atomic.Int64
 	http     *http.Client
 	pid      atomic.Int32 // 0 when no llama-server process is running
+	// rpcUp: this run of ggml-rpc-server accepted a probe. It serves one
+	// client at a time, so once the head is connected further probes sit
+	// unaccepted in its backlog; after the first success, a live process is
+	// enough.
+	rpcUp atomic.Bool
 
 	mu         sync.Mutex // guards the self-test result below
 	genTPS     float64
@@ -85,6 +96,9 @@ func (r *Runtime) Run(ctx context.Context) {
 }
 
 func (r *Runtime) runOnce(ctx context.Context) error {
+	if r.cfg.RPC {
+		return r.runRPC(ctx)
+	}
 	slots := max(r.cfg.Slots, 1)
 	// llama-server's -c/--ctx-size is the TOTAL context across all -np
 	// slots (each slot gets ctx-size/n_parallel), not the per-slot size, so
@@ -122,6 +136,36 @@ func (r *Runtime) runOnce(ctx context.Context) error {
 	return cmd.Wait()
 }
 
+// runRPC runs ggml-rpc-server once (Big Brain, ADR-034). -c caches tensors
+// by hash under RPCCacheDir, so a head that restarts loads them from flash
+// instead of over USB.
+func (r *Runtime) runRPC(ctx context.Context) error {
+	if err := os.MkdirAll(r.cfg.RPCCacheDir, 0o755); err != nil {
+		return err
+	}
+	logf, err := os.OpenFile("runtime.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	cmd := exec.CommandContext(ctx, r.cfg.ServerBin, "-H", "127.0.0.1", "-p", strconv.Itoa(r.cfg.Port),
+		"-t", strconv.Itoa(r.cfg.Threads), "-c")
+	cmd.Env = append(os.Environ(), "LLAMA_CACHE="+r.cfg.RPCCacheDir)
+	cmd.Stdout, cmd.Stderr = logf, logf
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start %s: %w", r.cfg.ServerBin, err)
+	}
+	r.rpcUp.Store(false)
+	r.pid.Store(int32(cmd.Process.Pid))
+	defer r.pid.Store(0)
+	_ = os.WriteFile(runtimePidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	defer os.Remove(runtimePidFile)
+	r.log.Info("ggml-rpc-server started", "pid", cmd.Process.Pid, "port", r.cfg.Port, "threads", r.cfg.Threads)
+	return cmd.Wait()
+}
+
 // killStale stops a llama-server left behind by a SIGKILLed agent, which
 // would otherwise hold the port. The cmdline check guards against PID reuse.
 func killStale(log *slog.Logger) {
@@ -133,8 +177,8 @@ func killStale(log *slog.Logger) {
 	if err != nil {
 		return
 	}
-	if cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); strings.Contains(string(cmdline), "llama-server") {
-		log.Warn("killing stale llama-server", "pid", pid)
+	if cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); strings.Contains(string(cmdline), "llama-server") || strings.Contains(string(cmdline), "rpc-server") {
+		log.Warn("killing stale inference server", "pid", pid)
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -168,8 +212,25 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 	return st
 }
 
-// healthy probes llama-server's /health (200 only once the model is loaded).
+// healthy probes llama-server's /health (200 only once the model is loaded),
+// or, in RPC mode, whether ggml-rpc-server accepts connections.
 func (r *Runtime) healthy(ctx context.Context) bool {
+	if r.cfg.RPC {
+		if r.pid.Load() == 0 {
+			return false
+		}
+		if r.rpcUp.Load() {
+			return true
+		}
+		d := net.Dialer{Timeout: time.Second}
+		c, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", r.cfg.Port))
+		if err != nil {
+			return false
+		}
+		c.Close()
+		r.rpcUp.Store(true)
+		return true
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", r.cfg.Port), nil)
 	resp, err := r.http.Do(req)
 	if err != nil {

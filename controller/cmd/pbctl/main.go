@@ -87,8 +87,9 @@ commands:
                               show the plan a change would give, apply nothing
   pools                       pools (model pool/<name>) with member eligibility
   pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5]
-            [routing=spread|affinity|superborg] [orchestrator=<node>|auto]
-            [thinking=on|off] [enabled=on|off] [desc="..."]
+            [routing=spread|affinity|superborg|bigbrain] [orchestrator=<node>|auto]
+            [thinking=on|off] [enabled=on|off] [desc="..."] [model=<id>] [ctx=N]
+                              (bigbrain: one catalog model split across nodes, ADR-034)
                               create a pool or change the given fields ("-" clears a list)
   pools rm <name>             remove a pool
   external                    external engine nodes (LM Studio, oMLX, Ollama, llama-server)

@@ -29,6 +29,7 @@ func main() {
 	threadsOverride := flag.Int("threads", 0, "llama-server thread count override (0 = choose automatically from CPU topology, see -threads-policy)")
 	threadsPolicy := flag.String("threads-policy", "all", `automatic thread selection when -threads=0: "all" (every allowed CPU, today's behavior) or "big" (only the highest-frequency CPU cluster)`)
 	runtimeVariant := flag.String("runtime-variant", "", "llama.cpp build variant (set by pcprov); reported as the engine name")
+	rpcServer := flag.String("rpc-server", "", "ggml-rpc-server binary; lets the controller make this node a Big Brain member (ADR-034)")
 	memReserveMB := flag.Int("mem-reserve-mb", 600, "RAM reserved for Android and the agent when sizing a controller-desired model (ADR-012)")
 	flag.Parse()
 
@@ -59,12 +60,15 @@ func main() {
 		if threads > cpuCores {
 			threads = cpuCores // respect the cgroup CPU cap
 		}
+		rpcThreads, _, _ := nodeagent.DiscoverThreads("rpc")
+		rpcThreads = min(max(rpcThreads, 1), cpuCores)
 		log.Info("runtime threads selected", "threads", threads, "policy", *threadsPolicy,
-			"allowed_cpus", allowedCPUs, "big_cores", bigCores)
+			"allowed_cpus", allowedCPUs, "big_cores", bigCores, "rpc_threads", rpcThreads)
 		manager = nodeagent.NewManager(nodeagent.ManagerConfig{
 			ServerBin: *llamaServer, Port: *servePort, AdvertisePort: *advertisePort,
 			Threads: threads, Variant: *runtimeVariant, ModelsDir: modelsDir, ControllerURL: *ctrl,
 			MemReserveMB: *memReserveMB, StaticModelPath: *model, StaticCtxSize: *ctxSize,
+			RPCServerBin: *rpcServer, RPCThreads: rpcThreads, RPCCacheDir: rpcCacheDir,
 		}, log)
 	}
 	log.Info("node-agent starting", "version", version, "node_id", nodeID, "controller", *ctrl, "pid", os.Getpid())
@@ -85,3 +89,6 @@ func main() {
 // modelsDir is where the agent caches GGUF files, under its working dir
 // (/data/local/tmp/phoneborg/models on phones, see ADR-012).
 const modelsDir = "models"
+
+// rpcCacheDir holds ggml-rpc-server's tensor cache (ADR-034).
+const rpcCacheDir = "rpc-cache"

@@ -22,6 +22,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 - [Semantic router (experimental)](#semantic-router-experimental)
 - [Super Borg pools](#super-borg-pools)
 - [Super Borg jobs](#super-borg-jobs)
+- [Big Brain pools](#big-brain-pools)
 - [External nodes (Mac / PC)](#external-nodes-mac--pc)
 - [Admin tokens](#admin-tokens)
 - [API keys](#api-keys)
@@ -1048,6 +1049,63 @@ How a job runs:
 
 Expect phone speed: a 20-chapter story is on the order of one to two hours
 of cluster time, and the language quality is that of the small models.
+
+## Big Brain pools
+
+A pool with routing **`bigbrain`** serves **one model too large for any
+single phone**, split across the RAM of several (ADR-034). Its phones stop
+serving their own model and run `ggml-rpc-server`; a head process on the
+controller's host loads the model from the catalog and spreads every layer
+over them. Clients use `pool/<name>` as the model. With many phones, set
+some aside as one or more Big Brains and keep the rest serving as before.
+
+One-time setup on the controller's host (cmake and a C++ compiler):
+
+```sh
+make llama-all          # phone builds now include ggml-rpc-server; pcprov pushes it
+make llama-head         # bin/llama-head/llama-server, same LLAMA_TAG as the phones
+controller ... -bigbrain-head bin/llama-head/llama-server   # -bigbrain-port 18200: first head port
+```
+
+Then re-provision the phones (pcprov restart or **Provision now**) so the
+agents get `--rpc-server`. Add the model to the catalog
+([Adding models](#adding-models)) and create the pool:
+
+```sh
+pbctl pools set brain routing=bigbrain model=qwen3-30b-a3b-instruct-2507-q4_k_m nodes=pixel,oneplus ctx=4096
+pbctl pools            # ROUTING shows "bigbrain (<model>, <state>, <tok/s>)"
+pbctl pools set brain enabled=off   # stop: the phones go back to their own models
+```
+
+In the panel, **Pools → Add Big Brain**: pick the model, filter the phones
+by class and free RAM, tick them until the meter says **fits**. The card
+shows the state, how long loading took, the self-test tok/s and each
+phone's share; **Stop**/**Start** release and retake the phones.
+
+- **States**: `preparing` (waiting for every phone to report `rpc`; the
+  reason names the ones that do not), `loading` (the head is pushing the
+  weights over USB: minutes, see below), `ready`, `error` (the reason says
+  why: the model does not fit, the head exited with its last log lines,
+  the controller has no `-bigbrain-head`). Head logs:
+  `<state-dir>/bigbrain/<pool>.log`.
+- **Fit**: each phone gives its free RAM (with its own model stopped) minus
+  900 MiB; together they must hold the model file plus 5 %. The split
+  (`-ts`) follows the same numbers.
+- **One phone fails, the pool stops**: a phone that disconnects, is drained
+  or leaves RPC mode stops the head; it reloads when the phone is back. A
+  phone joins one Big Brain at a time; its other pools see it as not ready.
+- **Speed**: more phones do not make generation faster, only allow larger
+  models; the slowest phone and the active parameters set the pace. A
+  mixture-of-experts model (Qwen3-30B-A3B) is far faster than a dense one of
+  the same size. See [BENCHMARKS.md](BENCHMARKS.md#big-brain-one-model-across-phones).
+- **Loading**: the first load copies every weight over USB 2.0 (8–12 min
+  for 14–20 GB); the phones cache their share in `rpc-cache/` on flash, one
+  model at a time, so a reload of the same model takes a few minutes.
+- **Timeouts**: prompt processing runs at 1–10 tok/s; a long prompt needs a
+  generous `-first-token-timeout`. The head takes one request at a time
+  (`MaxConcurrency 1`); others wait in the gateway.
+- **Isolation**: the head is reachable only as `pool/<name>`; `auto` and
+  the model id never route to it.
 
 ## External nodes (Mac / PC)
 

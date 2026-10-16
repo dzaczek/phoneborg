@@ -744,7 +744,7 @@ func (g *Gateway) ModelEntries() []ModelEntry {
 	routable := g.routable()
 	seen := map[string]int{}
 	for _, b := range routable {
-		if !b.OrchestratorOnly {
+		if !b.OrchestratorOnly && !b.PoolOnly {
 			seen[b.Model]++
 		}
 	}

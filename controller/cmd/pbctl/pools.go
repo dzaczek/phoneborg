@@ -84,6 +84,13 @@ func listPools(c *client, o *out) error {
 			}
 			routing += " (orchestrator " + orch + ")"
 		}
+		if bb := p.BigBrain; bb != nil {
+			routing += " (" + p.Model + ", " + bb.State
+			if bb.GenTPS > 0 {
+				routing += ", " + strconv.FormatFloat(bb.GenTPS, 'f', 2, 64) + " tok/s"
+			}
+			routing += ")"
+		}
 		status := p.Status
 		if p.StatusReason != "" && p.Status != controller.PoolReady {
 			status += ": " + p.StatusReason
@@ -137,8 +144,8 @@ func eligibleNodes(members []controller.PoolMember) int {
 }
 
 // applyPoolSet applies "models=a,b nodes=x,y classes=s,m min_tps=5
-// routing=spread orchestrator=n thinking=on desc=text" to p; "-" clears a
-// list.
+// routing=spread orchestrator=n thinking=on desc=text model=m ctx=4096" to
+// p; "-" clears a list.
 func applyPoolSet(p *controller.Pool, kvs []string) error {
 	for _, kv := range kvs {
 		k, v, ok := strings.Cut(kv, "=")
@@ -177,11 +184,19 @@ func applyPoolSet(p *controller.Pool, kvs []string) error {
 			p.Thinking = v == "on"
 		case "desc", "description":
 			p.Description = v
+		case "model": // Big Brain pools (ADR-034)
+			p.Model = v
+		case "ctx":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("ctx: %w", err)
+			}
+			p.CtxSize = n
 		default:
-			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, enabled, desc)", k)
+			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, enabled, desc, model, ctx)", k)
 		}
 	}
-	p.Members = nil
+	p.Members, p.BigBrain = nil, nil
 	return nil
 }
 

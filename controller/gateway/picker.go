@@ -36,6 +36,9 @@ type Backend struct {
 	// normal traffic and serves only node/<name> and the Super Borg pools
 	// that name it as orchestrator.
 	OrchestratorOnly bool
+	// PoolOnly marks a Big Brain head (ADR-034): it takes no normal traffic
+	// and serves only the pool whose target lists it in Nodes.
+	PoolOnly bool
 }
 
 // Request carries what a Picker may use to decide. AffinityKey identifies

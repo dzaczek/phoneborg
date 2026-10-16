@@ -91,10 +91,14 @@ func (p *Provisioner) Provision(ctx context.Context, serial string) error {
 	// Swap binary atomically, stop the old agent, start detached so it
 	// survives the adb shell session ending. A pidfile is used instead of
 	// `pkill -f`, which would match (and kill) this very shell command.
+	// Where setsid forks (MIUI 12.5), $! is setsid's pid, not the agent's:
+	// then the newest process named node-agent (-x matches the name, not
+	// this command line) is the one just started.
 	start := fmt.Sprintf(
 		"cd %[1]s && chmod 755 node-agent.new && mv -f node-agent.new node-agent && %[2]s; "+
 			"setsid nohup ./node-agent --controller http://127.0.0.1:%[3]d %[4]s </dev/null >agent.log 2>&1 & "+
-			"echo $! > agent.pid; sleep 1; kill -0 $(cat agent.pid) && cat agent.pid",
+			"echo $! > agent.pid; sleep 1; kill -0 $(cat agent.pid) 2>/dev/null || pgrep -n -x node-agent > agent.pid; "+
+			"kill -0 $(cat agent.pid) && cat agent.pid",
 		RemoteDir, killAgent, p.Opts.ControllerPort, args)
 	out, err := p.ADB.Shell(ctx, serial, start)
 	pid := strings.TrimSpace(out)
@@ -138,6 +142,18 @@ func (p *Provisioner) pushRuntime(ctx context.Context, serial string) (string, e
 	if _, err := p.ADB.Shell(ctx, serial, "chmod 755 "+RemoteDir+"/bin/llama-server"); err != nil {
 		return "", err
 	}
+	// ggml-rpc-server from the same build lets the node join a Big Brain
+	// pool (ADR-034); builds without it simply cannot.
+	rpcArg := ""
+	if rpc := filepath.Join(filepath.Dir(llamaServer), "ggml-rpc-server"); fileExists(rpc) {
+		if err := p.ADB.Push(ctx, serial, rpc, RemoteDir+"/bin/ggml-rpc-server"); err != nil {
+			return "", err
+		}
+		if _, err := p.ADB.Shell(ctx, serial, "chmod 755 "+RemoteDir+"/bin/ggml-rpc-server"); err != nil {
+			return "", err
+		}
+		rpcArg = " --rpc-server bin/ggml-rpc-server"
+	}
 	hostPort, err := p.ADB.Forward(ctx, serial, p.Opts.ServePort)
 	if err != nil {
 		return "", err
@@ -147,8 +163,13 @@ func (p *Provisioner) pushRuntime(ctx context.Context, serial string) (string, e
 	if variant != "" {
 		variantArg = " --runtime-variant " + variant
 	}
-	return fmt.Sprintf(" --llama-server bin/llama-server --model models/%s --serve-port %d --advertise-port %d%s",
-		filepath.Base(p.Opts.Model), p.Opts.ServePort, hostPort, variantArg), nil
+	return fmt.Sprintf(" --llama-server bin/llama-server --model models/%s --serve-port %d --advertise-port %d%s%s",
+		filepath.Base(p.Opts.Model), p.Opts.ServePort, hostPort, variantArg, rpcArg), nil
+}
+
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
 }
 
 // selectLlamaServer returns the local llama-server binary to push to serial

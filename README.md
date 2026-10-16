@@ -62,6 +62,10 @@ flowchart TB
   strongest phone orchestrates and delegates subtasks to the others in
   parallel, and runs long background jobs; other phones stay free for
   normal routing.
+- **Big Brain pools:** one model too large for any single phone (e.g. a
+  30B model) split across the RAM of several phones over llama.cpp RPC,
+  served as `pool/<name>`; created from the panel. Measured: 2.6 tok/s for
+  Qwen3-30B-A3B on two phones.
 - **Model catalog and placement:** add GGUFs from Hugging Face; phones
   download over USB and switch, sized to their RAM.
 - **Performance tiers:** measured bandwidth per phone predicts each model's
@@ -135,7 +139,7 @@ Setups and all other numbers: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 |---|---|
 | [docs/README.md](docs/README.md) | index by audience and task |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | fast track: a test cluster with one or two phones |
-| [docs/CONCEPTS.md](docs/CONCEPTS.md) | ways to use the cluster, with pros and cons: pools, Super Borg, jobs, agents, benchmarks |
+| [docs/CONCEPTS.md](docs/CONCEPTS.md) | ways to use the cluster, with pros, cons and measured numbers: pools, Super Borg, jobs, agents, Big Brain, benchmarks |
 | [docs/REAL_PHONES.md](docs/REAL_PHONES.md) | choosing, preparing, provisioning and troubleshooting real phones |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | running the cluster: requests, web panel, `pbctl`, models, pools, keys, monitoring |
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |

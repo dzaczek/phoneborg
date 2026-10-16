@@ -58,16 +58,41 @@ func AllowedCPUs(procStatus string) []int {
 // Policy "all" uses every allowed CPU (today's behavior). Policy "big" uses
 // only the cores whose max frequency is at least 90% of the highest max
 // frequency among allowed CPUs, falling back to every allowed CPU if no
-// frequency data is available. An unknown policy is treated as "all".
+// frequency data is available. Policy "rpc" (Big Brain members, ADR-034)
+// drops only the lowest-frequency cluster: on a prime+gold+silver SoC "big"
+// keeps the single prime core, while ggml-rpc-server runs fastest on prime
+// and gold together. An unknown policy is treated as "all".
 func ChooseThreads(allowed []int, maxFreqKHz map[int]int, policy string) (threads int, bigCores []int) {
 	bigCores = bigCoresOf(allowed, maxFreqKHz)
-	if policy == "big" {
+	switch policy {
+	case "big":
 		if len(bigCores) > 0 {
 			return len(bigCores), bigCores
 		}
-		return len(allowed), bigCores
+	case "rpc":
+		if n := notLittle(allowed, maxFreqKHz); n > 0 {
+			return n, bigCores
+		}
 	}
 	return len(allowed), bigCores
+}
+
+// notLittle counts the allowed CPUs faster than the slowest ones; 0 when the
+// frequencies are unknown or all equal.
+func notLittle(allowed []int, maxFreqKHz map[int]int) int {
+	lowest := 0
+	for _, c := range allowed {
+		if f := maxFreqKHz[c]; f > 0 && (lowest == 0 || f < lowest) {
+			lowest = f
+		}
+	}
+	n := 0
+	for _, c := range allowed {
+		if maxFreqKHz[c] > lowest {
+			n++
+		}
+	}
+	return n
 }
 
 // bigCoresOf returns the allowed CPUs whose max frequency is within 90% of

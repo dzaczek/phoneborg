@@ -1914,3 +1914,81 @@ quality of the classes is the operator's to tune, checked with
 decision costs the full prompt (30–40 s on the Mi 8); a Qwen3-4B phone
 decides in about 2 s. Calibration per model and other decisions (retry,
 verification in Super Borg) are left for later.
+
+## ADR-034: Big Brain pools
+
+**Problem.** A phone serves only a model that fits its own free RAM: 3–8 GB
+here, so at most a quantised 8–14B model. Several phones together hold
+20–30 GB, enough for a 30B model or a dense 32B one, but every pool so far
+(ADR-014, ADR-022) sends each request to one phone. With dozens of phones
+an operator wants to set some of them aside as one large model and keep the
+rest serving as before.
+
+**Alternatives.**
+- A Super Borg pool (ADR-022): many small models cooperating. It does not
+  give the quality of one large model.
+- Splitting the model ourselves (layer ranges per phone, activations over
+  HTTP): a new inference engine.
+- llama.cpp's RPC backend (chosen): `ggml-rpc-server` on each phone exposes
+  its RAM and CPU as a device, and one `llama-server --rpc` (the **head**)
+  splits the layers over them. Same llama.cpp tag on both ends.
+- The head on a phone: it would hold the KV cache and need its own adb
+  link to every other phone. On the controller's host it needs ~30 MB of
+  RAM and no weights (`-ngl 99` puts every layer on the phones), and it
+  already reaches every phone over `adb forward`.
+
+**Decision.**
+- A pool with `routing: "bigbrain"`, a catalog `model`, an optional
+  `ctx_size` (default 4096) and at least two `nodes`. A phone belongs to at
+  most one enabled Big Brain pool (409 otherwise). Disabling the pool
+  (panel **Stop**) releases its phones; enabling it (**Start**) takes them
+  again. `pbctl pools set <name> routing=bigbrain model=<id> nodes=a,b,c`.
+- Members get `DesiredRuntime{mode: "rpc", model_id}` in every heartbeat
+  reply and are left out of placement. The agent stops llama-server and
+  runs `ggml-rpc-server` on its **serving port**, so pcprov's existing
+  `adb forward` reaches it unchanged. It reports `state: "rpc"` and
+  `ready: false`, so it is never a backend itself. Threads: every core but
+  the lowest-frequency cluster (policy `rpc`; on a prime+gold+silver SoC
+  `big` would keep only the prime core). `-c` caches the tensors on the
+  phone's flash (`rpc-cache/`, `LLAMA_CACHE`; Android's `HOME=/` is not
+  writable), one model at a time: the agent wipes it when the model
+  changes. A heartbeat reply without a desired state, while in RPC mode,
+  restarts what the phone served before.
+- The controller supervises one head per pool (`-bigbrain-head`, built by
+  `make llama-head`, ports from `-bigbrain-port` 18200 on 127.0.0.1):
+  state `preparing` until every member reports `rpc`, then `loading` with
+  `-ts` proportional to each member's free RAM minus a 900 MiB reserve,
+  `ready` once `/health` answers, `error` with the log tail when it exits
+  (restart with backoff 30 s → 10 min) or when the model does not fit
+  (model × 1.05 > the members' usable RAM). A member that leaves RPC mode
+  or is drained stops the head; it restarts when the member is back.
+  Missing heartbeats (SUSPECT/OFFLINE) do not stop a running head: loading
+  saturates the USB link and delays them, and the head's own RPC
+  connection fails if a phone is really gone. After a head stops, the fit
+  check waits 15 s for the phones to report the freed RAM. After `ready` a
+  16-token self-test records tok/s.
+- The agent checks ggml-rpc-server with one TCP connect after each start
+  and then only that the process lives: the server takes one client at a
+  time, so probes with the head connected would pile up unaccepted.
+- The head is a gateway backend `bb:<pool>` with `MaxConcurrency 1` and the
+  new `Backend.PoolOnly`: only `pool/<name>` reaches it, never `auto` or
+  its model id, so a slow head never takes normal traffic.
+- pcprov pushes `ggml-rpc-server` when the llama.cpp variant directory has
+  one (`runtime/llama/Dockerfile` now builds it with `-DGGML_RPC=ON`).
+- Panel: **Add Big Brain** on the Pools page picks the model and the phones
+  (filter by class and free RAM, a "needs X GB / phones give Y GB" meter),
+  and the card shows the state, load time, tok/s and each phone's share.
+
+**Consequences.** Measured in [BENCHMARKS.md](BENCHMARKS.md#big-brain-one-model-across-phones).
+Generation runs layer after layer across the phones, so **more phones do
+not make a model faster**; they make a larger model fit, and every link adds
+latency. The slowest phone and the model's active parameters set the
+speed: a 30B mixture-of-experts model (3B active) on two fast phones beats
+a dense 32B on five. Loading pushes every weight over USB 2.0 through one
+host (8–12 min for 14–20 GB); the RPC cache cuts a reload to the time the
+phones need to read their flash. One phone failing stops the whole pool
+until it is back, and the phones in it serve nothing else. Prompt
+processing is slow (1–10 tok/s), so long prompts hit the gateway's
+first-token timeout; raise it for these pools' clients. The RPC protocol
+has no authentication: the phones bind 127.0.0.1 and are reached only
+through adb.

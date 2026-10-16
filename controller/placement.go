@@ -231,6 +231,9 @@ func (s *Server) planInputs(prev map[string]models.Assignment) ([]models.Node, [
 		if n.State == proto.StateOffline {
 			continue
 		}
+		if _, ok := s.bigBrainModel(n.ID); ok {
+			continue // lends its RAM to a Big Brain pool (ADR-034)
+		}
 		var rt *proto.RuntimeStatus
 		if n.LastHeartbeat != nil {
 			rt = n.LastHeartbeat.Runtime
@@ -315,6 +318,9 @@ func (p *placement) view() Placement {
 // desired returns what a node should serve, or nil to let it keep its
 // current runtime (no policy for it, or the model is not ready).
 func (s *Server) desired(nodeID string) *proto.DesiredRuntime {
+	if model, ok := s.bigBrainModel(nodeID); ok {
+		return &proto.DesiredRuntime{Mode: proto.ModeRPC, ModelID: model}
+	}
 	s.place.mu.Lock()
 	a := s.place.byNode[nodeID]
 	s.place.mu.Unlock()

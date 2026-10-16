@@ -37,6 +37,8 @@ var mi8MaxFreq = map[int]int{
 	4: 2803200, 5: 2803200, 6: 2803200, 7: 2803200,
 }
 
+var sd855MaxFreq = map[int]int{0: 1785600, 1: 1785600, 2: 1785600, 3: 1785600, 4: 2419200, 5: 2419200, 6: 2419200, 7: 2841600}
+
 func TestChooseThreads_Mi8(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -53,6 +55,12 @@ func TestChooseThreads_Mi8(t *testing.T) {
 		{"no cpufreq data, policy big falls back", []int{0, 1, 2, 3, 4, 5}, nil, "big", 6, nil},
 		{"no cpufreq data, policy all", []int{0, 1, 2, 3, 4, 5}, nil, "all", 6, nil},
 		{"unknown policy treated as all", []int{0, 1, 2, 3, 4, 5}, mi8MaxFreq, "bogus", 6, []int{4, 5}},
+		{"allowed 0-7, policy rpc drops the little cores", []int{0, 1, 2, 3, 4, 5, 6, 7}, mi8MaxFreq, "rpc", 4, []int{4, 5, 6, 7}},
+		{"no cpufreq data, policy rpc falls back", []int{0, 1, 2, 3, 4, 5}, nil, "rpc", 6, nil},
+		// Snapdragon 855 (MI 9): silver 0-3, gold 4-6, prime 7. "big" keeps
+		// the prime core alone; "rpc" keeps prime and gold.
+		{"prime+gold+silver, policy big", []int{0, 1, 2, 3, 4, 5, 6, 7}, sd855MaxFreq, "big", 1, []int{7}},
+		{"prime+gold+silver, policy rpc", []int{0, 1, 2, 3, 4, 5, 6, 7}, sd855MaxFreq, "rpc", 4, []int{7}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
