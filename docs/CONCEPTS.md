@@ -43,7 +43,7 @@ measured to cost. "Phone speed" is one phone running its own model.
 | **3./4. Super Borg pool** | `pool/<name>`, routing `superborg` | an orchestrator (a phone, or a desktop/API with `role=orchestrator`) splits one request into subtasks for the other phones | a three-part request: ~2 min (4B orchestrator), ~6 min (8B) |
 | **5. Jobs** | a Super Borg pool, `pbctl jobs` | long work in steps and documents, several phones writing in parallel | a 12-document story in ~70 min on three phones; 5–10 min per orchestrator step on a phone |
 | **6. Agent + MCP** | `pbctl mcp`, opencode | a strong main model plans; the phones do small pieces, votes and jobs | as 2 and 5 for the phone part |
-| **8. Big Brain pool** | `pool/<name>`, routing `bigbrain` | the phones together hold **one** model too large for any of them; a head on the controller's host runs it across them | 30B MoE: 2.6 tok/s on two phones, 2.2 on three, 1.7 on five; dense 32B: 0.75–0.9 tok/s; 70B at 2 bits: 0.2–0.3 tok/s; 4–12 min to load |
+| **8. Big Brain pool** | `pool/<name>`, routing `bigbrain` | the phones together hold **one** model too large for any of them; a head on the controller's host runs it across them | gpt-oss-20b (MoE): 2.6–2.8 tok/s on two phones; 30B MoE: 2.6 tok/s on two phones, 2.2 on three, 1.7 on five; dense 24–32B: 0.3–1.2 tok/s; 70B at 2 bits: 0.2–0.3 tok/s; 4–16 min to load |
 
 Modes 1–6 make the cluster do **more at once** with models that fit a
 phone. Mode 8 makes it run a **bigger model**, one request at a time, at

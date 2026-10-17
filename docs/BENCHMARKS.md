@@ -470,6 +470,9 @@ oneplus 4, poco 4, mi9 4, mi8 4); `-ts` follows each phone's free RAM minus
 | Qwen3-32B Q4_K_M (dense) | 19.8 GB | pixel, oneplus, poco, mi9 | 11.8 min | 0.89, then 0.29–0.32 ² | 1.6 / 1.3 | 1.4, 2.1, 1.2, **1.0** |
 | ″ | ″ | all five | 11.8 min | **0.75** | 1.45 / 1.16 | 2.3, 2.6, 1.6, 1.3, 1.3 |
 | Llama-3.3-70B-Instruct UD-IQ2_XXS (dense, 2-bit) | 19.4 GB | all five | 11.8 min | 0.21–0.30 | 0.30–0.34 / — ³ | 2.1, 2.2, 1.5, 1.2, **0.8** ⁴ |
+| gpt-oss-20b MXFP4 (MoE, 32 experts of 2.4B, OpenAI) | 12.1 GB | pixel, oneplus | 9.2 min | **2.60–2.80** | 10.9–11.6 / 12.2 ⁵ | 2.6, 2.5 |
+| Mistral-Small-3.2-24B-Instruct-2506 Q4_K_M (dense) | 14.3 GB | pixel, oneplus, poco | 16.0 min | 0.46–1.15 ⁶ | 1.9–2.0 / 1.8 ⁷ | 2.5, 2.9, 1.7 |
+| Gemma-3-27B-it Q4_K_M (dense) | 16.5 GB | pixel, oneplus, poco | 10.5 min | 0.27–1.01 ⁶ | 1.0–1.7 / 1.5 | 1.9, 1.9, **0.7** |
 
 ¹ The phones kept the tensors of the previous run in their RPC cache
 (`rpc-cache/`), so only the moved share crossed USB.
@@ -479,6 +482,16 @@ the likely cause: one slow phone slows every token.
 ³ The ~470-token prompt did not finish within the script's 30 min limit
 (about 26 min of prompt processing alone); speeds from the head's log.
 ⁴ Measured at the end of the series; the Mi 8 had no swap left.
+⁵ The last three rows were measured the same evening with the same
+script, after the series above (`tests/bigbrain/series.sh`, second part).
+The long prompt is 513 tokens with gpt-oss's template.
+⁶ Range over the self-test, the two 128-token runs, the long run and the
+gateway run, which varied from run to run. At the end the OnePlus was at
+80 °C and the OnePlus and POCO were flagged HOT (thermal throttling); with
+Gemma the POCO also had only 0.7 GB free.
+⁷ This GGUF's chat template adds a long default system prompt: the short
+question became 582 tokens and the long one 1003, so every request spent
+about 5 min on its prompt before the first token.
 
 Before ADR-034, by hand (same model and phones, 2026-10-15): generation
 1.8 tok/s with every core on both phones against 2.5 tok/s with the big
@@ -487,8 +500,11 @@ a reload from the RPC cache 2 min 25 s; the head used 31 MB of RAM.
 
 **What it shows**
 
-- **A model no phone can hold runs.** 14–20 GB models on phones with 5–12
+- **A model no phone can hold runs.** 12–20 GB models on phones with 5–12
   GB of RAM each, served as one OpenAI model through `pool/<name>`.
+- **Any architecture.** Qwen3, Qwen3 MoE, Llama, gpt-oss, Mistral and
+  Gemma 3 all ran through RPC without changes. gpt-oss-20b is the fastest
+  large model measured: 2.6–2.8 tok/s on two phones, steady in every run.
 - **More phones do not make it faster.** Generation visits the phones one
   after the other for every token, so each phone adds its compute time and
   a USB round trip, and the slowest phone sets the pace: the same 30B model

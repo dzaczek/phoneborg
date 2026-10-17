@@ -15,3 +15,7 @@ python3 bench.py brain $A pixel,oneplus,poco
 python3 bench.py brain $A pixel,oneplus,mi8
 python3 bench.py brain $D pixel,oneplus,poco,268ff7f1
 python3 bench.py brain $L pixel,oneplus,poco,268ff7f1,mi8
+# Second part, the same evening: architectures other than Qwen and Llama.
+python3 bench.py brain gpt-oss-20b-mxfp4 pixel,oneplus
+python3 bench.py brain mistral-small-3.2-24b-q4_k_m pixel,oneplus,poco
+python3 bench.py brain gemma-3-27b-it-q4_k_m pixel,oneplus,poco
