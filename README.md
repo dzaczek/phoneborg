@@ -59,7 +59,7 @@ Production cluster: Pixel 8 Pro (12 GB), OnePlus 10 Pro (12 GB), POCO F3 (8 GB),
 | 5 | [Jobs](#5-jobs) | `pbctl jobs` | long multi-step work in the background | documents, stories | 12 documents in ~70 min on 3 phones |
 | 6 | [Agent + MCP](#6-agent--mcp) | `pbctl mcp`, opencode | a strong model plans, the phones do the pieces | coding agents | as pools and jobs |
 | 7 | [Model benchmark (MMB)](#7-model-benchmark-mmb) | `pbctl mmb` | each phone measures every model that fits | choosing placement | 65 results, 19 models, 4 phones |
-| 8 | [Big Brain](#8-big-brain-pools) | `pool/<name>` (`bigbrain`) | the phones hold **one** model too large for any of them | 30B+ models | 30B MoE at 2.57 tok/s on 2 phones |
+| 8 | [Big Brain](#8-big-brain-pools) | `pool/<name>` (`bigbrain`) | the phones hold **one** model too large for any of them | 20B+ models | gpt-oss-20b at 2.8 tok/s, 30B MoE at 2.57 on 2 phones |
 
 Modes 1–7 make the cluster do **more at once** with models that fit on one
 phone. Mode 8 runs a **bigger model**, one request at a time, and takes the
@@ -156,13 +156,20 @@ it as `pool/<name>`.
 
 | Model | 2 phones | 3 | 4 | 5 | Load |
 |---|---|---|---|---|---|
-| Qwen3-30B-A3B Q3 (13.8 GB, MoE) | **2.57** tok/s | 2.24 | 1.96 | 1.66 | 4–11 min |
+| gpt-oss-20b MXFP4 (12.1 GB, MoE, OpenAI) | **2.6–2.8** tok/s | – | – | – | 9 min |
+| Qwen3-30B-A3B Q3 (13.8 GB, MoE) | **2.57** | 2.24 | 1.96 | 1.66 | 4–11 min |
+| Mistral Small 3.2 24B Q4_K_M (14.3 GB, dense) | – | 0.46–1.15 ¹ | – | – | 16 min |
+| Gemma 3 27B Q4_K_M (16.5 GB, dense) | – | 0.27–1.01 ¹ | – | – | 10.5 min |
 | Qwen3-32B Q4_K_M (19.8 GB, dense) | – | – | 0.89 | 0.75 | 12 min |
 | Llama-3.3-70B IQ2_XXS (19.4 GB, dense 2-bit) | – | – | – | 0.21–0.30 | 12 min |
 
-Adding phones makes the model slower, because every token passes through
-the phones in sequence. Use the fewest, largest phones the model fits on,
-and prefer MoE models. Full results and analysis:
+¹ Pixel, OnePlus and POCO. The speed varied between runs: the OnePlus
+reached 80 °C and throttled, and with Gemma the POCO had 0.7 GB free.
+
+Every architecture tried runs without changes: Qwen3, Qwen3 MoE, Llama,
+gpt-oss, Mistral and Gemma 3. Adding phones makes the model slower,
+because every token passes through the phones in sequence. Use the
+fewest, largest phones the model fits on, and prefer MoE models. Full results and analysis:
 [issue #6](https://github.com/dzaczek/phoneborg/issues/6) and
 [BENCHMARKS.md](docs/BENCHMARKS.md#big-brain-one-model-across-phones).
 
