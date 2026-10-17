@@ -1,0 +1,90 @@
+# PhoneBorg on a Linux host with real phones, in Docker (docs/INSTALL.md#docker).
+# The same layout as the systemd install: code, models and settings under
+# /srv/phoneborg, so you can switch between the two. Start it with
+# deploy/install.sh docker, which writes /srv/phoneborg/compose.env.
+#
+# Host networking: the provisioner's adb server opens the forwards to the
+# phones on the host's 127.0.0.1, where the controller reaches them
+# (ADR-006), and the phones reach the controller through adb reverse.
+name: phoneborg-linux
+
+services:
+  controller:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.controller
+    network_mode: host
+    user: "${PB_UID:?}:${PB_GID:?}"
+    command: ["-listen", ":18080", "-ollama-listen", ":11434", "-upstream-timeout", "600s",
+              "-admin-token-file", "/srv/phoneborg/admin-token", "-state-dir", "/srv/phoneborg/state",
+              "-firmware-check", "-grafana-url=${PB_GRAFANA_URL:-}", "-gateway-access", "local",
+              "-trusted-cidrs", "${PB_TRUSTED:-127.0.0.0/8,::1/128}"]
+    volumes:
+      - /srv/phoneborg/state:/srv/phoneborg/state
+      - /srv/phoneborg/admin-token:/srv/phoneborg/admin-token:ro
+    restart: unless-stopped
+
+  pcprov:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.pcprov
+      args:
+        VERSION: ${PB_VERSION:-docker}
+    network_mode: host
+    # USB access to every phone, also the ones plugged in later. adb runs as
+    # your user with the plugdev group, like on the host (udev rules of the
+    # host's adb package), and uses your adb key from ~/.android.
+    privileged: true
+    user: "${PB_UID:?}:${PB_GID:?}"
+    group_add: ["${PB_PLUGDEV_GID:?}"]
+    environment:
+      HOME: /home/phoneborg
+    command: ["watch", "-model", "/srv/phoneborg/state/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+              "-agent", "/opt/phoneborg/bin/node-agent-android-arm64", "-llama-dir", "/srv/phoneborg/app/bin/llama",
+              "-agent-args", "-ctx-size 16384", "-admin-token-file", "/srv/phoneborg/admin-token"]
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+      - ${PB_ADB_HOME:?}:/home/phoneborg/.android
+      - /srv/phoneborg/state/models:/srv/phoneborg/state/models:ro
+      - /srv/phoneborg/app/bin/llama:/srv/phoneborg/app/bin/llama:ro
+      - /srv/phoneborg/admin-token:/srv/phoneborg/admin-token:ro
+    depends_on: [controller]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    network_mode: host
+    # Created-timestamp zero ingestion counts the first increment of a new
+    # counter series (docs/OPERATIONS.md).
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus",
+              "--storage.tsdb.retention.time=15d", "--storage.tsdb.retention.size=1GB",
+              "--web.listen-address=127.0.0.1:9090", "--enable-feature=created-timestamp-zero-ingestion"]
+    volumes:
+      - ./host/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    profiles: [monitoring]
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      # Served by the controller under /grafana/ for the panel (ADR-031).
+      GF_SERVER_ROOT_URL: http://${PB_HOST:?}:18080/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /srv/phoneborg/app/deploy/grafana/dashboards/phoneborg.json
+    volumes:
+      - ./host/grafana-datasource.yml:/etc/grafana/provisioning/datasources/phoneborg.yml:ro
+      - ./host/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/phoneborg.yml:ro
+      - ./grafana/dashboards:/srv/phoneborg/app/deploy/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prometheus:
+  grafana:

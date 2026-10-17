@@ -206,30 +206,29 @@ More screenshots of the web panel and the Grafana dashboard: [docs/OPERATIONS.md
 
 ## Quick start
 
-**Fast track with one or two phones**, step by step, including pools,
-Super Borg and a job: [docs/QUICKSTART.md](docs/QUICKSTART.md).
-
-**Permanent install with the web panel** on a Debian or Ubuntu host
-(packages, systemd services, phones, models, Grafana in the panel, every
-config file), step by step: [docs/INSTALL.md](docs/INSTALL.md).
-
-Requirements: Go 1.25+, `adb`, and Docker (for the llama.cpp build,
-monitoring and emulation).
-
-**Real phones** (enable USB debugging first, see
-[docs/REAL_PHONES.md](docs/REAL_PHONES.md)):
+**One command on Debian or Ubuntu** (a PC, a NUC or a VM with USB
+passthrough). It installs everything, starts the services and prints
+the panel's address. Run it as your normal user, not root:
 
 ```sh
-make test agent pcprov controller pbctl       # unit tests + binaries in bin/
-make llama-all                                # static arm64 llama.cpp, all CPU variants (Docker)
-make models/qwen2.5-0.5b-instruct-q4_k_m.gguf
-
-bin/controller &                              # API + web panel on http://127.0.0.1:18080
-bin/pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf
-# plug phones in and accept the USB debugging prompt, then:
-curl http://127.0.0.1:18080/v1/chat/completions \
-  -d '{"messages":[{"role":"user","content":"Hello from a phone cluster!"}]}'
+curl -fsSL https://raw.githubusercontent.com/dzaczek/phoneborg/main/deploy/install.sh | bash -s -- host
 ```
+
+Use `docker` instead of `host` to run the same cluster in Docker
+containers. Then turn on USB debugging on a phone, plug it in and tap
+**Allow**. You install nothing on the phone yourself: the provisioner
+pushes the agent, llama.cpp and a first model over USB. Details and
+settings: [docs/INSTALL.md](docs/INSTALL.md#installer).
+
+**Step by step** instead:
+
+- [docs/QUICKSTART.md](docs/QUICKSTART.md): a test cluster with one or two
+  phones on a Linux or macOS machine, including pools, Super Borg and a job.
+- [docs/INSTALL.md](docs/INSTALL.md): a permanent install as services on
+  Debian or Ubuntu, with every command and config file the installer runs.
+
+Phones: ARM64 Android with 4 GB RAM or more. Which phones and models fit:
+[docs/REAL_PHONES.md](docs/REAL_PHONES.md).
 
 **Emulated phones** with Prometheus (:9090) and Grafana (:3000), see
 [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md):

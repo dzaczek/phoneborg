@@ -1,0 +1,24 @@
+# Provisioner with adb and the phone agent, for the Linux Docker install
+# (deploy/docker-compose.linux.yml). llama.cpp for the phones is not built
+# here: it is mounted from /srv/phoneborg/app/bin/llama (make llama-all).
+FROM golang:1.27-alpine AS build
+ARG VERSION=docker
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY proto ./proto
+COPY internal ./internal
+COPY controller ./controller
+COPY provisioner ./provisioner
+COPY node-agent ./node-agent
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /pcprov ./provisioner/cmd/pcprov \
+ && CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /node-agent-android-arm64 ./node-agent/cmd/node-agent
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends adb \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /pcprov /usr/local/bin/pcprov
+COPY --from=build /node-agent-android-arm64 /opt/phoneborg/bin/node-agent-android-arm64
+WORKDIR /opt/phoneborg
+ENTRYPOINT ["pcprov"]

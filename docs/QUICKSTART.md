@@ -4,8 +4,14 @@ This is the shortest path from a phone in a drawer to a working
 OpenAI-compatible endpoint, a web panel and, with a second phone, a pool
 and a Super Borg job. It takes about 30–45 minutes, most of it builds and
 downloads. Details for every step are in [REAL_PHONES.md](REAL_PHONES.md)
-and [OPERATIONS.md](OPERATIONS.md). To install the cluster for good, as
-services that start at boot, follow [INSTALL.md](INSTALL.md) instead.
+and [OPERATIONS.md](OPERATIONS.md).
+
+You install nothing on the phone by hand. You only turn on USB debugging;
+`pcprov` then pushes the phone agent, llama.cpp and a model over USB.
+
+On Debian or Ubuntu, the installer does all of this in one command and
+sets the cluster up as services that start at boot:
+[INSTALL.md](INSTALL.md#installer).
 
 ```mermaid
 flowchart LR
@@ -20,12 +26,43 @@ flowchart LR
 | Phone | ARM64 Android with USB debugging, 4 GB RAM or more | 6–8 GB fits 1.5–4B models; a cracked screen is fine |
 | Cable | a USB data cable (not charge-only) | two phones: a powered hub, 2–3 A per port |
 
+## 0. Tools on the host
+
+**Debian or Ubuntu:**
+
+```sh
+sudo apt update
+sudo apt install -y git make curl ca-certificates openssl adb docker.io docker-buildx
+sudo usermod -aG plugdev,docker "$USER"       # USB access to phones, Docker without sudo
+```
+
+Log out and in once, so the new groups apply. Go 1.25 or newer: Debian 13
+and Ubuntu 24.04 ship older versions, so take it from go.dev:
+
+```sh
+curl -fsSL "https://go.dev/dl/go1.27.1.linux-$(dpkg --print-architecture).tar.gz" | sudo tar -C /usr/local -xz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile && export PATH=$PATH:/usr/local/go/bin
+```
+
+On an **x86-64** PC the llama.cpp build for the phones (arm64) runs under
+QEMU. Register it once, or `make llama-all` fails with `exec format error`:
+
+```sh
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+```
+
+**macOS:** `brew install go android-platform-tools` and Docker Desktop
+(or colima); nothing else.
+
+**Check:** `go version` shows 1.25 or newer, `adb version` and
+`docker buildx version` work.
+
 ## 1. Build
 
 ```sh
 git clone https://github.com/dzaczek/phoneborg && cd phoneborg
 make all                                         # tests + bin/controller, bin/pcprov, bin/pbctl, the phone agent
-make llama-all                                   # llama.cpp for phones, 3 CPU variants (Docker, ~10–20 min)
+make llama-all                                   # llama.cpp for phones, 3 CPU variants (Docker, ~10–20 min; ~1 h under QEMU)
 make models/qwen2.5-0.5b-instruct-q4_k_m.gguf   # small bootstrap model (~0.5 GB)
 ```
 
@@ -97,15 +134,23 @@ admin token: **Nodes** shows the phone, **Chat** talks to it.
 The bootstrap model only proves the setup. Give the phone a real one; the
 controller downloads it once and the phone fetches it over USB:
 
+Pick **one** of the two, by the phone's RAM:
+
 ```sh
 # 4–6 GB RAM
 bin/pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf
 bin/pbctl models default qwen2.5-1.5b-instruct-q4_k_m
+```
 
+```sh
 # 8 GB RAM or more: better answers and reliable tool calling
 bin/pbctl models add hf://unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf -tag general,tools
 bin/pbctl models default qwen3-4b-instruct-2507-q4_k_m
+```
 
+Then follow it:
+
+```sh
 bin/pbctl placement      # the plan and each phone's state: downloading → loading → serving
 ```
 
@@ -184,6 +229,8 @@ next start.
 | Symptom | Fix |
 |---|---|
 | `adb devices` shows `unauthorized` | unlock the phone and accept the prompt; replug |
+| `adb devices` shows `no permissions` (Linux) | you are not in `plugdev` yet: log out and in; after a reboot, `adb kill-server`, then replug |
+| `make llama-all`: `exec format error` | x86-64 host without QEMU: run the `binfmt` command from step 0 |
 | the phone is not listed at all | a charge-only cable or USB debugging off |
 | the node goes `SUSPECT` when the screen turns off | `adb shell svc power stayon usb` |
 | `pbctl placement` shows an error like "model needs X MiB, budget Y MiB" | the model is too big for the phone: use a smaller one |
