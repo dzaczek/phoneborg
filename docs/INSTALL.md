@@ -8,8 +8,10 @@ Every step ends with a check. It follows the reference deployment
 ([ARCHITECTURE.md](ARCHITECTURE.md#production-deployment)) and takes about
 an hour, most of it downloads and builds.
 
-For a quick try on a laptop without services, use
-[QUICKSTART.md](QUICKSTART.md) instead.
+**The fast way:** the [installer](#installer) runs steps 1 to 12 for you
+with one command, as systemd services or in [Docker](#docker). Read on to
+see what it does, or to do it by hand. For a quick try on a laptop without
+services, use [QUICKSTART.md](QUICKSTART.md).
 
 ```mermaid
 flowchart LR
@@ -340,6 +342,7 @@ In the panel, **Dashboards** shows the PhoneBorg dashboard with live data.
 | `/etc/systemd/system/phoneborg-controller.service` | controller flags: ports, access, state, Grafana | [`deploy/host/phoneborg-controller.service`](../deploy/host/phoneborg-controller.service) |
 | `/etc/systemd/system/phoneborg-pcprov.service` | provisioner: bootstrap model, agent arguments | [`deploy/host/phoneborg-pcprov.service`](../deploy/host/phoneborg-pcprov.service) |
 | `/srv/phoneborg/admin-token` | the admin token (0600) | step 6 |
+| `/srv/phoneborg/compose.env` | Docker install only: your user and groups, the panel address, trusted networks, Grafana on or off | written once by the [installer](#docker) |
 | `/srv/phoneborg/state/` | everything changed at runtime: `routing.json` (aliases, pools, semantic router), `models.json`, `placement.json`, `external.json`, `devices.json`, `usage.json`, `models/`, `jobs/` | written by the controller |
 | `/etc/prometheus/prometheus.yml` | scrape the controller every 5 s | [`deploy/host/prometheus.yml`](../deploy/host/prometheus.yml) |
 | `/etc/default/prometheus` | `ARGS` with `--enable-feature=created-timestamp-zero-ingestion` | step above |
@@ -363,7 +366,9 @@ make controller pbctl pcprov agent
 sudo systemctl restart phoneborg-controller phoneborg-pcprov
 ```
 
-Phones re-register within seconds and keep their models. Rebuild
+Or run the [installer](#installer) again, which does the same. Phones
+re-register within seconds; some reload for a minute or two, then serve
+their models again. Rebuild
 llama.cpp (`make llama-all`) only when `LLAMA_TAG` in the Makefile
 changes. Do not restart while a phone is downloading a model
 (`pbctl placement`).
@@ -393,6 +398,8 @@ sudo rm -rf /srv/phoneborg            # everything, models included
 | Symptom | Look at | Usual fix |
 |---|---|---|
 | `adb devices` shows `no permissions` | udev rules, `plugdev` group | log out and in, replug; check `ls -l /dev/bus/usb/*/*` |
+| `no permissions` right after a reboot | the adb server started before the udev rules | `adb kill-server`, replug the phone (or unplug the hub once) |
+| `make llama-all`: `exec format error` | x86-64 host | register QEMU: `docker run --privileged --rm tonistiigi/binfmt --install arm64` |
 | `adb devices` shows `unauthorized` | the phone's screen | unlock, tap Allow as `$USER`; revoke and re-allow USB debugging if no prompt |
 | `pbctl nodes` is empty | `journalctl -u phoneborg-pcprov -f` | phone not `device` in adb; pcprov service not running |
 | pcprov: `serving file missing (make llama)` | `ls bin/llama/*/` | step 5 not done, or built for x86-64 (check with `file`) |
@@ -400,3 +407,100 @@ sudo rm -rf /srv/phoneborg            # everything, models included
 | gateway answers 403 `remote_requires_api_key` | the client's address | add its network to `-trusted-cidrs` or give it an API key |
 | panel Dashboards: 401 or empty | `-grafana-url`, step 12, `GF_SERVER_ROOT_URL` | the controller flag and Grafana's root URL must match the address in the browser |
 | anything else | `journalctl -u phoneborg-controller` | [OPERATIONS.md](OPERATIONS.md#troubleshooting) |
+
+## Installer
+
+[`deploy/install.sh`](../deploy/install.sh) does steps 1 to 12 in one go
+on Debian or Ubuntu, on a PC, a NUC or a VM with USB passthrough. Run it
+as the normal user whose adb key the phones accept, not as root; it asks
+for sudo where it needs it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dzaczek/phoneborg/main/deploy/install.sh | bash -s -- host
+```
+
+or, in a clone: `deploy/install.sh host`. With `docker` instead of `host`
+you get the same cluster in containers, see [Docker](#docker).
+
+It takes 10–15 minutes plus the llama.cpp build: 10–20 minutes on an arm64
+host, about an hour on x86-64 (under QEMU). At the end it prints the
+panel's address and what to do next. Then plug in the phones (step 8).
+
+Settings, as environment variables before `bash` or the script:
+
+| Variable | Default | Use |
+|---|---|---|
+| `LAN` | none | networks that may use the endpoint without an API key, e.g. `LAN=192.168.1.0/24` (comma separated) |
+| `HOST_IP` | the host's first address | the address you open the panel at (for Grafana's links) |
+| `GRAFANA=0` | Grafana on | skip Prometheus and Grafana |
+| `LLAMA_FROM` | build with Docker | a `bin/llama` directory built elsewhere, local or `user@host:path` (rsync), e.g. from a Mac: skips Docker and QEMU |
+
+Example for a VM on an x86-64 server, with llama.cpp built on a Mac:
+
+```sh
+# on the Mac, in a clone: make llama-all, then on the VM:
+LAN=192.168.1.0/24 LLAMA_FROM=me@mac.local:phoneborg/bin/llama bash deploy/install.sh host
+```
+
+What it does, in order: packages and the `plugdev` group, `/srv/phoneborg`,
+the code (cloned, or pulled if the checkout has no local changes), Go,
+the build, llama.cpp, the bootstrap model and admin token, the services,
+a `pbctl` command that already knows the admin token, and Prometheus with
+Grafana. Then it checks that the controller answers.
+
+**Running it again is safe, and is how you update.** It keeps what exists:
+the admin token, models, the service files, Prometheus and Grafana config
+and `compose.env`, so your edits stay. It pulls, rebuilds and restarts.
+It does not upgrade installed packages; `apt upgrade` does that.
+
+Afterwards:
+
+```sh
+pbctl nodes                          # no token or PATH setup needed
+journalctl -u phoneborg-pcprov -f    # provisioning as phones are plugged in
+```
+
+## Docker
+
+`deploy/install.sh docker` runs the cluster in Docker containers instead
+of systemd services, from
+[`deploy/docker-compose.linux.yml`](../deploy/docker-compose.linux.yml):
+the controller, the provisioner with adb, Prometheus and Grafana. It uses
+the same layout as the systemd install (code, models, settings and token
+under `/srv/phoneborg`), so you can switch between the two. It installs
+Docker from Docker's repository if it is missing.
+
+- **Host networking.** The provisioner's adb server opens the forwards to
+  the phones on the host's `127.0.0.1`, where the controller reaches them.
+  This needs Linux; Docker Desktop on macOS cannot pass USB phones.
+- **USB.** The provisioner container is privileged and sees
+  `/dev/bus/usb`, so phones plugged in later work too. adb runs as your
+  user, with the `plugdev` group and your key from `~/.android`, so phones
+  that already allowed this host keep working.
+- **One adb server.** The host must not run its own (`adb kill-server`;
+  the installer does that). List phones with
+  `sudo docker compose --env-file /srv/phoneborg/compose.env -f /srv/phoneborg/app/deploy/docker-compose.linux.yml exec pcprov adb devices -l`.
+- **Settings** are in `/srv/phoneborg/compose.env` (written once from
+  `LAN`, `HOST_IP` and `GRAFANA`). After editing, run the installer again.
+- **pbctl** runs inside the controller container; the installer puts a
+  `pbctl` command on the host that does that for you.
+- **Grafana** needs about two minutes on its first start before the
+  panel's Dashboards view works.
+- **Not in Docker:** Big Brain pools ([ADR-034](DECISIONS.md#adr-034-big-brain-pools)), which need
+  `llama-server` built for the host (`make llama-head`). Use the systemd
+  install for them.
+
+Only one of the two installs may run at a time. To switch from Docker to
+systemd:
+
+```sh
+sudo docker compose --env-file /srv/phoneborg/compose.env -f /srv/phoneborg/app/deploy/docker-compose.linux.yml --profile monitoring down
+deploy/install.sh host
+```
+
+and from systemd to Docker:
+
+```sh
+sudo systemctl disable --now phoneborg-pcprov phoneborg-controller prometheus grafana-server
+deploy/install.sh docker
+```

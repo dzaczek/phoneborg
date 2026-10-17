@@ -5,9 +5,10 @@ RUN go mod download
 COPY proto ./proto
 COPY internal ./internal
 COPY controller ./controller
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /controller ./controller/cmd/controller
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /controller ./controller/cmd/controller \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /pbctl ./controller/cmd/pbctl
 
 FROM alpine:3.22
-COPY --from=build /controller /usr/local/bin/controller
+COPY --from=build /controller /pbctl /usr/local/bin/
 EXPOSE 18080
 ENTRYPOINT ["controller"]
