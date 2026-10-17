@@ -141,6 +141,48 @@ func TestStreamingPassthrough(t *testing.T) {
 	}
 }
 
+// TestCutStreamCountsStreamedTokens covers a stream that ends before its
+// final usage event (Stop in the panel's chat, a dropped node): the tokens
+// already streamed are counted, one per event.
+func TestCutStreamCountsStreamedTokens(t *testing.T) {
+	cut := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, s := range []string{"a", "b", "c"} {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", s)
+			w.(http.Flusher).Flush()
+		}
+		panic(http.ErrAbortHandler) // the connection drops mid-stream
+	}))
+	defer cut.Close()
+	rec := &recorder{}
+	g := New(AllowAll{}, &LeastInflight{}, func() []Backend { return []Backend{{NodeID: "a", Model: "m", URL: cut.URL}} },
+		Config{UpstreamTimeout: 5 * time.Second, MaxAttempts: 1, Cooldown: time.Minute, Usage: rec},
+		prometheus.NewRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mux := http.NewServeMux()
+	g.Register(mux)
+
+	post(mux, `{"model":"m","stream":true}`)
+	if got := testutil.ToFloat64(g.mTokens.WithLabelValues("m", "a", "completion", "anonymous")); got != 3 {
+		t.Errorf("completion tokens = %v, want 3", got)
+	}
+	if len(rec.events) != 1 || rec.events[0].Code != "aborted" || rec.events[0].CompletionTokens != 3 {
+		t.Errorf("usage events = %+v, want one aborted event with 3 completion tokens", rec.events)
+	}
+}
+
+func TestSSECounterAcrossReads(t *testing.T) {
+	stream := "data: {\"a\":1}\n\ndata: {\"b\":2}\n\n: comment\ndata: [DONE]\n\ndata: {\"c\":3}\n\n"
+	for size := 1; size <= len(stream); size++ {
+		var c sseCounter
+		for i := 0; i < len(stream); i += size {
+			c.Write([]byte(stream[i:min(i+size, len(stream))]))
+		}
+		if c.n != 3 {
+			t.Fatalf("reads of %d bytes: counted %d events, want 3", size, c.n)
+		}
+	}
+}
+
 func TestStaticKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "keys")
 	os.WriteFile(path, []byte("# comment\nalice sk-alice-123\n\nbob sk-bob-456\n"), 0o600)
