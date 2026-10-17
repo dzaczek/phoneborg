@@ -308,6 +308,8 @@ address you open the panel at, e.g. `192.168.1.20`):
 ```sh
 cd /srv/phoneborg/app
 sudo cp deploy/host/prometheus.yml /etc/prometheus/prometheus.yml
+# Count the first request of each new counter series (see OPERATIONS.md):
+sudo sed -i 's|^ARGS="|ARGS="--enable-feature=created-timestamp-zero-ingestion |' /etc/default/prometheus
 sudo cp deploy/host/grafana-datasource.yml /etc/grafana/provisioning/datasources/phoneborg.yml
 sudo cp deploy/host/grafana-dashboards.yml /etc/grafana/provisioning/dashboards/phoneborg.yml
 sudo mkdir -p /etc/systemd/system/grafana-server.service.d
@@ -340,6 +342,7 @@ In the panel, **Dashboards** shows the PhoneBorg dashboard with live data.
 | `/srv/phoneborg/admin-token` | the admin token (0600) | step 6 |
 | `/srv/phoneborg/state/` | everything changed at runtime: `routing.json` (aliases, pools, semantic router), `models.json`, `placement.json`, `external.json`, `devices.json`, `usage.json`, `models/`, `jobs/` | written by the controller |
 | `/etc/prometheus/prometheus.yml` | scrape the controller every 5 s | [`deploy/host/prometheus.yml`](../deploy/host/prometheus.yml) |
+| `/etc/default/prometheus` | `ARGS` with `--enable-feature=created-timestamp-zero-ingestion` | step above |
 | `/etc/grafana/provisioning/datasources/phoneborg.yml` | Prometheus as Grafana's data source | [`deploy/host/grafana-datasource.yml`](../deploy/host/grafana-datasource.yml) |
 | `/etc/grafana/provisioning/dashboards/phoneborg.yml` | the PhoneBorg dashboards from the repository | [`deploy/host/grafana-dashboards.yml`](../deploy/host/grafana-dashboards.yml) |
 | `/etc/systemd/system/grafana-server.service.d/phoneborg.conf` | Grafana under `/grafana/`, embedding, read-only anonymous view | [`deploy/host/grafana-phoneborg.conf`](../deploy/host/grafana-phoneborg.conf) |

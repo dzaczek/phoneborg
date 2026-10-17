@@ -641,6 +641,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	// Keep the tail of the body to read usage/timings afterwards.
 	rc := http.NewResponseController(w)
 	tail := &tailBuffer{max: 64 << 10}
+	var events sseCounter
 	buf := make([]byte, 16<<10)
 	first := true
 	var copyErr error
@@ -653,6 +654,9 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 				first = false
 			}
 			tail.Write(buf[:n])
+			if stream {
+				events.Write(buf[:n])
+			}
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				copyErr = werr
 				break
@@ -675,7 +679,14 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, b Backend, bod
 	g.mDuration.WithLabelValues(b.Model).Observe(g.now().Sub(start).Seconds())
 	ev := UsageEvent{Principal: p.Name, NodeID: b.NodeID, Model: b.Model, Code: code}
 	if resp.StatusCode == http.StatusOK {
-		if u, ok := parseUsage(tail.Bytes(), stream); ok {
+		u, ok := parseUsage(tail.Bytes(), stream)
+		if !ok && events.n > 0 {
+			// Cut off before the final usage event (Stop in a chat, a closed
+			// client), or an engine that sends none: llama-server streams one
+			// event per token, so count the events as completion tokens.
+			u, ok = usage{CompletionTokens: events.n}, true
+		}
+		if ok {
 			ev.PromptTokens, ev.CachedTokens, ev.CompletionTokens, ev.GenTPS = u.PromptTokens, u.CachedTokens, u.CompletionTokens, u.GenTPS
 			g.mTokens.WithLabelValues(b.Model, b.NodeID, "prompt", p.Name).Add(float64(u.PromptTokens))
 			g.mTokens.WithLabelValues(b.Model, b.NodeID, "completion", p.Name).Add(float64(u.CompletionTokens))
@@ -868,6 +879,28 @@ func (t *tailBuffer) Write(p []byte) {
 }
 
 func (t *tailBuffer) Bytes() []byte { return t.buf }
+
+var sseEvent = []byte("data: {")
+
+// sseCounter counts the JSON events of an SSE stream as it is copied, across
+// read boundaries.
+type sseCounter struct {
+	n     int
+	carry []byte // the last len(sseEvent)-1 bytes, too short to hold a match
+}
+
+func (c *sseCounter) Write(p []byte) {
+	k := len(sseEvent) - 1
+	// A match across the boundary starts in carry; one inside p is counted
+	// by the second Count. Neither part alone can hold the other's match.
+	head := append(append([]byte(nil), c.carry...), p[:min(len(p), k)]...)
+	c.n += bytes.Count(head, sseEvent) + bytes.Count(p, sseEvent)
+	if len(p) >= k {
+		c.carry = append(c.carry[:0], p[len(p)-k:]...)
+	} else {
+		c.carry = head[max(0, len(head)-k):]
+	}
+}
 
 func openAIError(w http.ResponseWriter, status int, typ, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")

@@ -1672,6 +1672,16 @@ shown in the panel's Nodes view) but has no Grafana panel yet.
 Prometheus in the compose stack keeps 15 days or 1 GB, whichever comes
 first. For all-time totals use `pbctl stats` with `-state-dir`.
 
+The controller creates a counter series (per model, node, API key) on its
+first request, already holding that request's tokens. Without
+`--enable-feature=created-timestamp-zero-ingestion`, Prometheus takes that
+first value as the baseline, so `increase()` and `rate()` miss the first
+request of every series, and after a controller restart a quiet cluster
+shows almost no tokens. The compose stack and [INSTALL.md](INSTALL.md)
+enable the flag; add it to your own Prometheus too. Tokens of a stream
+that is cut off (Stop in the chat, a closed client) are counted from the
+streamed chunks, as completion tokens only.
+
 ## Troubleshooting
 
 Phone-side problems (adb, SIGILL, sleep, thermal) are in
