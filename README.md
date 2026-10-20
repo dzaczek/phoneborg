@@ -45,6 +45,7 @@ exports everything to Prometheus and Grafana.
 - [Model benchmark (MMB)](#model-benchmark-mmb)
 - [Platform features](#platform-features)
 - [Quick start](#quick-start)
+- [Managing the cluster](#managing-the-cluster)
 - [Documentation](#documentation)
 - [Repository layout](#repository-layout)
 - [Related work](#related-work)
@@ -227,6 +228,44 @@ and Grafana ([DEV_EMULATION.md](docs/DEV_EMULATION.md)):
 make agent pcprov cluster-up
 make e2e                                      # provisioning, serving, failover, recovery
 ```
+
+## Managing the cluster
+
+Everything the web panel does, `pbctl` does from the console. Set it up once
+on the host:
+
+```sh
+export PATH=$PATH:/srv/phoneborg/app/bin
+export PHONEBORG_ADMIN_TOKEN=$(cat /srv/phoneborg/admin-token)
+```
+
+```sh
+pbctl nodes                                   # every phone: state, model, tok/s
+pbctl nodes alias <id> pixel                  # address it as node/pixel
+pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf
+pbctl placement set qwen2.5-1.5b-instruct-q4_k_m replicas=2
+pbctl pools set fast nodes=pixel,poco,mi8     # clients call model "pool/fast"
+pbctl keys create laptop                      # an API key for a remote client
+pbctl drain pixel                             # maintenance: finish, take nothing new
+```
+
+The [pbctl guide](docs/PBCTL.md) has step-by-step recipes for each task:
+
+| I want to… | Guide |
+|---|---|
+| check the cluster and name the phones | [Check the cluster](docs/PBCTL.md#check-the-cluster-and-name-the-phones) |
+| add a model and put it on phones | [Add a model](docs/PBCTL.md#add-a-model-and-put-it-on-phones) |
+| run parallel agents on a pool | [A pool for parallel agents](docs/PBCTL.md#a-pool-for-parallel-agents) |
+| get one answer from many phones, or run a long job | [Super Borg and jobs](docs/PBCTL.md#one-answer-from-many-phones-and-long-jobs) |
+| run a model bigger than any phone | [Big Brain](docs/PBCTL.md#a-model-bigger-than-any-phone) |
+| let other machines use the gateway | [API keys](docs/PBCTL.md#let-other-machines-use-the-gateway) |
+| take a phone out for maintenance | [Drain](docs/PBCTL.md#take-a-phone-out-for-maintenance) |
+| route `auto` by difficulty | [Semantic router](docs/PBCTL.md#route-auto-by-difficulty) |
+| pick the best model for each phone | [MMB](docs/PBCTL.md#pick-the-best-model-for-each-phone) |
+| use the cluster from opencode | [opencode](docs/PBCTL.md#use-the-cluster-from-opencode) |
+
+Every command is in the [command reference](docs/PBCTL.md#command-reference).
+The drones do not need to be asked twice.
 
 ## Documentation
 

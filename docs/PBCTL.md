@@ -12,6 +12,18 @@ the same one the web panel uses. What each feature does is explained in
 
 - [Setup](#setup)
 - [Daily cheat sheet](#daily-cheat-sheet)
+- [Guides](#guides)
+  - [Check the cluster and name the phones](#check-the-cluster-and-name-the-phones)
+  - [Add a model and put it on phones](#add-a-model-and-put-it-on-phones)
+  - [A pool for parallel agents](#a-pool-for-parallel-agents)
+  - [One answer from many phones, and long jobs](#one-answer-from-many-phones-and-long-jobs)
+  - [A model bigger than any phone](#a-model-bigger-than-any-phone)
+  - [Let other machines use the gateway](#let-other-machines-use-the-gateway)
+  - [Take a phone out for maintenance](#take-a-phone-out-for-maintenance)
+  - [Route auto by difficulty](#route-auto-by-difficulty)
+  - [Pick the best model for each phone](#pick-the-best-model-for-each-phone)
+  - [Use the cluster from opencode](#use-the-cluster-from-opencode)
+- [Command reference](#command-reference)
 - [Nodes and devices](#nodes-and-devices)
 - [Models and placement](#models-and-placement)
 - [Pools](#pools)
@@ -67,6 +79,148 @@ Global flags: `-json` (raw JSON, for scripts and `jq`), `-url URL`,
 | Pools and who is eligible | `pbctl pools` |
 | Running jobs | `pbctl jobs` |
 
+## Guides
+
+Step-by-step recipes for the common tasks. Each ends with a check that shows
+it worked. Aliases like `pixel` or `mi8` are examples: use your own.
+
+### Check the cluster and name the phones
+
+```sh
+pbctl nodes                         # every phone: STATE should be ACTIVE, RUNTIME ready
+pbctl devices                       # a phone missing above? see if it waits for "Allow"
+pbctl nodes alias <pixel-id> pixel   # <id> is the NODE column of pbctl nodes
+pbctl nodes alias <mi8-id> mi8       # from now on: node/pixel, node/mi8
+```
+
+**Check:** `pbctl nodes` shows the aliases, and
+`curl -s 127.0.0.1:18080/v1/models | jq '.data[].id'` lists `node/pixel`.
+A phone stuck in `BENCHMARKING` for more than a minute: see
+[REAL_PHONES.md](REAL_PHONES.md#troubleshooting).
+
+### Add a model and put it on phones
+
+```sh
+pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf -tag tools
+pbctl models                                        # wait for STATUS ready
+pbctl placement preview set qwen2.5-1.5b-instruct-q4_k_m replicas=2   # dry run
+pbctl placement set qwen2.5-1.5b-instruct-q4_k_m replicas=2
+pbctl placement                                     # downloading → loading → serving
+```
+
+Use `pin=pixel,poco` to choose the phones yourself, `percent=50` for a share
+of the fleet, or `classes=l,xl` to keep a big model off small phones.
+
+**Check:** `pbctl served` lists the model with the expected node count.
+
+### A pool for parallel agents
+
+```sh
+pbctl pools set fast nodes=pixel,poco,mi8 desc="fast tool-less workers"
+pbctl pools                          # ELIGIBLE should equal the number of members
+```
+
+**Check:** send a few requests with `"model":"pool/fast"` at the same time;
+the `X-PhoneBorg-Node` response header shows a different phone for each.
+
+### One answer from many phones, and long jobs
+
+```sh
+pbctl pools set writer routing=superborg nodes=oneplus,poco,pixel orchestrator=oneplus
+pbctl jobs new title=story pool=writer "A 12-chapter story about a lighthouse keeper"
+pbctl jobs                           # find the job id
+pbctl jobs show <id>                 # tasks, documents, latest events
+pbctl jobs say <id> "make chapter 3 shorter"
+pbctl jobs result <id> > story.md
+```
+
+A chat request with `"model":"pool/writer"` gets one answer the orchestrator
+assembled from the other phones; a job runs for minutes to hours in the
+background. Pick the strongest phone as orchestrator.
+
+### A model bigger than any phone
+
+Needs the controller started with `-bigbrain-head` (see
+[OPERATIONS.md](OPERATIONS.md#big-brain-pools)).
+
+```sh
+pbctl models add hf://unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF/Qwen3-30B-A3B-Instruct-2507-UD-Q3_K_XL.gguf \
+  -id qwen3-30b-a3b-2507-ud-q3_k_xl
+pbctl pools set brain routing=bigbrain model=qwen3-30b-a3b-2507-ud-q3_k_xl nodes=pixel,oneplus
+pbctl pools                          # brain: preparing → loading → ready (minutes)
+pbctl pools set brain enabled=off    # stop: the phones return to their own models
+```
+
+Use the fewest, largest phones the model fits on: each extra phone makes
+every token slower. One request at a time; a second one at the same moment
+gets 503 `busy`.
+
+### Let other machines use the gateway
+
+By default only local addresses may call the gateway without a key; remote
+ones get 403 `remote_requires_api_key`. Give each remote client its own key:
+
+```sh
+pbctl keys create laptop            # printed once: store it
+pbctl keys                          # usage per key
+pbctl gateway set auth=keys         # optional: require a key from local callers too
+```
+
+**Check:** from the other machine,
+`curl -s -H "Authorization: Bearer <key>" http://<controller-host>:18080/v1/models`.
+Revoke with `pbctl keys revoke laptop`.
+
+### Take a phone out for maintenance
+
+```sh
+pbctl drain mi8          # no new requests; running ones finish
+pbctl nodes              # wait until INFLIGHT is 0, then unplug or fix it
+pbctl undrain mi8        # back into rotation
+pbctl forget <id>        # a phone that is gone for good
+```
+
+### Route auto by difficulty
+
+```sh
+pbctl router                                         # the classes and their targets
+pbctl router class set hard_coding target=pool/code
+pbctl router class set easy_chat target=pool/fast
+pbctl gateway set router=on router_classifier=node/pixel router_timeout=20s
+```
+
+**Check:** a request with `"model":"auto"` returns an `X-Phoneborg-Route`
+header with the chosen class. Use a Qwen model as classifier: models that
+cannot reuse the prompt cache (Gemma with sliding-window attention) take
+30 s and more per decision. `pbctl router off` keeps the classes.
+
+### Pick the best model for each phone
+
+```sh
+pbctl mmb run nodes=pixel,poco,mi8         # every model that fits, phone by phone
+pbctl mmb                                  # wait for the run to finish
+pbctl mmb show <id>                        # phones × models: load, TTFT, tok/s
+pbctl placement set qwen3-4b-instruct-2507-q4_k_m pin=pixel,poco
+```
+
+The run takes the phones off their models while it measures; they get them
+back at the end, or with `pbctl mmb cancel <id>`.
+
+### Use the cluster from opencode
+
+```sh
+cd ~/code/myproject
+pbctl opencode init        # opencode.json, MCP server, subagents per pool and phone
+pbctl opencode prewarm     # fill the prompt caches, so the first answer is fast
+opencode
+```
+
+Run `pbctl opencode sync` (or `pbctl opencode watch`) after you change pools
+or models. More: [OPERATIONS.md](OPERATIONS.md#opencode-agent-bridge).
+
+## Command reference
+
+Every command, grouped as in `pbctl -h`.
+
 ## Nodes and devices
 
 | Command | What |
@@ -82,7 +236,7 @@ Global flags: `-json` (raw JSON, for scripts and `jq`), `-url URL`,
 | `pbctl classes` | device classes (by RAM) and performance tiers (by GB/s) with node counts |
 
 ```sh
-pbctl nodes alias 40749345 mi8
+pbctl nodes alias <node-id> mi8
 pbctl drain mi8          # finish what it has, take nothing new
 pbctl undrain mi8
 ```
