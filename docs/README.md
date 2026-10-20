@@ -12,6 +12,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | [REAL_PHONES.md](REAL_PHONES.md) | choosing phones, preparing them, adb checks, provisioning, verification, slim, model storage, files and logs on the phone, removal, phone-side troubleshooting, which model suits which phone |
 | [OPERATIONS.md](OPERATIONS.md) | controller flags, sending requests, web panel, full `pbctl` reference, models and placement, pools and aliases, API keys, draining, gateway settings, semantic router, usage, OpenCode bridge, Grafana, controller-side troubleshooting |
 | [PBCTL.md](PBCTL.md) | every `pbctl` command grouped by task, with examples and a daily cheat sheet |
+| [TVBOXES.md](TVBOXES.md) | working note: Android TV boxes as nodes, what to buy, the code changes needed (not yet tested) |
 | [BENCHMARKS.md](BENCHMARKS.md) | what to expect: tok/s per model, threads, endurance, failover, prompt cache, parallel agents, bandwidth tiers, the four-phone multi-model benchmark, Super Borg and job timings |
 
 ## Developers: architecture, decisions, tests

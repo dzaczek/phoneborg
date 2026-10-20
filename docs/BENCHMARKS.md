@@ -444,7 +444,7 @@ easy/hard prompt (7 requests).
 Measured on 2026-10-16 through Big Brain pools (ADR-034) on the production
 cluster, llama.cpp b11136: the phones of the
 [four-phone table](#multi-model-benchmark-four-phones) plus **mi9**
-(`268ff7f1`, Xiaomi MI 9, Snapdragon 855, MIUI 12.5 / Android 11, 5.4 GiB).
+(Xiaomi MI 9, Snapdragon 855, MIUI 12.5 / Android 11, 5.4 GiB).
 The head runs on the controller's VM; the phones are reached over USB 2.0
 (`adb forward`, round trip p50 2.6 ms, p90 3.1 ms).
 
