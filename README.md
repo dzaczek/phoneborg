@@ -45,6 +45,7 @@ exports everything to Prometheus and Grafana.
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Repository layout](#repository-layout)
+- [Related work](#related-work)
 
 ## Cluster modes
 
@@ -257,6 +258,17 @@ tests/                 end-to-end test, LLM smoke test, load generator
 assets/                README diagrams (SVG sources in assets/diagrams/src) and the demo GIF
 docs/                  guides, architecture, benchmarks, ADRs
 ```
+
+## Related work
+
+- [AI models may be capable of self-replicating without access to a datacenter](https://www.anthropic.com/research/self-replicating-ai)
+  (Anthropic Frontier Red Team, 2026-10-12). A safety study of models
+  spreading across cheap, poorly secured devices. Its demo splits a 26B model
+  over 15 off-brand Android TV boxes (~$55 each), the same layer-split idea
+  as [Big Brain](#big-brain). It is also a reminder of why PhoneBorg keeps
+  phones on USB, the gateway local by default and adb off the network.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp): the inference engine on
+  every phone, and its RPC backend behind Big Brain.
 
 ## License
 
