@@ -239,3 +239,6 @@ next start.
 
 More: [REAL_PHONES.md](REAL_PHONES.md#troubleshooting) and
 [OPERATIONS.md](OPERATIONS.md#troubleshooting).
+
+**Next:** day-to-day work with `pbctl` (models, pools, keys, jobs, Big Brain)
+is in the [pbctl guides](PBCTL.md#guides).

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/diagrams/wordmark.png" alt="PhoneBorg: old Android phones joined over USB into one AI inference cluster" width="820">
+  <img src="assets/diagrams/wordmark.png" alt="PhoneBorg banner: 'Resistance is futile. Your Android will be assimilated.' Four phones with the collective's grid on their screens and a fifth still being assimilated hang on a USB bus into a cube labelled the collective: host, one endpoint" width="820">
 </p>
 
 <p align="center">
@@ -15,6 +15,9 @@
 </p>
 
 **Turn a drawer full of old Android phones into an AI inference cluster.**
+
+> *We are PhoneBorg. Your phones will be added to the collective. Their
+> tokens will be added to our own.*
 
 ## Overview
 
@@ -43,8 +46,10 @@ exports everything to Prometheus and Grafana.
 - [Model benchmark (MMB)](#model-benchmark-mmb)
 - [Platform features](#platform-features)
 - [Quick start](#quick-start)
+- [Managing the cluster](#managing-the-cluster)
 - [Documentation](#documentation)
 - [Repository layout](#repository-layout)
+- [Related work](#related-work)
 
 ## Cluster modes
 
@@ -225,6 +230,44 @@ make agent pcprov cluster-up
 make e2e                                      # provisioning, serving, failover, recovery
 ```
 
+## Managing the cluster
+
+Everything the web panel does, `pbctl` does from the console. Set it up once
+on the host:
+
+```sh
+export PATH=$PATH:/srv/phoneborg/app/bin
+export PHONEBORG_ADMIN_TOKEN=$(cat /srv/phoneborg/admin-token)
+```
+
+```sh
+pbctl nodes                                   # every phone: state, model, tok/s
+pbctl nodes alias <id> pixel                  # address it as node/pixel
+pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf
+pbctl placement set qwen2.5-1.5b-instruct-q4_k_m replicas=2
+pbctl pools set fast nodes=pixel,poco,mi8     # clients call model "pool/fast"
+pbctl keys create laptop                      # an API key for a remote client
+pbctl drain pixel                             # maintenance: finish, take nothing new
+```
+
+The [pbctl guide](docs/PBCTL.md) has step-by-step recipes for each task:
+
+| I want to… | Guide |
+|---|---|
+| check the cluster and name the phones | [Check the cluster](docs/PBCTL.md#check-the-cluster-and-name-the-phones) |
+| add a model and put it on phones | [Add a model](docs/PBCTL.md#add-a-model-and-put-it-on-phones) |
+| run parallel agents on a pool | [A pool for parallel agents](docs/PBCTL.md#a-pool-for-parallel-agents) |
+| get one answer from many phones, or run a long job | [Super Borg and jobs](docs/PBCTL.md#one-answer-from-many-phones-and-long-jobs) |
+| run a model bigger than any phone | [Big Brain](docs/PBCTL.md#a-model-bigger-than-any-phone) |
+| let other machines use the gateway | [API keys](docs/PBCTL.md#let-other-machines-use-the-gateway) |
+| take a phone out for maintenance | [Drain](docs/PBCTL.md#take-a-phone-out-for-maintenance) |
+| route `auto` by difficulty | [Semantic router](docs/PBCTL.md#route-auto-by-difficulty) |
+| pick the best model for each phone | [MMB](docs/PBCTL.md#pick-the-best-model-for-each-phone) |
+| use the cluster from opencode | [opencode](docs/PBCTL.md#use-the-cluster-from-opencode) |
+
+Every command is in the [command reference](docs/PBCTL.md#command-reference).
+The drones do not need to be asked twice.
+
 ## Documentation
 
 | Document | For |
@@ -234,6 +277,7 @@ make e2e                                      # provisioning, serving, failover,
 | [docs/CONCEPTS.md](docs/CONCEPTS.md) | ways to use the cluster, with pros, cons and measured numbers |
 | [docs/REAL_PHONES.md](docs/REAL_PHONES.md) | choosing, preparing, provisioning and troubleshooting real phones |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | running the cluster: requests, web panel, `pbctl`, models, pools, keys, monitoring |
+| [docs/PBCTL.md](docs/PBCTL.md) | every `pbctl` command, grouped by task, with examples |
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |
@@ -257,6 +301,17 @@ tests/                 end-to-end test, LLM smoke test, load generator
 assets/                README diagrams (SVG sources in assets/diagrams/src) and the demo GIF
 docs/                  guides, architecture, benchmarks, ADRs
 ```
+
+## Related work
+
+- [AI models may be capable of self-replicating without access to a datacenter](https://www.anthropic.com/research/self-replicating-ai)
+  (Anthropic Frontier Red Team, 2026-10-12). A safety study of models
+  spreading across cheap, poorly secured devices. Its demo splits a 26B model
+  over 15 off-brand Android TV boxes (~$55 each), the same layer-split idea
+  as [Big Brain](#big-brain). It is also a reminder of why PhoneBorg keeps
+  phones on USB, the gateway local by default and adb off the network.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp): the inference engine on
+  every phone, and its RPC backend behind Big Brain.
 
 ## License
 

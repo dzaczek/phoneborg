@@ -11,6 +11,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | [CONCEPTS.md](CONCEPTS.md) | ways to use the cluster (models, pools, Super Borg with an internal or external orchestrator, jobs, agents through MCP, benchmarks, Big Brain) with their pros, cons and measured numbers, a comparison and which one to pick |
 | [REAL_PHONES.md](REAL_PHONES.md) | choosing phones, preparing them, adb checks, provisioning, verification, slim, model storage, files and logs on the phone, removal, phone-side troubleshooting, which model suits which phone |
 | [OPERATIONS.md](OPERATIONS.md) | controller flags, sending requests, web panel, full `pbctl` reference, models and placement, pools and aliases, API keys, draining, gateway settings, semantic router, usage, OpenCode bridge, Grafana, controller-side troubleshooting |
+| [PBCTL.md](PBCTL.md) | every `pbctl` command grouped by task, with examples and a daily cheat sheet |
 | [BENCHMARKS.md](BENCHMARKS.md) | what to expect: tok/s per model, threads, endurance, failover, prompt cache, parallel agents, bandwidth tiers, the four-phone multi-model benchmark, Super Borg and job timings |
 
 ## Developers: architecture, decisions, tests
