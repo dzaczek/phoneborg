@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="850" rx="24" fill="#FAFAF7"/>
+
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Processes and ports</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">What runs on the host and on each phone, and the two adb tunnels that join them over USB</text>
+
+  <!-- host -->
+  <rect x="40" y="110" width="780" height="520" rx="18" fill="#EEF3F8" stroke="#2F5D8A" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="60" y="137" font-size="14" font-weight="600" fill="#2F5D8A">HOST · state in /srv/phoneborg</text>
+
+  <!-- controller -->
+  <rect x="65" y="150" width="430" height="200" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2.5"/>
+  <text x="82" y="180" font-size="18" font-weight="700" fill="#1F3F5E">controller</text>
+  <text x="180" y="180" font-size="14" fill="#5B5F66">one Go process</text>
+  <g font-size="14" fill="#1F3F5E">
+    <rect x="82" y="194" width="396" height="86" rx="10" fill="#DCE7F2"/>
+    <text x="96" y="220" font-size="16" font-weight="700">:18080</text>
+    <text x="170" y="220">/v1 · /admin · /ui</text>
+    <text x="170" y="242">/metrics · /grafana/ (proxy)</text>
+    <text x="170" y="264">/v1/model-files for phones</text>
+
+    <rect x="82" y="290" width="396" height="44" rx="10" fill="#DCE7F2"/>
+    <text x="96" y="318" font-size="16" font-weight="700">:11434</text>
+    <text x="170" y="318">Ollama API /api/*</text>
+  </g>
+
+  <!-- adb server -->
+  <rect x="585" y="150" width="210" height="200" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="602" y="180" font-size="16" font-weight="700" fill="#1F3F5E">adb server :5037</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="602" y="210">forward per phone</text>
+    <text x="602" y="230">127.0.0.1:&lt;dyn&gt;</text>
+    <text x="602" y="250">→ phone tcp:18090</text>
+    <text x="602" y="284">reverse per phone</text>
+    <text x="602" y="304">phone tcp:18080</text>
+    <text x="602" y="324">→ host :18080</text>
+  </g>
+
+  <line x1="495" y1="225" x2="582" y2="225" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="540" y="214" font-size="13.5" font-weight="600" fill="#5B5F66" text-anchor="middle">requests</text>
+  <line x1="585" y1="300" x2="498" y2="300" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="540" y="289" font-size="13.5" font-weight="600" fill="#5B5F66" text-anchor="middle">heartbeat</text>
+
+  <!-- monitoring -->
+  <rect x="65" y="380" width="205" height="95" rx="12" fill="#F6EBDD" stroke="#C27C2C" stroke-width="2"/>
+  <text x="82" y="408" font-size="16" font-weight="700" fill="#7A4B14">Prometheus</text>
+  <text x="82" y="432" font-size="14" fill="#7A4B14">:9090</text>
+  <text x="82" y="454" font-size="14" fill="#7A4B14">scrapes every 5 s</text>
+  <line x1="167" y1="380" x2="167" y2="353" stroke="#C27C2C" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="380" width="195" height="95" rx="12" fill="#F6EBDD" stroke="#C27C2C" stroke-width="2"/>
+  <text x="317" y="408" font-size="16" font-weight="700" fill="#7A4B14">Grafana</text>
+  <text x="317" y="432" font-size="14" fill="#7A4B14">:3000</text>
+  <text x="317" y="454" font-size="14" fill="#7A4B14">reads Prometheus</text>
+  <line x1="300" y1="427" x2="273" y2="427" stroke="#C27C2C" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="397" y1="350" x2="397" y2="377" stroke="#C27C2C" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="409" y="369" font-size="13.5" fill="#7A4B14">/grafana/ proxy</text>
+
+  <!-- Big Brain + state -->
+  <rect x="65" y="500" width="205" height="112" rx="12" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="82" y="528" font-size="16" font-weight="700" fill="#1F3F5E">Big Brain heads</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="82" y="550">llama-server --rpc</text>
+    <text x="82" y="572">127.0.0.1:18200+</text>
+  </g>
+  <text x="82" y="596" font-size="13.5" fill="#5B5F66">one per pool</text>
+
+  <rect x="300" y="500" width="195" height="112" rx="12" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="317" y="528" font-size="16" font-weight="700" fill="#1F3F5E">/srv/phoneborg</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="317" y="552">state/ · state/models</text>
+    <text x="317" y="574">state/jobs · admin-token</text>
+  </g>
+
+  <!-- pcprov -->
+  <rect x="585" y="380" width="210" height="232" rx="12" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="602" y="408" font-size="16" font-weight="700" fill="#1F3F5E">pcprov watch</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="602" y="436">polls adb devices</text>
+    <text x="602" y="456">every 3 s</text>
+    <text x="602" y="486">pushes node-agent,</text>
+    <text x="602" y="506">llama-server, model</text>
+    <text x="602" y="536">sets up the reverse</text>
+    <text x="602" y="556">and forward tunnels</text>
+  </g>
+  <line x1="690" y1="380" x2="690" y2="353" stroke="#5B5F66" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- USB bus -->
+  <line x1="795" y1="250" x2="855" y2="250" stroke="#3C8D5A" stroke-width="4"/>
+  <line x1="855" y1="175" x2="855" y2="560" stroke="#3C8D5A" stroke-width="4" stroke-linecap="round"/>
+  <text x="855" y="160" font-size="14" font-weight="700" fill="#2E6E46" text-anchor="middle">USB</text>
+  <line x1="855" y1="210" x2="878" y2="210" stroke="#3C8D5A" stroke-width="4"/>
+  <line x1="855" y1="360" x2="878" y2="360" stroke="#3C8D5A" stroke-width="4"/>
+  <line x1="855" y1="530" x2="878" y2="530" stroke="#3C8D5A" stroke-width="4"/>
+
+  <!-- phones -->
+  <g font-size="14" fill="#24563A">
+    <rect x="880" y="150" width="280" height="120" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="896" y="166" width="28" height="48"/>
+    <text x="938" y="182" font-size="16" font-weight="700">phone 1</text>
+    <text x="938" y="206">node-agent</text>
+    <text x="938" y="226">llama-server</text>
+    <text x="896" y="254" font-size="13.5" fill="#2E6E46">127.0.0.1:18090 on the phone</text>
+
+    <rect x="880" y="300" width="280" height="120" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="896" y="316" width="28" height="48"/>
+    <text x="938" y="332" font-size="16" font-weight="700">phone 2</text>
+    <text x="938" y="356">node-agent</text>
+    <text x="938" y="376">llama-server</text>
+    <text x="896" y="404" font-size="13.5" fill="#2E6E46">127.0.0.1:18090 on the phone</text>
+
+    <text x="1020" y="448" font-size="22" font-weight="700" fill="#2E6E46" text-anchor="middle">⋮</text>
+
+    <rect x="880" y="470" width="280" height="120" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="896" y="486" width="28" height="48"/>
+    <text x="938" y="502" font-size="16" font-weight="700">phone N</text>
+    <text x="938" y="526">node-agent</text>
+    <text x="938" y="546">llama-server</text>
+    <text x="896" y="574" font-size="13.5" fill="#2E6E46">agent → 127.0.0.1:18080 (reverse)</text>
+  </g>
+
+  <!-- install variants inset -->
+  <rect x="40" y="650" width="1120" height="135" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="60" y="680" font-size="16" font-weight="700" fill="#1F3F5E">install.sh host · systemd</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="60" y="706">phoneborg-controller.service</text>
+    <text x="60" y="728">phoneborg-pcprov.service</text>
+  </g>
+  <text x="60" y="756" font-size="13.5" fill="#7A4B14">optional apt prometheus + grafana-server</text>
+
+  <line x1="590" y1="666" x2="590" y2="769" stroke="#2F5D8A" stroke-width="1.5" stroke-dasharray="5 4"/>
+
+  <text x="620" y="680" font-size="16" font-weight="700" fill="#1F3F5E">install.sh docker · docker compose</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="620" y="706">every service network_mode: host</text>
+    <text x="620" y="728">pcprov privileged, /dev/bus/usb mounted</text>
+  </g>
+  <text x="620" y="756" font-size="13.5" fill="#7A4B14">monitoring profile: Prometheus + Grafana</text>
+
+  <text x="40" y="808" font-size="13.5" fill="#5B5F66">Both variants use the same ports and the same /srv/phoneborg layout.</text>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="620" y="796" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="642" y="808">host processes</text>
+    <rect x="760" y="796" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="782" y="808">phones</text>
+    <rect x="852" y="796" width="14" height="14" rx="3" fill="#C27C2C"/><text x="874" y="808">monitoring (optional)</text>
+  </g>
+</svg>

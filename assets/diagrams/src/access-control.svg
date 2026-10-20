@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="720" rx="24" fill="#FAFAF7"/>
+
+  <!-- title -->
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Who may use the gateway</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">Checked on every /v1/chat/completions, /v1/completions, /v1/models and Ollama /api/* call</text>
+
+  <!-- request -->
+  <rect x="40" y="150" width="170" height="90" rx="14" fill="#ECE8F3" stroke="#7A6A9E" stroke-width="2"/>
+  <text x="58" y="182" font-size="17" font-weight="700" fill="#4A3F66">request</text>
+  <text x="58" y="208" font-size="14" fill="#4A3F66">from any client</text>
+  <text x="58" y="226" font-size="13.5" fill="#5E4F85">curl · SDK · agent</text>
+  <line x1="210" y1="195" x2="247" y2="195" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- D1: valid key? -->
+  <g fill="#1F3F5E">
+    <rect x="250" y="140" width="250" height="110" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2.5"/>
+    <text x="268" y="172" font-size="17" font-weight="700">valid API key?</text>
+    <text x="268" y="199" font-size="14">Authorization: Bearer …</text>
+    <text x="268" y="220" font-size="14">or x-api-key header</text>
+  </g>
+
+  <!-- yes: served as key -->
+  <line x1="500" y1="195" x2="857" y2="195" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="520" y="184" font-size="14" font-weight="700" fill="#1E2328">yes</text>
+  <text x="520" y="215" font-size="13.5" fill="#5B5F66">in every mode</text>
+  <g fill="#24563A">
+    <rect x="860" y="150" width="300" height="90" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="878" y="182" font-size="17" font-weight="700">served</text>
+    <text x="878" y="208" font-size="14">as the key's owner</text>
+    <text x="878" y="226" font-size="13.5" fill="#2E6E46">usage counted per key name</text>
+  </g>
+
+  <!-- no: D2 access mode -->
+  <line x1="375" y1="250" x2="375" y2="317" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="387" y="290" font-size="14" font-weight="700" fill="#1E2328">no</text>
+  <g fill="#1F3F5E">
+    <rect x="250" y="320" width="250" height="110" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2.5"/>
+    <text x="268" y="352" font-size="17" font-weight="700">access mode?</text>
+    <text x="268" y="379" font-size="14">-gateway-access</text>
+    <text x="268" y="400" font-size="14">keys · open · local</text>
+  </g>
+
+  <!-- branches from D2 -->
+  <path d="M500,375 H530 V315 H857" fill="none" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M530,375 V415 H857" fill="none" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M530,375 V560 H557" fill="none" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="560" y="305" font-size="14" font-weight="700" fill="#1E2328">keys</text>
+  <text x="560" y="405" font-size="14" font-weight="700" fill="#1E2328">open</text>
+  <text x="542" y="466" font-size="14" font-weight="700" fill="#1E2328">local <tspan font-weight="400" font-size="13.5" fill="#5B5F66">(the default)</tspan></text>
+
+  <!-- keys -> 401 -->
+  <g fill="#8A2F25">
+    <rect x="860" y="285" width="300" height="60" rx="12" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="878" y="311" font-size="16" font-weight="700">401</text>
+    <text x="878" y="331" font-size="14">invalid_api_key</text>
+  </g>
+
+  <!-- open -> anonymous -->
+  <g fill="#24563A">
+    <rect x="860" y="385" width="300" height="60" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="878" y="411" font-size="16" font-weight="700">served</text>
+    <text x="878" y="431" font-size="14">as anonymous</text>
+  </g>
+
+  <!-- D3: trusted peer? -->
+  <g fill="#1F3F5E">
+    <rect x="560" y="480" width="250" height="160" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2.5"/>
+    <text x="578" y="512" font-size="17" font-weight="700">peer in trusted CIDRs?</text>
+    <text x="578" y="538" font-size="14">-trusted-cidrs, by default</text>
+    <text x="578" y="558" font-size="14">127.0.0.0/8 · ::1/128</text>
+    <text x="578" y="590" font-size="13.5" fill="#2F5D8A">X-Forwarded-For counts</text>
+    <text x="578" y="609" font-size="13.5" fill="#2F5D8A">only from -trusted-proxies</text>
+  </g>
+
+  <!-- D3 yes / no -->
+  <line x1="810" y1="515" x2="857" y2="515" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="820" y="505" font-size="14" font-weight="700" fill="#1E2328">yes</text>
+  <line x1="810" y1="610" x2="857" y2="610" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="820" y="600" font-size="14" font-weight="700" fill="#1E2328">no</text>
+
+  <g fill="#24563A">
+    <rect x="860" y="485" width="300" height="60" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="878" y="511" font-size="16" font-weight="700">served</text>
+    <text x="878" y="531" font-size="14">as local</text>
+  </g>
+  <g fill="#8A2F25">
+    <rect x="860" y="580" width="300" height="60" rx="12" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="878" y="606" font-size="16" font-weight="700">403</text>
+    <text x="878" y="626" font-size="14">remote_requires_api_key</text>
+  </g>
+
+  <!-- note -->
+  <rect x="40" y="480" width="460" height="160" rx="14" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="58" y="512" font-size="16" font-weight="700" fill="#1F3F5E">keys mode is forced when</text>
+  <text x="58" y="540" font-size="14" fill="#1F3F5E">· the controller loads -api-keys-file</text>
+  <text x="58" y="562" font-size="14" fill="#1F3F5E">· or an admin switches auth_mode to keys</text>
+  <text x="58" y="584" font-size="14" fill="#1F3F5E">  (PUT /admin/gateway)</text>
+  <text x="58" y="616" font-size="13.5" fill="#2F5D8A">then only a valid key gets in, whatever the mode</text>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="678" width="14" height="14" rx="3" fill="#7A6A9E"/><text x="62" y="690">client</text>
+    <rect x="125" y="678" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="147" y="690">gateway check</text>
+    <rect x="265" y="678" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="287" y="690">served, goes on to routing</text>
+    <rect x="490" y="678" width="14" height="14" rx="3" fill="#B5473A"/><text x="512" y="690">rejected</text>
+  </g>
+</svg>

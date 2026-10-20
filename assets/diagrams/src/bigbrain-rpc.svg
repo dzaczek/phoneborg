@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#B5473A"/>
+    </marker>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="800" rx="24" fill="#FAFAF7"/>
+
+  <!-- title -->
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Big Brain: one model across several phones</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">The head on the host holds no weights; each phone keeps a slice of the layers in its RAM</text>
+
+  <!-- client -->
+  <rect x="40" y="150" width="180" height="110" rx="14" fill="#ECE8F3" stroke="#7A6A9E" stroke-width="2"/>
+  <text x="58" y="182" font-size="17" font-weight="700" fill="#4A3F66">client</text>
+  <text x="58" y="208" font-size="14" fill="#4A3F66">one request</text>
+  <text x="58" y="236" font-size="13.5" fill="#5E4F85">model: pool/brain</text>
+
+  <!-- busy -->
+  <rect x="40" y="300" width="180" height="110" rx="14" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+  <text x="58" y="332" font-size="16" font-weight="700" fill="#8A2F25">2nd request</text>
+  <text x="58" y="356" font-size="14" fill="#8A2F25">at the same time</text>
+  <text x="58" y="388" font-size="16" font-weight="700" fill="#8A2F25">→ 503 busy</text>
+
+  <!-- host -->
+  <rect x="250" y="110" width="530" height="600" rx="18" fill="#EEF3F8" stroke="#2F5D8A" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="270" y="137" font-size="14" font-weight="600" fill="#2F5D8A">HOST · controller process + head process</text>
+
+  <!-- gateway -->
+  <rect x="275" y="150" width="230" height="120" rx="14" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2.5"/>
+  <text x="293" y="180" font-size="17" font-weight="700" fill="#1F3F5E">gateway</text>
+  <text x="293" y="206" font-size="14" fill="#1F3F5E">head reachable only</text>
+  <text x="293" y="226" font-size="14" fill="#1F3F5E">through pool/brain</text>
+  <text x="293" y="252" font-size="13.5" fill="#1F3F5E">max 1 request in flight</text>
+
+  <line x1="220" y1="200" x2="272" y2="200" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M275,240 H240 V355 H223" fill="none" stroke="#B5473A" stroke-width="2" marker-end="url(#arrow-red)"/>
+
+  <!-- head -->
+  <rect x="275" y="300" width="485" height="170" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2.5"/>
+  <text x="293" y="332" font-size="18" font-weight="700" fill="#1F3F5E">HEAD</text>
+  <text x="352" y="332" font-size="14" fill="#5B5F66">llama-server built with RPC</text>
+  <rect x="293" y="346" width="449" height="34" rx="8" fill="#DCE7F2"/>
+  <text x="305" y="368" font-size="14" font-weight="600" fill="#1F3F5E">--rpc phone1,phone2 -ngl 99 -ts &lt;MiB,MiB&gt; -np 1</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="293" y="408">127.0.0.1:18200+ · one head per Big Brain pool</text>
+    <text x="293" y="430">holds no weights, computes no layers itself</text>
+    <text x="293" y="452">pushes the weights to the phones at load</text>
+  </g>
+  <line x1="390" y1="270" x2="390" y2="297" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- supervisor -->
+  <rect x="275" y="495" width="485" height="195" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="293" y="525" font-size="16" font-weight="700" fill="#1F3F5E">supervisor</text>
+  <text x="388" y="525" font-size="14" fill="#5B5F66">checks every 3 s</text>
+  <g font-size="15" font-weight="700" text-anchor="middle">
+    <rect x="293" y="540" width="130" height="40" rx="10" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+    <text x="358" y="565" fill="#1F3F5E">preparing</text>
+    <rect x="450" y="540" width="130" height="40" rx="10" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+    <text x="515" y="565" fill="#1F3F5E">loading</text>
+    <rect x="607" y="540" width="130" height="40" rx="10" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="672" y="565" fill="#24563A">ready</text>
+  </g>
+  <line x1="423" y1="560" x2="447" y2="560" stroke="#5B5F66" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="580" y1="560" x2="604" y2="560" stroke="#5B5F66" stroke-width="2" marker-end="url(#arrow)"/>
+  <g font-size="13.5" fill="#5B5F66" text-anchor="middle">
+    <text x="358" y="600">phones switch</text>
+    <text x="358" y="617">to RPC mode</text>
+    <text x="515" y="600">weights go</text>
+    <text x="515" y="617">to the phones</text>
+    <text x="672" y="600">/health = 200</text>
+    <text x="672" y="617">then serves</text>
+  </g>
+  <rect x="293" y="634" width="95" height="40" rx="10" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+  <text x="340" y="659" font-size="15" font-weight="700" fill="#8A2F25" text-anchor="middle">error</text>
+  <text x="402" y="650" font-size="13.5" fill="#8A2F25">does not fit: model × 1.05 &gt; usable RAM</text>
+  <text x="402" y="668" font-size="13.5" fill="#8A2F25">head exited: retry after 30 s … 10 min</text>
+
+  <!-- USB bus -->
+  <line x1="830" y1="190" x2="830" y2="510" stroke="#3C8D5A" stroke-width="4" stroke-linecap="round"/>
+  <text x="830" y="164" font-size="14" font-weight="700" fill="#2E6E46" text-anchor="middle">USB</text>
+  <text x="830" y="182" font-size="13.5" fill="#2E6E46" text-anchor="middle">adb forward</text>
+  <line x1="760" y1="385" x2="828" y2="385" stroke="#5B5F66" stroke-width="2.5"/>
+  <line x1="830" y1="240" x2="877" y2="240" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="830" y1="460" x2="877" y2="460" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- phones -->
+  <g font-size="14" fill="#24563A">
+    <rect x="880" y="150" width="280" height="180" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="896" y="166" width="28" height="48"/>
+    <text x="936" y="184" font-size="16" font-weight="700">phone 1</text>
+    <text x="936" y="206">ggml-rpc-server</text>
+    <text x="1144" y="184" font-size="13.5" fill="#2E6E46" text-anchor="end">1st</text>
+    <rect x="896" y="232" width="248" height="40" rx="8" fill="#CFE7D7" stroke="#3C8D5A" stroke-width="1.5"/>
+    <text x="1020" y="258" font-size="15" font-weight="700" text-anchor="middle">layers 0–23</text>
+    <text x="896" y="304">share ∝ its free RAM − 900 MiB</text>
+
+    <rect x="880" y="370" width="280" height="180" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="896" y="386" width="28" height="48"/>
+    <text x="936" y="404" font-size="16" font-weight="700">phone 2</text>
+    <text x="936" y="426">ggml-rpc-server</text>
+    <text x="1144" y="404" font-size="13.5" fill="#2E6E46" text-anchor="end">2nd</text>
+    <rect x="896" y="452" width="248" height="40" rx="8" fill="#CFE7D7" stroke="#3C8D5A" stroke-width="1.5"/>
+    <text x="1020" y="478" font-size="15" font-weight="700" text-anchor="middle">layers 24–47</text>
+    <text x="896" y="524">share ∝ its free RAM − 900 MiB</text>
+  </g>
+  <g font-size="14" fill="#5B5F66">
+    <text x="880" y="584">Each token runs through the slices</text>
+    <text x="880" y="604">in order: phone 1, then phone 2.</text>
+    <text x="880" y="638">The phones leave normal placement</text>
+    <text x="880" y="658">while they are in the pool.</text>
+  </g>
+
+  <!-- footer -->
+  <text x="40" y="742" font-size="14" font-weight="700" fill="#1E2328">One request at a time:</text>
+  <text x="206" y="742" font-size="14" fill="#5B5F66">the head has one slot, so a 2nd concurrent request to pool/brain gets 503 busy.</text>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="764" width="14" height="14" rx="3" fill="#7A6A9E"/><text x="62" y="776">clients</text>
+    <rect x="130" y="764" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="152" y="776">host processes</text>
+    <rect x="270" y="764" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="292" y="776">phones</text>
+    <rect x="352" y="764" width="14" height="14" rx="3" fill="#B5473A"/><text x="374" y="776">error / reject</text>
+  </g>
+</svg>

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="300" rx="24" fill="#FAFAF7"/>
+
+  <!-- wordmark -->
+  <text x="64" y="158" font-size="84" font-weight="800" fill="#1E2328" letter-spacing="-2">Phone<tspan fill="#2F5D8A">Borg</tspan></text>
+  <text x="68" y="204" font-size="18" fill="#5B5F66">Old Android phones → one AI inference cluster</text>
+
+  <!-- phones -->
+  <use href="#phone" x="600" y="96" width="42" height="72"/>
+  <use href="#phone" x="676" y="96" width="42" height="72"/>
+  <use href="#phone" x="752" y="96" width="42" height="72"/>
+  <use href="#phone" x="828" y="96" width="42" height="72"/>
+  <use href="#phone" x="904" y="96" width="42" height="72"/>
+
+  <!-- USB bus -->
+  <g stroke="#3C8D5A" stroke-width="4" stroke-linecap="round">
+    <line x1="621" y1="170" x2="621" y2="206"/>
+    <line x1="697" y1="170" x2="697" y2="206"/>
+    <line x1="773" y1="170" x2="773" y2="206"/>
+    <line x1="849" y1="170" x2="849" y2="206"/>
+    <line x1="925" y1="170" x2="925" y2="206"/>
+    <line x1="621" y1="206" x2="1000" y2="206"/>
+  </g>
+  <text x="962" y="194" font-size="14" font-weight="700" fill="#2E6E46" text-anchor="middle">USB</text>
+
+  <!-- host -->
+  <rect x="1002" y="164" width="146" height="84" rx="12" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2.5"/>
+  <text x="1075" y="198" font-size="16" font-weight="700" fill="#1F3F5E" text-anchor="middle">host</text>
+  <text x="1075" y="224" font-size="14" fill="#1F3F5E" text-anchor="middle">one endpoint</text>
+</svg>
