@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/diagrams/wordmark.png" alt="PhoneBorg: old Android phones joined over USB into one AI inference cluster" width="820">
+  <img src="assets/diagrams/wordmark.png" alt="PhoneBorg banner: 'Resistance is futile. Your Android will be assimilated.' Four phones with the collective's grid on their screens and a fifth still being assimilated hang on a USB bus into a cube labelled the collective: host, one endpoint" width="820">
 </p>
 
 <p align="center">
@@ -16,7 +16,8 @@
 
 **Turn a drawer full of old Android phones into an AI inference cluster.**
 
-> *We are PhoneBorg. Resistance is futile. Your Android will be assimilated.*
+> *We are PhoneBorg. Your phones will be added to the collective. Their
+> tokens will be added to our own.*
 
 ## Overview
 
