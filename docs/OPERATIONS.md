@@ -662,7 +662,7 @@ pools and `node/<alias>` are routed as usual, so a fleet can be split, e.g.
 half the phones in a Super Borg pool and the rest in pools for opencode.
 
 ```sh
-pbctl nodes alias b82175b7 oneplus                      # optional, nicer worker names
+pbctl nodes alias <oneplus-id> oneplus                  # optional, nicer worker names
 pbctl pools set borg routing=superborg nodes=oneplus,poco,pixel,mi8 orchestrator=oneplus
 pbctl pools set borg thinking=on                        # let the orchestrator reason first (slower)
 pbctl pools set borg orchestrator=auto                  # the member serving the largest model
