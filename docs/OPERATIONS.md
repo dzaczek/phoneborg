@@ -9,36 +9,63 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 
 ## Contents
 
-- [Endpoints](#endpoints)
-- [Starting the controller](#starting-the-controller)
-- [Sending requests](#sending-requests)
-- [Ollama-compatible API](#ollama-compatible-api)
-- [Web panel](#web-panel)
-- [pbctl reference](#pbctl-reference)
-- [Models and placement](#models-and-placement)
-- [Multi-model benchmark (MMB)](#multi-model-benchmark-mmb)
-- [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
-- [Tool-capable routing](#tool-capable-routing)
-- [Semantic router (experimental)](#semantic-router-experimental)
-- [Super Borg pools](#super-borg-pools)
-- [Super Borg jobs](#super-borg-jobs)
-- [Big Brain pools](#big-brain-pools)
-- [External nodes (Mac / PC)](#external-nodes-mac--pc)
-- [Admin tokens](#admin-tokens)
-- [API keys](#api-keys)
-- [Access control](#access-control)
-- [Draining a phone for maintenance](#draining-a-phone-for-maintenance)
-- [Firmware check](#firmware-check)
-- [Gateway settings](#gateway-settings)
-- [Usage statistics](#usage-statistics)
-- [OpenCode agent bridge](#opencode-agent-bridge)
-- [Grafana and Prometheus](#grafana-and-prometheus)
-  - [Grafana in the panel](#grafana-in-the-panel)
-- [Troubleshooting](#troubleshooting)
+- **Part 1 · Set up**
+  - [Endpoints](#endpoints)
+  - [Starting the controller](#starting-the-controller)
+  - [USB device detection and provisioning](#usb-device-detection-and-provisioning)
+  - [Access control](#access-control)
+  - [API keys](#api-keys)
+  - [Admin tokens](#admin-tokens)
+- **Part 2 · Use the cluster**
+  - [Sending requests](#sending-requests)
+  - [Ollama-compatible API](#ollama-compatible-api)
+  - [Virtual models, pools and aliases](#virtual-models-pools-and-aliases)
+  - [Tool-capable routing](#tool-capable-routing)
+  - [Semantic router (experimental)](#semantic-router-experimental)
+  - [Super Borg pools](#super-borg-pools)
+  - [Super Borg jobs](#super-borg-jobs)
+  - [Big Brain pools](#big-brain-pools)
+  - [External nodes (Mac / PC)](#external-nodes-mac--pc)
+    - [External orchestrators](#external-orchestrators)
+  - [OpenCode agent bridge](#opencode-agent-bridge)
+    - [The cluster as MCP tools](#the-cluster-as-mcp-tools)
+    - [Agents on phones](#agents-on-phones)
+- **Part 3 · Models and placement**
+  - [Models and placement](#models-and-placement)
+    - [Adding models](#adding-models)
+    - [Device classes and fit](#device-classes-and-fit)
+    - [Performance tiers and predicted speed](#performance-tiers-and-predicted-speed)
+    - [Placement policies](#placement-policies)
+  - [Multi-model benchmark (MMB)](#multi-model-benchmark-mmb)
+- **Part 4 · Daily operations**
+  - [Web panel](#web-panel)
+    - [Screenshots](#screenshots)
+  - [Draining a phone for maintenance](#draining-a-phone-for-maintenance)
+  - [Gateway settings](#gateway-settings)
+  - [Usage statistics](#usage-statistics)
+  - [Firmware check](#firmware-check)
+- **Part 5 · Monitoring**
+  - [Grafana and Prometheus](#grafana-and-prometheus)
+    - [Grafana in the panel](#grafana-in-the-panel)
+    - [Token analyzer](#token-analyzer)
+    - [Dashboard screenshots](#dashboard-screenshots)
+- **Part 6 · Troubleshooting**
+  - [Troubleshooting](#troubleshooting)
+- [Upgrading](#upgrading)
+- **Appendix**
+  - [pbctl reference](#pbctl-reference)
+
+---
+
+**Part 1 · Set up**
+
+*Start the controller, connect phones and decide who may use the gateway.*
+
+[![Host topology: the controller on :18080 serves /v1, /admin, /ui, /metrics and /grafana/, plus :11434 for the Ollama API; the adb server on :5037 keeps a forward per phone to tcp:18090 and a reverse to :18080; pcprov watch, Prometheus :9090, Grafana :3000 and Big Brain heads on 127.0.0.1:18200+ run next to it, with state in /srv/phoneborg; each phone runs node-agent and llama-server; systemd and docker variants](../assets/diagrams/host-topology.png)](../assets/diagrams/src/host-topology.svg)
 
 ## Endpoints
 
-The controller listens on `http://127.0.0.1:18080` by default (`-listen`).
+The controller listens on `:18080`, all interfaces, by default (`-listen`).
 
 | Path | What | Auth |
 |---|---|---|
@@ -69,7 +96,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-listen` | `:18080` | HTTP listen address |
 | `-admin-token-file` | none | admin token file (≥ 16 characters, `#` comments allowed); this token is named `admin`; none = admin API disabled |
 | `-admin-tokens-file` | `<state-dir>/admin-tokens` | named admin tokens, one per operator or device, as SHA-256 hashes; managed with `pbctl admin-tokens` (see [Admin tokens](#admin-tokens)) |
-| `-api-keys-file` | none | API keys file; none = open gateway (dev only). Reloaded on SIGHUP. |
+| `-api-keys-file` | none | API keys file; set = every gateway request needs a valid key; none = keys live in memory and `-gateway-access` (default `local`) decides who needs one. Reloaded on SIGHUP. |
 | `-state-dir` | none | persistent state: `usage.json`, `models.json`, `placement.json`, `routing.json`, `external.json`, `devices.json`, `jobs/`, `models/` |
 | `-models-dir` | `<state-dir>/models` | where catalog model files are stored |
 | `-backend-host` | `127.0.0.1` | host where the phones' adb forwards are reachable |
@@ -86,12 +113,175 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-ollama-listen` | none | optional second listen address serving only the [Ollama-compatible API](#ollama-compatible-api) (e.g. `:11434`); it is always served on `-listen` too |
 | `-grafana-url` | none | Grafana to serve under `/grafana/` for the panel's **Dashboards** view, e.g. `http://127.0.0.1:3000` ([Grafana in the panel](#grafana-in-the-panel)) |
 | `-firmware-check` | off | check online once a day whether newer firmware or a LineageOS build exists for each phone; sends device codenames to Google, LineageOS and GitHub ([Firmware check](#firmware-check)) |
+| `-bigbrain-head` | none | llama-server built with RPC (`make llama-head`) for [Big Brain pools](#big-brain-pools) heads; none = Big Brain pools off |
+| `-bigbrain-port` | `18200` | first `127.0.0.1` port for Big Brain heads, one per pool |
 | `-debug` | off | log every heartbeat |
 
 The compose stack (`make cluster-up`) runs the controller with
 `-backend-host host.docker.internal -upstream-timeout 600s`, the public
 `deploy/dev-admin-token` and `-state-dir /var/lib/phoneborg` on the
 `controller-state` volume.
+
+## USB device detection and provisioning
+
+`pcprov watch` can report the USB devices it sees to the controller
+(ADR-019), so devices that are not yet nodes — not authorized, mid
+provisioning, or failed — show up in the **Devices** panel view and `pbctl
+devices`, next to phones that already became nodes. Reporting is off by
+default (empty `-admin-token-file`), so existing `pcprov watch` invocations
+keep working unchanged:
+
+```sh
+pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -agent-args "-ctx-size 16384" \
+  -controller-url http://127.0.0.1:18080 -admin-token-file admin-token
+```
+
+A systemd unit for a production host running pcprov next to the controller:
+
+```ini
+# /etc/systemd/system/pcprov.service
+[Unit]
+Description=PhoneBorg provisioner
+After=network.target
+
+[Service]
+ExecStart=/opt/phoneborg/bin/pcprov watch \
+  -model /opt/phoneborg/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  -agent-args "-ctx-size 16384" \
+  -controller-url http://127.0.0.1:18080 \
+  -admin-token-file /opt/phoneborg/admin-token
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The **auto-provision** toggle (panel, or `pbctl devices auto on|off`) turns
+off automatic provisioning of newly detected devices; pcprov keeps
+detecting them, reporting them and healing adb links of already-provisioned
+ones either way. **Provision**/**Retry** (panel) or `pbctl devices provision
+<serial>` request a one-shot attempt for one device, delivered to pcprov in
+its next report and acknowledged back. A failed attempt backs off (30 s,
+doubling to 10 min) instead of retrying every poll; replugging the device or
+an explicit retry resets it. Only one `pcprov watch`/`provision` may drive a
+given adb server at a time; a second instance exits naming the first one's
+PID.
+
+**Devices** — USB devices pcprov sees, with their provisioning state.
+
+![Devices: USB devices seen by pcprov and their provisioning state.](images/panel-devices.png)
+
+## Access control
+
+`-gateway-access` controls who may use the inference and listing endpoints
+(`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/api/*`) without
+an API key. It never affects the node protocol (`/v1/register`,
+`/v1/benchmark`, `/v1/heartbeat`, `/v1/model-files`, `/v1/nodes`),
+`/metrics`, `/healthz`, `/ui/` or `/admin/`, which keep their own trust
+models (see [ARCHITECTURE.md](ARCHITECTURE.md#security-model)) (ADR-017).
+
+[![Access control decision tree: a request with a valid API key is served as its owner; otherwise, in mode keys it gets 401, in mode open it is served as anonymous, and in mode local it is served when the peer is in the trusted CIDRs, else 403 remote_requires_api_key; -api-keys-file forces keys](../assets/diagrams/access-control.png)](../assets/diagrams/src/access-control.svg)
+
+| Mode | Behaviour |
+|---|---|
+| `local` (default) | peers in `-trusted-cidrs` are served without a key, as principal `local`; everyone else must send a valid key or gets `403 remote_requires_api_key` |
+| `keys` | every request needs a valid key (same as running `pbctl gateway set auth=keys`) |
+| `open` | anyone is served, unauthenticated (today's pre-ADR-017 behaviour); the controller logs a warning at startup |
+
+```sh
+bin/controller -gateway-access local -trusted-cidrs 127.0.0.0/8,::1/128,10.0.0.0/8 ...
+```
+
+A valid API key always identifies its owner, in every mode. The runtime
+switch `pbctl gateway set auth=keys` (`PUT /admin/gateway
+{"auth_mode":"keys"}`) still works and wins over `-gateway-access`: once
+keys are enforced, `local` and `open` both behave like `keys` until a
+restart. `GET /admin/gateway` and `pbctl gateway` show the effective mode as
+`access`.
+
+By default `X-Forwarded-For` is never trusted (a client could otherwise
+claim any address). Set `-trusted-proxies` to the CIDR of a reverse proxy
+you run in front of the controller; the first address in `X-Forwarded-For`
+is then used instead of the direct peer, but only for connections that
+themselves come from a listed proxy.
+
+**Docker note.** A containerized controller sees connections from the
+compose bridge network's gateway address, not `127.0.0.1`. The dev stack in
+`deploy/docker-compose.yml` therefore does both: it publishes every port
+(18080, 11434, 9090, 3000 and the emulated phones' adb ports) on the host's
+`127.0.0.1` only, and passes `-trusted-cidrs 127.0.0.0/8,::1/128,172.16.0.0/12`
+so host connections arriving through the Docker bridge count as local. Other
+machines cannot reach the stack at all. To serve other machines, publish the
+controller port on `0.0.0.0`, create API keys (`pbctl keys create`) and give
+each client its key; requests from them without a key get 403.
+
+Denials are counted in
+`phoneborg_gateway_rejected_total{reason="remote_requires_api_key"}`.
+Existing clients that already send an API key (e.g. `pbctl`'s admin calls,
+or opencode/OpenAI clients configured with `PHONEBORG_API_KEY`) are
+unaffected by the default `local` mode; only unauthenticated remote traffic
+newly needs one.
+
+## API keys
+
+Each key has an owner name; usage is counted per name. The gateway runs in
+one of two modes:
+
+- **access mode** (without `-api-keys-file`): `-gateway-access` decides; with
+  the default `local`, trusted local peers are served without a key and
+  remote ones get 403 `remote_requires_api_key`; with `open`, requests
+  without a key, or with an unknown one, are served as `anonymous`. Known
+  keys are counted under their name (see [Access control](#access-control)).
+- **keys** (default with `-api-keys-file`): requests without a valid key get
+  401. Clients send `Authorization: Bearer <key>` or `x-api-key: <key>`.
+
+```sh
+pbctl keys create alice          # prints the key once: pb-...  store it now
+pbctl keys                       # names, creation time, usage; never the keys
+pbctl keys revoke alice          # immediate
+```
+
+- With `-api-keys-file`, changes are written to that file atomically, mode
+  0600, as SHA-256 hashes: `alice sha256:<hex> 2026-09-23T10:00:00Z`. Legacy
+  `<name> <key>` lines still work and are rewritten as hashes on the first
+  change.
+- Without `-api-keys-file`, keys live in memory and are lost on restart
+  (pbctl says so).
+- After editing the file by hand: `kill -HUP <controller pid>`. A broken file
+  is rejected and the current keys stay.
+- Creating keys does not close an open gateway. Enforce with
+  `pbctl gateway set auth=keys` once every client sends one. Switching back
+  to open needs a restart without `-api-keys-file` (ADR-008).
+
+**API keys** — usage per key; create and revoke.
+
+![API keys: usage per key; create and revoke.](images/panel-keys.png)
+
+## Admin tokens
+
+The token in `-admin-token-file` is the `admin` token; `pcprov` and scripts
+read it from that file. Give every other operator or device its own named
+token, so the audit log shows who changed what:
+
+```sh
+pbctl admin-tokens create laptop     # prints the token once: sign in to the panel with it
+pbctl admin-tokens                   # admin (-admin-token-file) and the named tokens
+pbctl admin-tokens revoke laptop     # stops working at once
+```
+
+The same is in the panel under API keys → Admin tokens. Every admin change
+is logged with the token's name, e.g.
+`"msg":"admin action","principal":"laptop","action":"placement_set"`, next
+to the client address. Named tokens are stored as SHA-256 hashes in
+`-admin-tokens-file` (default `<state-dir>/admin-tokens`, mode 0600); the
+token itself is shown only when it is created. All admin tokens have the
+same rights (ADR-026).
+
+---
+
+**Part 2 · Use the cluster**
+
+*Send requests and route them to models, pools, phones and external nodes.*
 
 ## Sending requests
 
@@ -148,6 +338,10 @@ turn, ~3 s after, on an emulated phone ([BENCHMARKS.md](BENCHMARKS.md#session-af
 A 0.5B model is too small for reliable tool use; it proves the integration,
 not coding quality.
 
+**Chat** — talk to any target (`auto`, a pool, a phone); every reply names the model and phone and shows its speed.
+
+![Chat: a reply from pool/chat with the model, node and speed under it.](images/panel-chat.png)
+
 ## Ollama-compatible API
 
 Many local-LLM apps (Open WebUI, Continue, Raycast, ...) speak Ollama's API
@@ -195,473 +389,6 @@ suffix, the same way they would point at a local `ollama serve`.
 <source>` instead (see [Models and placement](#models-and-placement)).
 `format` as a JSON Schema object (rather than the literal string `"json"`)
 and `images` (vision input) are not translated.
-
-## Web panel
-
-Open http://127.0.0.1:18080/ (redirects to `/ui/`). The panel needs the admin
-API (`-admin-token-file`). Sign in with the admin token; it is kept for this
-browser tab only (session storage) and sent as a bearer header. **Log out**
-forgets it. The panel loads nothing from the internet. There is no TLS, so
-use it on localhost or a trusted network.
-
-| View | What it does |
-|---|---|
-| Overview | Nodes by state; ready, drained and hot nodes; requests/s and tokens/s (last 30 s, computed in the browser); errors; models served; placement warnings; a **Virtual models** card listing `/v1/models` by kind (`auto`, `pool/<name>` with eligible node counts, `node/<alias>` with served model and readiness), each with a copy button for its `phoneborg/<id>` reference. |
-| Nodes | Every node with device, class/tier, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. Aliases are shown in place of ids. **Set alias**/**Edit alias**; drain, undrain and forget (with confirmation). Select a node for its inventory and runtime details. |
-| Devices | USB devices `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [below](#usb-device-detection-and-provisioning)). |
-| Models | The catalog: download status, size, estimated RAM, fitting classes, tags. Add from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`; edit tags, recommended classes/tiers and the default flag; delete (the reason is shown if refused). |
-| Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
-| Pools | Pools routed as `pool/<name>`, each with a status badge (ready · N nodes, no ready node with the reason, disabled) and **Enable/Disable**: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
-| Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
-| MMB | [Multi-model benchmark](#multi-model-benchmark-mmb): start a run on phones or a pool (models, one by one or at the same time), live runs, results table with the best values marked, and a model × phone comparison. |
-| Jobs | [Super Borg jobs](#super-borg-jobs): New job, the job list (live), and for the selected job its goal, your messages, tasks, documents (click to read, rendered as Markdown), progress log, a message box, **Preview result** (the assembled result rendered in the panel), **Download .md**, Cancel and Delete. |
-| Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; a Super Borg pool shows its delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
-| API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. Below them, **Admin tokens**: the named tokens for this panel and pbctl; create (shown once) and revoke. |
-| Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
-
-Chat goes through `POST /admin/chat/completions` and `GET /admin/chat/models`
-(admin token, not the gateway's own auth), so it works from a remote browser
-that holds only the admin token even under `-gateway-access local`, where
-such a browser is neither a trusted peer nor has an API key (ADR-018). The
-request is otherwise proxied through the normal gateway path — routing,
-failover, affinity, usage and metrics all apply — attributed to the
-principal `panel` in usage stats and `phoneborg_gateway_requests_total`, so
-it is never conflated with `anonymous`, `local` or a real API key's traffic.
-
-### Screenshots
-
-Taken on the four-phone cluster (OnePlus 10 Pro, POCO F3, Pixel 8 Pro, Mi 8) in 2026-10, while it served load on several pools and ran a Super Borg job.
-
-**Sign-in screen (the token field is a password field).** — Sign-in screen (the token field is a password field).
-
-![Sign-in screen (the token field is a password field).](images/panel-login.png)
-
-**Overview** — cluster health, throughput, models served, placement warnings and virtual models.
-
-![Overview: cluster health, throughput, models served, placement warnings and virtual models.](images/panel-overview.png)
-
-**Dashboards** — the Grafana dashboard inside the panel, served by the controller under `/grafana/` ([Grafana in the panel](#grafana-in-the-panel)).
-
-![Dashboards: the PhoneBorg Grafana dashboard embedded in the panel.](images/panel-dashboards.png)
-
-**Dashboards → Node** — the analytics of one phone, chosen by alias.
-
-![Node analytics: one phone's state, tokens and health.](images/panel-node-analytics.png)
-
-**Tokens** — the [token analyzer](#token-analyzer): counts per served model, share of the context, reading time, the text split into tokens, and token usage below.
-
-![Tokens: token counts per model, the text split into tokens and token usage.](images/panel-tokens.png)
-
-**Nodes** — firmware with patch age and update badges, class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.
-
-![Nodes: class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.](images/panel-nodes.png)
-
-**Node details** — firmware with the newer builds and their download links, inventory and runtime as reported in heartbeats.
-
-![Node details: inventory and runtime as reported in heartbeats.](images/panel-node-details.png)
-
-**Devices** — USB devices pcprov sees, with their provisioning state.
-
-![Devices: USB devices seen by pcprov and their provisioning state.](images/panel-devices.png)
-
-**Models** — the catalog with download status, size, fit, tags and recommendations.
-
-![Models: the catalog with download status, size, fit, tags and recommendations.](images/panel-models.png)
-
-**Placement** — device classes, performance tiers, policies and the current plan with predicted tok/s.
-
-![Placement: device classes, performance tiers, policies and the current plan with predicted tok/s.](images/panel-placement.png)
-
-**Pools** — routing, filters and member eligibility with reasons.
-
-![Pools: routing, filters and member eligibility with reasons.](images/panel-pools.png)
-
-**Proxy** — gateway routing policy, spill, timeout, thermal limit and key enforcement.
-
-![Proxy: gateway routing policy, spill, timeout, thermal limit and key enforcement.](images/panel-proxy.png)
-
-**Chat** — talk to any target (`auto`, a pool, a phone); every reply names the model and phone and shows its speed.
-
-![Chat: a reply from pool/chat with the model, node and speed under it.](images/panel-chat.png)
-
-**Jobs** — Super Borg jobs: task list, documents, progress, and instructions for a running job.
-
-![Jobs: a job on pool/writer with its tasks, documents and progress.](images/panel-jobs.png)
-
-**MMB** — multi-model benchmark runs, the phone × model table for one parameter, and the legend.
-
-![MMB: benchmark runs and the phone × model table.](images/panel-mmb.png)
-
-**API keys** — usage per key; create and revoke.
-
-![API keys: usage per key; create and revoke.](images/panel-keys.png)
-
-**Usage** — requests and tokens per API key and per node.
-
-![Usage: requests and tokens per API key and per node.](images/panel-usage.png)
-
-Live views refresh every 5 s. **Settings** sets the Grafana and Prometheus
-links (default: ports 3000 and 9090 on the controller's host), or open
-`/ui/?grafana=URL&prometheus=URL` once. Against a controller without the
-models or pools API, those views say so and the rest works.
-
-### USB device detection and provisioning
-
-`pcprov watch` can report the USB devices it sees to the controller
-(ADR-019), so devices that are not yet nodes — not authorized, mid
-provisioning, or failed — show up in the **Devices** panel view and `pbctl
-devices`, next to phones that already became nodes. Reporting is off by
-default (empty `-admin-token-file`), so existing `pcprov watch` invocations
-keep working unchanged:
-
-```sh
-pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -agent-args "-ctx-size 16384" \
-  -controller-url http://127.0.0.1:18080 -admin-token-file admin-token
-```
-
-A systemd unit for a production host running pcprov next to the controller:
-
-```ini
-# /etc/systemd/system/pcprov.service
-[Unit]
-Description=PhoneBorg provisioner
-After=network.target
-
-[Service]
-ExecStart=/opt/phoneborg/bin/pcprov watch \
-  -model /opt/phoneborg/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
-  -agent-args "-ctx-size 16384" \
-  -controller-url http://127.0.0.1:18080 \
-  -admin-token-file /opt/phoneborg/admin-token
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-The **auto-provision** toggle (panel, or `pbctl devices auto on|off`) turns
-off automatic provisioning of newly detected devices; pcprov keeps
-detecting them, reporting them and healing adb links of already-provisioned
-ones either way. **Provision**/**Retry** (panel) or `pbctl devices provision
-<serial>` request a one-shot attempt for one device, delivered to pcprov in
-its next report and acknowledged back. A failed attempt backs off (30 s,
-doubling to 10 min) instead of retrying every poll; replugging the device or
-an explicit retry resets it. Only one `pcprov watch`/`provision` may drive a
-given adb server at a time; a second instance exits naming the first one's
-PID.
-
-## pbctl reference
-
-Build with `make pbctl` (also part of `make all`).
-
-```text
-pbctl [-json] [-url URL] [-token-file FILE] <command> [args]
-```
-
-| Global flag / variable | Default | Meaning |
-|---|---|---|
-| `-url`, `PHONEBORG_URL` | `http://127.0.0.1:18080` | controller URL (flag wins) |
-| `-token-file FILE`, `PHONEBORG_ADMIN_TOKEN` | none | admin token (flag wins) |
-| `PHONEBORG_API_KEY` | none | only used by `pbctl served` when keys are enforced |
-| `-json` | off | print the raw API response; accepted anywhere on the line |
-
-```sh
-export PHONEBORG_ADMIN_TOKEN=$(grep -v '^#' deploy/dev-admin-token)   # dev stack only: this token is public
-bin/pbctl nodes
-```
-
-**Nodes**
-
-| Command | What |
-|---|---|
-| `pbctl nodes` | nodes: `KIND` (`phone` or `external`), state (with `DRAINED`/`HOT`), class/tier (e.g. `m/t2`), runtime, `TOK/S` (self-test), in-flight. `-json` prints `/admin/nodes` (phones only) |
-| `pbctl nodes alias <id> <alias>` | set an alias, addressed as `node/<alias>`; `-` clears |
-| `pbctl drain <id>` | no new requests; running ones finish (`ext:<name>` for an external node) |
-| `pbctl undrain <id>` | back into rotation |
-| `pbctl forget <id>` | remove a node (it re-registers if still running) |
-| `pbctl devices` | USB devices `pcprov watch` reports: adb state, status (with step/error/hint), linked node, reporting host (ADR-019) |
-| `pbctl devices auto on\|off` | turn automatic provisioning of newly detected devices on or off |
-| `pbctl devices provision <serial>` | request a one-shot provision/retry for one device |
-
-**API keys, gateway, usage**
-
-| Command | What |
-|---|---|
-| `pbctl keys` | key names, creation time and usage (never the keys) |
-| `pbctl keys create <name>` | create a key, printed once |
-| `pbctl keys revoke <name>` | revoke all keys of `<name>` |
-| `pbctl admin-tokens` | admin tokens: `admin` (from `-admin-token-file`) and the named ones |
-| `pbctl admin-tokens create <name>` / `revoke <name>` | create a named admin token (printed once) / revoke it |
-| `pbctl gateway` | current gateway settings |
-| `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>`, `router=on\|off`, `router_classifier=node/<alias>`, `router_timeout=<duration>` |
-| `pbctl router` | semantic router: on/off, classifier, timeout and the class table (letter, class, target, description, examples) ([details](#semantic-router-experimental)) |
-| `pbctl router on\|off` | switch the router; classes and targets are kept while off |
-| `pbctl router class add <name> desc=<text> [target=<t>] [example=<text>]...` | add a class; target `pool/<name>`, `node/<alias>`, a model id or `auto` |
-| `pbctl router class set <name> [name=<new>] [desc=<text>] [target=<t>] [example=<text>]...` | change a class; examples given replace all of its examples |
-| `pbctl router class rm <name>` | remove a class |
-| `pbctl router classes reset` | back to the six default classes, targets cleared |
-| `pbctl stats` | uptime, cluster summary, usage by key and node |
-| `pbctl mmb` | multi-model benchmark runs |
-| `pbctl mmb run [nodes=a,b] [pool=P] [models=x,y] [parallel]` | benchmark every model that fits (or the given ones) on each phone, one by one or at the same time ([details](#multi-model-benchmark-mmb)) |
-| `pbctl mmb show\|cancel\|rm <id>` | results table / stop (phones get their models back) / delete |
-| `pbctl mcp` | serve the cluster as MCP tools on stdin/stdout ([details](#the-cluster-as-mcp-tools)) |
-| `pbctl jobs` | Super Borg jobs: status, steps, tasks done/total |
-| `pbctl jobs new [title=T] [pool=P] <goal>` | start a job on Super Borg pool P (default: the first one) |
-| `pbctl jobs show <id>` | tasks, documents and the latest events |
-| `pbctl jobs say <id> <text>` | send an instruction; resumes a waiting, finished or cancelled job |
-| `pbctl jobs doc <id> <name>` / `pbctl jobs result <id>` | one document / the assembled Markdown result |
-| `pbctl jobs cancel <id>` / `pbctl jobs rm <id>` | stop (resumable) / delete |
-| `pbctl served` | what ready phones serve, plus `auto`, pools and aliased nodes (`/v1/models`) |
-
-**Models and placement**
-
-| Command | What |
-|---|---|
-| `pbctl models` | catalog: status/progress, size, quantization, `FITS (16k)`, tags, serving |
-| `pbctl models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]` | download a model (`hf://`, `https://`, `file:///`) |
-| `pbctl models rm <id>` | remove a model and its file (refused while a policy or the default uses it) |
-| `pbctl models tag <id> a,b` | set tags; `-` clears |
-| `pbctl models recommend <id> classes=s,m tiers=t2,t3` | recommended classes/tiers (older form `<id> s,m` sets classes); `-` clears |
-| `pbctl models default <id>\|none` | model for nodes no policy claims |
-| `pbctl classes` | RAM classes and performance tiers with node counts |
-| `pbctl placement` | policies, plan per node (`BUDGET`, `PRED TOK/S`), node model states, warnings |
-| `pbctl placement set <model> pin=<node,...>\|replicas=<n>\|percent=<p> [classes=s,m] [min_tok_s=<n>]` | set the model's policy |
-| `pbctl placement unset <model>` | remove the model's policy |
-| `pbctl placement preview [set\|unset] [<model> ...]` | show the plan a change would give; applies nothing |
-
-**Pools**
-
-| Command | What |
-|---|---|
-| `pbctl pools` | pools and every node's eligibility per pool |
-| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="..."]` | create a pool or change only the given fields; `-` clears a list; `orchestrator` and `thinking` apply to [Super Borg pools](#super-borg-pools); `enabled=off` switches it off; a conflict with another enabled pool is refused |
-| `pbctl pools rm <name>` | remove a pool |
-
-**External nodes** (see [External nodes (Mac / PC)](#external-nodes-mac--pc))
-
-| Command | What |
-|---|---|
-| `pbctl external` | external nodes: URL, state, allowlist, models, in-flight/limit, context, tok/s, key set, last check and error |
-| `pbctl external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N] [role=orchestrator\|worker]` | add or replace an external node, addressed as `node/<name>`; without `key-file` the current key is kept, `key-file=-` removes it |
-| `pbctl external rm <name>` | remove an external node |
-| `pbctl external selftest <name>` | measure each of its models' generation tok/s |
-
-**OpenCode** (see [OpenCode agent bridge](#opencode-agent-bridge))
-
-| Command | What |
-|---|---|
-| `pbctl opencode init [-dir D] [-global] [-provider P] [-base-url URL] [-force] [-read-tools] [-small-model]` | write `opencode.json` (provider, MCP server) and `.opencode/agent/` subagents; `-dir` default `.`, `-provider` default `phoneborg`, `-base-url` default controller URL + `/v1`; `-small-model` sets `small_model` to `<provider>/pool/fast` if unset |
-| `pbctl opencode sync [-dir D]` | regenerate from the current cluster (idempotent) |
-| `pbctl opencode watch [-dir D] [-interval 15s]` | loop `sync`, logging only changes |
-| `pbctl opencode status [-dir D]` | managed agents vs. cluster state |
-| `pbctl opencode prewarm [-dir D]` | warm each managed agent's target |
-
-## Models and placement
-
-Phones provisioned with `pcprov -model FILE` serve that file until the
-controller says otherwise. The controller can keep a **catalog** of GGUF
-models and decide which phone serves which; phones download the file from the
-controller over USB and switch. Design: ADR-011, ADR-012.
-
-### Adding models
-
-```sh
-pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf -tag chat -recommend m,l
-pbctl models                  # progress, then size, quantization, fits, tags
-```
-
-Sources:
-
-- `hf://<owner>/<repo>/<file>.gguf` → `https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf`;
-- any `https://` URL of a `.gguf` file;
-- `file:///absolute/path.gguf` on the controller's machine (inside the
-  container in the compose stack, so use `hf://` or `https://` there).
-
-The controller downloads into `-models-dir`, resumes interrupted downloads,
-computes the SHA-256, reads the GGUF metadata (architecture, parameters,
-quantization, trained context, layers, KV heads, resident bytes) and only
-then marks the model `ready`. A file that is not a valid GGUF (e.g. an HTML
-login page) ends as `error` and is deleted; adding the same id again retries.
-Split GGUF files and gated repositories are not supported.
-
-The model id is the file name without `.gguf`, lowercased
-(`Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` → `qwen2.5-0.5b-instruct-q4_k_m`), the
-same name phones serve when provisioned with that file. Use `-id` to choose
-another. Clients put the id in `"model"`.
-
-Phone-sized models (Q4 of 1–4B). File names change between uploads: **check
-the name on Hugging Face** first, and check each model's license (Gemma and
-Llama have their own terms; `pbctl models -json` shows the license recorded
-in the file).
-
-| Model | Source |
-|---|---|
-| Qwen2.5 1.5B Instruct | `hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf` |
-| Gemma 3 1B it | `hf://bartowski/google_gemma-3-1b-it-GGUF/google_gemma-3-1b-it-Q4_K_M.gguf` |
-| Llama 3.2 1B Instruct | `hf://bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf` |
-| Llama 3.2 3B Instruct | `hf://bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf` |
-| DeepSeek-R1-Distill-Qwen 1.5B | `hf://bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf` |
-| Phi-4-mini Instruct (3.8B) | `hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf` |
-
-Which model suits which phone: [REAL_PHONES.md](REAL_PHONES.md#choosing-a-model-per-phone-class).
-
-### Device classes and fit
-
-| Class | RAM |
-|---|---|
-| `xs` | < 3 GiB |
-| `s` | 3–5 GiB |
-| `m` | 5–7 GiB |
-| `l` | 7–10 GiB |
-| `xl` | 10 GiB+ |
-
-The catalog estimates the RAM a model needs at a 16k context: resident bytes
-+ an f16 KV cache for 16384 tokens (or the trained context, if smaller) +
-150 MiB. `FITS (16k)` in `pbctl models` lists the classes whose smallest
-phone has at least that estimate plus 2 GiB for Android. This is a
-conservative class-level guide.
-
-Once a phone has sent a heartbeat, placement uses its **actual memory
-budget** instead (the same accounting its agent uses), also trying a q8_0 KV
-cache and a context halved down to 4096. So a phone with more real headroom
-than the 2 GiB guess can get a model `FITS (16k)` does not list. `pbctl
-placement` shows each phone's budget in `BUDGET`.
-
-Recommendations (`pbctl models recommend <id> classes=s,m tiers=t2,t3`) and
-tags are notes for operators and the panel; the planner does not use them.
-
-### Performance tiers and predicted speed
-
-Generation speed on phones is memory-bandwidth bound. From each node's
-self-test the controller computes an effective bandwidth
-(`gen tok/s × resident bytes`) and a tier:
-
-| Tier | Bandwidth |
-|---|---|
-| `t1` | < 4 GB/s |
-| `t2` | 4–10 GB/s |
-| `t3` | 10–25 GB/s |
-| `t4` | 25 GB/s+ |
-| `?` | not measured yet |
-
-```sh
-pbctl nodes      # CLASS column shows "m/t2": RAM class / performance tier
-pbctl classes    # RAM classes, then performance tiers, with node counts
-```
-
-`gen_gbps`, `prompt_gbps` and `perf_tier` appear on `/admin/nodes`,
-`Placement.nodes` and the panel. A node's value survives restarts
-(`routing.json`) and is refreshed after every model switch.
-
-The planner predicts a candidate model's speed on a node as
-`gen_gbps × 1e9 / resident_bytes` and skips nodes below the policy's
-`min_tok_s`, or else `-min-predicted-tok-s` (default 3). A node with no
-measurement is never excluded. A pin still places below the threshold, with a
-warning. This is unrelated to a pool's `min_gen_tps`, which filters nodes by
-what they already serve. Numbers behind this: [BENCHMARKS.md](BENCHMARKS.md#effective-bandwidth-and-performance-tiers).
-
-```sh
-pbctl placement set google_gemma-3-1b-it-q4_k_m percent=50 min_tok_s=4
-pbctl placement   # PRED TOK/S column
-```
-
-### Placement policies
-
-One phone serves one model. Policies apply in this order:
-
-1. **pin**: these phones serve the model, even if it does not fit or is
-   predicted too slow (with a warning).
-2. **replicas**: this many phones.
-3. **percent**: this share of the phones where it fits (rounded half up, at
-   least one).
-4. **default model**: every unclaimed phone where it fits.
-5. Otherwise a phone **keeps** what it serves (e.g. its `pcprov -model` file).
-
-`classes=` limits replicas and percent policies to those classes;
-`min_tok_s=` excludes phones predicted slower. Bigger models choose first and
-get the faster phones. A phone already serving a model stays on it. Drained
-phones only follow pins.
-
-```sh
-pbctl placement set qwen2.5-1.5b-instruct-q4_k_m replicas=2 classes=m,l
-pbctl placement set llama-3.2-3b-instruct-q4_k_m pin=5f1e2d3c4b5a6978
-pbctl placement set google_gemma-3-1b-it-q4_k_m percent=50
-pbctl models default qwen2.5-0.5b-instruct-q4_k_m
-pbctl placement preview set google_gemma-3-1b-it-q4_k_m percent=100   # what would change; applies nothing
-pbctl placement                    # policies, plan per phone, states, warnings
-pbctl placement unset google_gemma-3-1b-it-q4_k_m
-```
-
-The plan is recomputed on every change, when phones join, leave or are
-drained, when a model becomes ready, and every 10 s. Phones learn their
-assignment from the next heartbeat reply, download from
-`/v1/model-files/<id>`, size and load the model (see
-[ARCHITECTURE.md](ARCHITECTURE.md#model-placement-and-switching)). While a
-phone switches it gets no requests. A policy for a model still downloading
-waits, with a warning. A model used by a policy or the default cannot be
-removed.
-
-Policies and the default model are saved to `<state-dir>/placement.json`,
-the catalog to `<state-dir>/models.json`.
-
-## Multi-model benchmark (MMB)
-
-MMB measures how every model runs on the chosen phones, so models and
-phones can be compared on real numbers (ADR-028). For each phone it loads,
-one after the other, every ready catalog model that fits the phone (or the
-models you pick), and times the same three requests on each:
-
-| Column | What it measures |
-|---|---|
-| Load | from switching the model until the phone serves it: download (first time) + load |
-| Cold TTFT | time to first token of a ~500-token prompt with an empty cache |
-| Prompt t/s | prompt processing speed of that request (llama.cpp timings) |
-| Gen t/s | generation speed over a fixed 128 tokens (`ignore_eos`) |
-| Warm TTFT | time to first token of a second request with the same long prefix: the answer after the first prompt, from the prompt cache |
-| Cache × | cold TTFT ÷ warm TTFT |
-| Short | total time of a one-line question |
-
-How to read them: **Gen t/s** is how fast text appears (chat, long answers)
-and is mostly limited by memory bandwidth and model size. **Prompt t/s**
-decides the wait for long inputs: an agent prompt of 10k tokens takes ~17
-minutes at 10 t/s. **Warm TTFT** is what a follow-up message in a
-conversation feels like, thanks to the prompt cache. **Load** is the cost of
-switching models on a phone; only the first load includes the download.
-
-```sh
-pbctl mmb run nodes=pixel                                   # every model that fits the Pixel
-pbctl mmb run nodes=pixel,poco models=qwen3-4b-instruct-2507-q4_k_m,gemma-3n-e2b-it-q4_k_m
-pbctl mmb run pool=smart parallel                           # every phone of the pool, at the same time
-pbctl mmb                                                   # runs
-pbctl mmb show <id>                                         # results table
-pbctl mmb cancel <id>                                       # stop; the phones get their models back
-```
-
-The panel's **MMB** view does the same: choose phones or a pool, models
-(none = all that fit) and one by one or at the same time. It shows the runs
-live and:
-
-- **Phones × models**: phones as rows, models as columns, one parameter at a
-  time chosen with the buttons above the table (Gen t/s, Prompt t/s, Cold
-  TTFT, Warm TTFT, Cache ×, Short, Load); ★ marks the best phone for each
-  model, and hovering a cell shows all its values. **Combine all runs**
-  fills the table with the latest result of every phone and model over all
-  runs, so phones benchmarked separately can be compared.
-- **Results** of the selected run: every value per phone and model, with
-  the best of each column marked, tokens in/out, the context and KV cache
-  the phone chose, and why a model failed or was skipped.
-- **What the parameters mean**: what each one measures, whether lower or
-  higher is better, and how to read it.
-
-While a phone is benchmarked it is drained (no normal traffic, so it does
-not skew the numbers) and its model is forced with a benchmark override
-(placement reason `benchmark`, kept in memory only). When its models are
-done, or the run is cancelled, the override goes and the phone gets its
-placement and drain state back; a controller restart drops a running run
-(marked `cancelled`) and leaves the phones normal. One run at a time. A
-model whose resident size exceeds the phone's RAM budget, or whose class
-does not fit, is not tried. Runs are stored in `<state-dir>/mmb/`. Expect
-minutes per model: the first load downloads the model to the phone.
 
 ## Virtual models, pools and aliases
 
@@ -770,6 +497,10 @@ curl -X POST http://127.0.0.1:18080/admin/prewarm \
   -d '{"target":"pool/fast","messages":[{"role":"system","content":"You are a terse reviewer."}]}'
 # {"results":[{"node_id":"mi8-6f3a","alias":"phone-01","ok":true,"ms":4210,"error":""}, ...]}
 ```
+
+**Pools** — routing, filters and member eligibility with reasons.
+
+![Pools: routing, filters and member eligibility with reasons.](images/panel-pools.png)
 
 ## Tool-capable routing
 
@@ -921,6 +652,8 @@ The orchestrator sees a short list of the pool's other ready members (the
 sends self-contained subtasks to the workers, which the gateway runs in
 parallel, and then writes the final answer from their results.
 
+[![Super Borg: a chat request to pool/NAME goes to the orchestrator phone, which calls the delegate tool; workers answer the tasks in parallel and the results return as tool messages, up to 2 delegation rounds, then a final answer](../assets/diagrams/superborg-delegate.png)](../assets/diagrams/src/superborg-delegate.svg)
+
 Everything else keeps working next to it: plain model ids, `auto`, other
 pools and `node/<alias>` are routed as usual, so a fleet can be split, e.g.
 half the phones in a Super Borg pool and the rest in pools for opencode.
@@ -989,6 +722,8 @@ work in the background on the controller and keeps everything it produces:
 - a **workspace of documents** (`plan`, `characters`, `chapter_01`, …),
 - a **progress log**, and the user's later instructions.
 
+[![Super Borg jobs: entry points (pbctl jobs new, start_job, MCP job_start) feed a job queue on the controller; a step loop builds a compact job view, makes one stateless orchestrator call with exactly one tool, and stores documents; delegate runs tasks on worker phones in parallel](../assets/diagrams/jobs-loop.png)](../assets/diagrams/src/jobs-loop.svg)
+
 ```sh
 pbctl jobs new title="Magic castle" pool=borg Write a story for a 5-year-old about a magic castle: 20 chapters of about 3 minutes of reading each
 pbctl jobs                       # all jobs: status, steps, tasks done/total
@@ -1007,6 +742,10 @@ rendered in the panel), **Download .md**, Cancel and Delete. A chat request
 to a Super Borg pool that needs this kind of work makes the orchestrator
 call `start_job`: the chat answer names the new job, which runs on the same
 pool and whose goal is your message verbatim.
+
+**Jobs** — Super Borg jobs: task list, documents, progress, and instructions for a running job.
+
+![Jobs: a job on pool/writer with its tasks, documents and progress.](images/panel-jobs.png)
 
 How a job runs:
 
@@ -1059,6 +798,8 @@ controller's host loads the model from the catalog and spreads every layer
 over them. Clients use `pool/<name>` as the model. With many phones, set
 some aside as one or more Big Brains and keep the rest serving as before.
 
+[![Big Brain: a client calls pool/brain; the gateway passes one request at a time to the head llama-server on 127.0.0.1:18200+, which spreads the layers over phones running ggml-rpc-server via adb forwards; supervisor states preparing, loading, ready, error](../assets/diagrams/bigbrain-rpc.png)](../assets/diagrams/src/bigbrain-rpc.svg)
+
 One-time setup on the controller's host (cmake and a C++ compiler):
 
 ```sh
@@ -1067,8 +808,8 @@ make llama-head         # bin/llama-head/llama-server, same LLAMA_TAG as the pho
 controller ... -bigbrain-head bin/llama-head/llama-server   # -bigbrain-port 18200: first head port
 ```
 
-Then re-provision the phones (pcprov restart or **Provision now**) so the
-agents get `--rpc-server`. Add the model to the catalog
+Then re-provision the phones (pcprov restart or **Provision**) so the
+agents get `-rpc-server`. Add the model to the catalog
 ([Adding models](#adding-models)) and create the pool:
 
 ```sh
@@ -1102,8 +843,8 @@ phone's share; **Stop**/**Start** release and retake the phones.
   for 14–20 GB); the phones cache their share in `rpc-cache/` on flash, one
   model at a time, so a reload of the same model takes a few minutes.
 - **Timeouts**: prompt processing runs at 1–10 tok/s; a long prompt needs a
-  generous `-first-token-timeout`. The head takes one request at a time
-  (`MaxConcurrency 1`); others wait in the gateway.
+  generous `-first-token-timeout`. The head serves one request at a time
+  (`MaxConcurrency 1`); a second concurrent request gets 503 `busy`.
 - **Isolation**: the head is reachable only as `pool/<name>`; `auto` and
   the model id never route to it.
 
@@ -1116,14 +857,14 @@ on `node/mac`, its subagents on phone pools. Design: ADR-016.
 
 ```sh
 # LM Studio on the Mac (Developer tab: start the server, port 1234)
-pbctl external add mac http://192.168.1.20:1234 models=qwen2.5-coder-14b-instruct ctx=32768
+pbctl external add mac http://<mac-host>:1234 models=qwen2.5-coder-14b-instruct ctx=32768
 # oMLX (port 8000)
-pbctl external add mac-mlx http://192.168.1.20:8000
+pbctl external add mac-mlx http://<mac-host>:8000
 # Ollama (port 11434, its OpenAI-compatible API is under /v1)
-pbctl external add ollama http://192.168.1.20:11434 models=qwen2.5-coder:14b concurrency=2
+pbctl external add ollama http://<mac-host>:11434 models=qwen2.5-coder:14b concurrency=2
 # llama-server on a PC, started with --api-key
 echo 'sk-...' > pc-key && chmod 600 pc-key
-pbctl external add pc http://192.168.1.30:8080 key-file=pc-key ctx=16384
+pbctl external add pc http://<pc-host>:8080 key-file=pc-key ctx=16384
 pbctl external                      # state, models, in-flight/limit, tok/s
 pbctl nodes                         # phones and external nodes (KIND column)
 ```
@@ -1208,10 +949,10 @@ and check while the phones do the work:
 
 ```sh
 # Ollama on a desktop (its OpenAI-compatible API is under /v1)
-pbctl external add brain http://192.168.1.20:11434 models=qwen3:30b-a3b role=orchestrator
+pbctl external add brain http://<desktop-host>:11434 models=qwen3:30b-a3b role=orchestrator
 # oMLX or LM Studio on a Mac (the server must listen on the LAN, not 127.0.0.1)
 echo 'sk-...' > omlx-key && chmod 600 omlx-key
-pbctl external add mac http://192.168.1.20:8000 key-file=omlx-key models=Qwen3-30B-A3B-Instruct-2507-4bit role=orchestrator
+pbctl external add mac http://<mac-host>:8000 key-file=omlx-key models=Qwen3-30B-A3B-Instruct-2507-4bit role=orchestrator
 # A hosted API, e.g. DeepSeek (pay per token: role=orchestrator keeps other traffic away)
 echo 'sk-...' > deepseek-key && chmod 600 deepseek-key
 pbctl external add deepseek https://api.deepseek.com key-file=deepseek-key models=deepseek-chat ctx=65536 role=orchestrator
@@ -1227,203 +968,6 @@ best phone. `pbctl external` shows the ROLE column; `role=worker` turns a
 node back into a normal one. The controller polls `/v1/models` every 10 s
 and self-tests each new model once with a 32-token request, which a hosted
 API bills like any other call.
-
-## Admin tokens
-
-The token in `-admin-token-file` is the `admin` token; `pcprov` and scripts
-read it from that file. Give every other operator or device its own named
-token, so the audit log shows who changed what:
-
-```sh
-pbctl admin-tokens create laptop     # prints the token once: sign in to the panel with it
-pbctl admin-tokens                   # admin (-admin-token-file) and the named tokens
-pbctl admin-tokens revoke laptop     # stops working at once
-```
-
-The same is in the panel under API keys → Admin tokens. Every admin change
-is logged with the token's name, e.g.
-`"msg":"admin action","principal":"laptop","action":"placement_set"`, next
-to the client address. Named tokens are stored as SHA-256 hashes in
-`-admin-tokens-file` (default `<state-dir>/admin-tokens`, mode 0600); the
-token itself is shown only when it is created. All admin tokens have the
-same rights (ADR-026).
-
-## API keys
-
-Each key has an owner name; usage is counted per name. The gateway runs in
-one of two modes:
-
-- **open** (default without `-api-keys-file`): requests without a key, or
-  with an unknown one, are served as `anonymous`; known keys are counted
-  under their name.
-- **keys** (default with `-api-keys-file`): requests without a valid key get
-  401. Clients send `Authorization: Bearer <key>` or `x-api-key: <key>`.
-
-```sh
-pbctl keys create alice          # prints the key once: pb-...  store it now
-pbctl keys                       # names, creation time, usage; never the keys
-pbctl keys revoke alice          # immediate
-```
-
-- With `-api-keys-file`, changes are written to that file atomically, mode
-  0600, as SHA-256 hashes: `alice sha256:<hex> 2026-09-23T10:00:00Z`. Legacy
-  `<name> <key>` lines still work and are rewritten as hashes on the first
-  change.
-- Without `-api-keys-file`, keys live in memory and are lost on restart
-  (pbctl says so).
-- After editing the file by hand: `kill -HUP <controller pid>`. A broken file
-  is rejected and the current keys stay.
-- Creating keys does not close an open gateway. Enforce with
-  `pbctl gateway set auth=keys` once every client sends one. Switching back
-  to open needs a restart without `-api-keys-file` (ADR-008).
-
-## Access control
-
-`-gateway-access` controls who may use the inference and listing endpoints
-(`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/api/*`) without
-an API key. It never affects the node protocol (`/v1/register`,
-`/v1/benchmark`, `/v1/heartbeat`, `/v1/model-files`, `/v1/nodes`),
-`/metrics`, `/healthz`, `/ui/` or `/admin/`, which keep their own trust
-models (see [ARCHITECTURE.md](ARCHITECTURE.md#security-model)) (ADR-017).
-
-| Mode | Behaviour |
-|---|---|
-| `local` (default) | peers in `-trusted-cidrs` are served without a key, as principal `local`; everyone else must send a valid key or gets `403 remote_requires_api_key` |
-| `keys` | every request needs a valid key (same as running `pbctl gateway set auth=keys`) |
-| `open` | anyone is served, unauthenticated (today's pre-ADR-017 behaviour); the controller logs a warning at startup |
-
-```sh
-bin/controller -gateway-access local -trusted-cidrs 127.0.0.0/8,::1/128,10.0.0.0/8 ...
-```
-
-A valid API key always identifies its owner, in every mode. The runtime
-switch `pbctl gateway set auth=keys` (`PUT /admin/gateway
-{"auth_mode":"keys"}`) still works and wins over `-gateway-access`: once
-keys are enforced, `local` and `open` both behave like `keys` until a
-restart. `GET /admin/gateway` and `pbctl gateway` show the effective mode as
-`access`.
-
-By default `X-Forwarded-For` is never trusted (a client could otherwise
-claim any address). Set `-trusted-proxies` to the CIDR of a reverse proxy
-you run in front of the controller; the first address in `X-Forwarded-For`
-is then used instead of the direct peer, but only for connections that
-themselves come from a listed proxy.
-
-**Docker note.** A containerized controller sees connections from the
-compose bridge network's gateway address, not `127.0.0.1`. The dev stack in
-`deploy/docker-compose.yml` therefore does both: it publishes every port
-(18080, 11434, 9090, 3000 and the emulated phones' adb ports) on the host's
-`127.0.0.1` only, and passes `-trusted-cidrs 127.0.0.0/8,::1/128,172.16.0.0/12`
-so host connections arriving through the Docker bridge count as local. Other
-machines cannot reach the stack at all. To serve other machines, publish the
-controller port on `0.0.0.0`, create API keys (`pbctl keys create`) and give
-each client its key; requests from them without a key get 403.
-
-Denials are counted in
-`phoneborg_gateway_rejected_total{reason="remote_requires_api_key"}`.
-Existing clients that already send an API key (e.g. `pbctl`'s admin calls,
-or opencode/OpenAI clients configured with `PHONEBORG_API_KEY`) are
-unaffected by the default `local` mode; only unauthenticated remote traffic
-newly needs one.
-
-## Draining a phone for maintenance
-
-```sh
-pbctl nodes                      # find the node id (serial or android_id)
-pbctl drain 5f1e2d3c4b5a6978     # no new requests; running ones finish
-pbctl nodes                      # wait until INFLIGHT is 0
-# unplug, reflash, cool down, replace the battery...
-pbctl undrain 5f1e2d3c4b5a6978
-```
-
-Pinned sessions move to other phones on their next request. The drain is
-kept by node id, so it survives the phone re-registering, but not a
-controller restart. The panel and `/status` show **DRAINED**; Prometheus has
-`phoneborg_node_drained{node_id}`.
-
-`pbctl forget <id>` removes a node, e.g. a retired phone. A running phone
-registers again on its next heartbeat. Requests in flight on a forgotten
-node are retried elsewhere, so drain first if they should finish.
-
-## Firmware check
-
-Every phone reports its build, security patch date and bootloader state;
-the **Nodes** view shows them in the **Firmware** column, with the patch
-age in months (green up to 3, amber up to 12, red above), and in the node
-details (ADR-030).
-
-With `-firmware-check` the controller also looks for newer firmware once a
-day:
-
-| Phones | Source | Shows |
-|---|---|---|
-| any phone LineageOS supports | LineageOS build API | a newer nightly (`update`), a newer version (`upgrade`), or LineageOS for a phone on stock firmware (`alternative`) |
-| Google Pixel | Google's full OTA image page | a newer factory build (`update`) |
-| Xiaomi, Redmi, POCO | XiaomiFirmwareUpdater tracker (community) | a newer MIUI/HyperOS build of the same region (`update`) |
-| Samsung, OnePlus, others | none | the patch age only |
-
-The badge **update** means a newer build of what the phone runs;
-**LineageOS** means an official LineageOS build exists. The details list
-each with its date, a download link and notes (e.g. that the bootloader is
-locked). Flashing stays manual: drain the phone first
-(`pbctl drain <alias>`); after it boots again, `pcprov watch` provisions it.
-
-```sh
-curl -s -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0.1:18080/admin/firmware        # the report
-curl -s -X POST -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0.1:18080/admin/firmware/check   # check now
-```
-
-The first check runs a minute after the controller starts; a phone that
-appears later is covered within the next hour. A source that fails keeps
-its previous result and is listed under `errors`. The phone fields need the
-agent from 2026-10 or later; re-provision older ones
-(`pbctl devices provision <serial>`).
-
-## Gateway settings
-
-```sh
-pbctl gateway                                    # current settings
-pbctl gateway set policy=least_inflight          # plain load balancing
-pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 extra in-flight requests
-pbctl gateway set timeout=900s                   # silence limit once a response has started
-pbctl gateway set first_token_timeout=45m        # wait for the first token (prompt processing)
-pbctl gateway set thermal_limit=70               # phones at/above 70 °C get no new sessions; 0 disables
-pbctl gateway set router=on router_classifier=node/pixel   # semantic router and its classes: pbctl router, see above
-```
-
-Two time limits apply to every proxied call (ADR-024). Until the node sends
-its first byte, the **first-token timeout** applies: that wait is prompt
-processing, and an agent prompt of 10k+ tokens (opencode's build agent
-sends ~11.7k) takes a phone 10–15 minutes at 12–17 tok/s. From the first
-byte on, the **upstream timeout** is the longest silence between chunks, so
-a node that keeps generating is never cut off. A non-streaming response
-arrives in one piece, so for it the first-token timeout covers the whole
-request. Changes apply to requests that start afterwards.
-
-Changes apply at once and are not saved. After a restart the controller uses
-its flags again: policy `affinity` with `spill=2`, `-upstream-timeout`, `-first-token-timeout`,
-`-thermal-limit-c` (default 75 °C). A hot phone gets no new sessions unless
-every ready phone is hot, and loses its pinned sessions to a cooler one
-(ADR-010).
-
-## Usage statistics
-
-```sh
-pbctl stats
-```
-
-Shows uptime, nodes by state, drained and ready phones, models, then usage by
-API key and by node: requests, errors, prompt, cached prompt and completion
-tokens, average generation speed (token-weighted) and last use.
-
-- **Since start**: always.
-- **Since first use**: only with `-state-dir`; saved to `usage.json` every
-  30 s and on SIGINT/SIGTERM. A corrupt `usage.json` stops startup; move it
-  away to start from zero.
-
-Key counts include only client requests. A failed attempt retried on another
-phone counts as an error for that node, not as a request for the key. Errors
-are all outcomes other than 200, including disconnected clients (499).
 
 ## OpenCode agent bridge
 
@@ -1486,7 +1030,7 @@ the snippet printed instead):
     "type": "local",
     "command": ["/usr/local/bin/pbctl", "mcp"],
     "enabled": true,
-    "environment": {"PHONEBORG_URL": "http://10.10.100.81:18080", "PHONEBORG_ADMIN_TOKEN": "{env:PHONEBORG_ADMIN_TOKEN}"}
+    "environment": {"PHONEBORG_URL": "http://<controller-host>:18080", "PHONEBORG_ADMIN_TOKEN": "{env:PHONEBORG_ADMIN_TOKEN}"}
   }
 }
 ```
@@ -1556,6 +1100,413 @@ Spreading over phones gives parallelism; pool membership decides quality
 answers from the 0.5B phones; [BENCHMARKS.md](BENCHMARKS.md#parallel-agents-pool-vs-single-node)).
 Use a pool restricted to stronger models where correctness matters.
 
+---
+
+**Part 3 · Models and placement**
+
+*Choose the models and which phone serves which.*
+
+## Models and placement
+
+Phones provisioned with `pcprov -model FILE` serve that file until the
+controller says otherwise. The controller can keep a **catalog** of GGUF
+models and decide which phone serves which; phones download the file from the
+controller over USB and switch. Design: ADR-011, ADR-012.
+
+[![Placement flow: catalog add from https, hf or file; the controller downloads and checks the SHA-256; the model becomes ready; planner rules pin, replicas, percent, default_model and keep, with node filters; the assignment goes out as Desired in the heartbeat reply; the agent downloads, loads, self-tests and serves](../assets/diagrams/placement-flow.png)](../assets/diagrams/src/placement-flow.svg)
+
+### Adding models
+
+```sh
+pbctl models add hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf -tag chat -recommend m,l
+pbctl models                  # progress, then size, quantization, fits, tags
+```
+
+Sources:
+
+- `hf://<owner>/<repo>/<file>.gguf` → `https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf`;
+- any `https://` URL of a `.gguf` file;
+- `file:///absolute/path.gguf` on the controller's machine (inside the
+  container in the compose stack, so use `hf://` or `https://` there).
+
+The controller downloads into `-models-dir`, resumes interrupted downloads,
+computes the SHA-256, reads the GGUF metadata (architecture, parameters,
+quantization, trained context, layers, KV heads, resident bytes) and only
+then marks the model `ready`. A file that is not a valid GGUF (e.g. an HTML
+login page) ends as `error` and is deleted; adding the same id again retries.
+Split GGUF files and gated repositories are not supported.
+
+The model id is the file name without `.gguf`, lowercased
+(`Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` → `qwen2.5-0.5b-instruct-q4_k_m`), the
+same name phones serve when provisioned with that file. Use `-id` to choose
+another. Clients put the id in `"model"`.
+
+Phone-sized models (Q4 of 1–4B). File names change between uploads: **check
+the name on Hugging Face** first, and check each model's license (Gemma and
+Llama have their own terms; `pbctl models -json` shows the license recorded
+in the file).
+
+| Model | Source |
+|---|---|
+| Qwen2.5 1.5B Instruct | `hf://Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf` |
+| Gemma 3 1B it | `hf://bartowski/google_gemma-3-1b-it-GGUF/google_gemma-3-1b-it-Q4_K_M.gguf` |
+| Llama 3.2 1B Instruct | `hf://bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf` |
+| Llama 3.2 3B Instruct | `hf://bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf` |
+| DeepSeek-R1-Distill-Qwen 1.5B | `hf://bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf` |
+| Phi-4-mini Instruct (3.8B) | `hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf` |
+
+Which model suits which phone: [REAL_PHONES.md](REAL_PHONES.md#choosing-a-model-per-phone-class).
+
+**Models** — the catalog with download status, size, fit, tags and recommendations.
+
+![Models: the catalog with download status, size, fit, tags and recommendations.](images/panel-models.png)
+
+### Device classes and fit
+
+| Class | RAM |
+|---|---|
+| `xs` | < 3 GiB |
+| `s` | 3–5 GiB |
+| `m` | 5–7 GiB |
+| `l` | 7–10 GiB |
+| `xl` | 10 GiB+ |
+
+The catalog estimates the RAM a model needs at a 16k context: resident bytes
++ an f16 KV cache for 16384 tokens (or the trained context, if smaller) +
+150 MiB. `FITS (16k)` in `pbctl models` lists the classes whose smallest
+phone has at least that estimate plus 2 GiB for Android. This is a
+conservative class-level guide.
+
+Once a phone has sent a heartbeat, placement uses its **actual memory
+budget** instead (the same accounting its agent uses), also trying a q8_0 KV
+cache and a context halved down to 4096. So a phone with more real headroom
+than the 2 GiB guess can get a model `FITS (16k)` does not list. `pbctl
+placement` shows each phone's budget in `BUDGET`.
+
+Recommendations (`pbctl models recommend <id> classes=s,m tiers=t2,t3`) and
+tags are notes for operators and the panel; the planner does not use them.
+
+### Performance tiers and predicted speed
+
+Generation speed on phones is memory-bandwidth bound. From each node's
+self-test the controller computes an effective bandwidth
+(`gen tok/s × resident bytes`) and a tier:
+
+| Tier | Bandwidth |
+|---|---|
+| `t1` | < 4 GB/s |
+| `t2` | 4–10 GB/s |
+| `t3` | 10–25 GB/s |
+| `t4` | 25 GB/s+ |
+| `?` | not measured yet |
+
+```sh
+pbctl nodes      # CLASS column shows "m/t2": RAM class / performance tier
+pbctl classes    # RAM classes, then performance tiers, with node counts
+```
+
+`gen_gbps`, `prompt_gbps` and `perf_tier` appear on `/admin/nodes`,
+`Placement.nodes` and the panel. A node's value survives restarts
+(`routing.json`) and is refreshed after every model switch.
+
+The planner predicts a candidate model's speed on a node as
+`gen_gbps × 1e9 / resident_bytes` and skips nodes below the policy's
+`min_tok_s`, or else `-min-predicted-tok-s` (default 3). A node with no
+measurement is never excluded. A pin still places below the threshold, with a
+warning. This is unrelated to a pool's `min_gen_tps`, which filters nodes by
+what they already serve. Numbers behind this: [BENCHMARKS.md](BENCHMARKS.md#effective-bandwidth-and-performance-tiers).
+
+```sh
+pbctl placement set google_gemma-3-1b-it-q4_k_m percent=50 min_tok_s=4
+pbctl placement   # PRED TOK/S column
+```
+
+### Placement policies
+
+One phone serves one model. Policies apply in this order:
+
+1. **pin**: these phones serve the model, even if it does not fit or is
+   predicted too slow (with a warning).
+2. **replicas**: this many phones.
+3. **percent**: this share of the phones where it fits (rounded half up, at
+   least one).
+4. **default model**: every unclaimed phone where it fits.
+5. Otherwise a phone **keeps** what it serves (e.g. its `pcprov -model` file).
+
+`classes=` limits replicas and percent policies to those classes;
+`min_tok_s=` excludes phones predicted slower. Bigger models choose first and
+get the faster phones. A phone already serving a model stays on it. Drained
+phones only follow pins.
+
+```sh
+pbctl placement set qwen2.5-1.5b-instruct-q4_k_m replicas=2 classes=m,l
+pbctl placement set llama-3.2-3b-instruct-q4_k_m pin=5f1e2d3c4b5a6978
+pbctl placement set google_gemma-3-1b-it-q4_k_m percent=50
+pbctl models default qwen2.5-0.5b-instruct-q4_k_m
+pbctl placement preview set google_gemma-3-1b-it-q4_k_m percent=100   # what would change; applies nothing
+pbctl placement                    # policies, plan per phone, states, warnings
+pbctl placement unset google_gemma-3-1b-it-q4_k_m
+```
+
+The plan is recomputed on every change, when phones join, leave or are
+drained, when a model becomes ready, and every 10 s. Phones learn their
+assignment from the next heartbeat reply, download from
+`/v1/model-files/<id>`, size and load the model (see
+[ARCHITECTURE.md](ARCHITECTURE.md#model-placement-and-switching)). While a
+phone switches it gets no requests. A policy for a model still downloading
+waits, with a warning. A model used by a policy or the default cannot be
+removed.
+
+Policies and the default model are saved to `<state-dir>/placement.json`,
+the catalog to `<state-dir>/models.json`.
+
+**Placement** — device classes, performance tiers, policies and the current plan with predicted tok/s.
+
+![Placement: device classes, performance tiers, policies and the current plan with predicted tok/s.](images/panel-placement.png)
+
+## Multi-model benchmark (MMB)
+
+MMB measures how every model runs on the chosen phones, so models and
+phones can be compared on real numbers (ADR-028). For each phone it loads,
+one after the other, every ready catalog model that fits the phone (or the
+models you pick), and times the same three requests on each:
+
+| Column | What it measures |
+|---|---|
+| Load | from switching the model until the phone serves it: download (first time) + load |
+| Cold TTFT | time to first token of a ~500-token prompt with an empty cache |
+| Prompt t/s | prompt processing speed of that request (llama.cpp timings) |
+| Gen t/s | generation speed over a fixed 128 tokens (`ignore_eos`) |
+| Warm TTFT | time to first token of a second request with the same long prefix: the answer after the first prompt, from the prompt cache |
+| Cache × | cold TTFT ÷ warm TTFT |
+| Short | total time of a one-line question |
+
+How to read them: **Gen t/s** is how fast text appears (chat, long answers)
+and is mostly limited by memory bandwidth and model size. **Prompt t/s**
+decides the wait for long inputs: an agent prompt of 10k tokens takes ~17
+minutes at 10 t/s. **Warm TTFT** is what a follow-up message in a
+conversation feels like, thanks to the prompt cache. **Load** is the cost of
+switching models on a phone; only the first load includes the download.
+
+```sh
+pbctl mmb run nodes=pixel                                   # every model that fits the Pixel
+pbctl mmb run nodes=pixel,poco models=qwen3-4b-instruct-2507-q4_k_m,gemma-3n-e2b-it-q4_k_m
+pbctl mmb run pool=smart parallel                           # every phone of the pool, at the same time
+pbctl mmb                                                   # runs
+pbctl mmb show <id>                                         # results table
+pbctl mmb cancel <id>                                       # stop; the phones get their models back
+```
+
+The panel's **MMB** view does the same: choose phones or a pool, models
+(none = all that fit) and one by one or at the same time. It shows the runs
+live and:
+
+- **Phones × models**: phones as rows, models as columns, one parameter at a
+  time chosen with the buttons above the table (Gen t/s, Prompt t/s, Cold
+  TTFT, Warm TTFT, Cache ×, Short, Load); ★ marks the best phone for each
+  model, and hovering a cell shows all its values. **Combine all runs**
+  fills the table with the latest result of every phone and model over all
+  runs, so phones benchmarked separately can be compared.
+- **Results** of the selected run: every value per phone and model, with
+  the best of each column marked, tokens in/out, the context and KV cache
+  the phone chose, and why a model failed or was skipped.
+- **What the parameters mean**: what each one measures, whether lower or
+  higher is better, and how to read it.
+
+**MMB** — multi-model benchmark runs, the phone × model table for one parameter, and the legend.
+
+![MMB: benchmark runs and the phone × model table.](images/panel-mmb.png)
+
+While a phone is benchmarked it is drained (no normal traffic, so it does
+not skew the numbers) and its model is forced with a benchmark override
+(placement reason `benchmark`, kept in memory only). When its models are
+done, or the run is cancelled, the override goes and the phone gets its
+placement and drain state back; a controller restart drops a running run
+(marked `cancelled`) and leaves the phones normal. One run at a time. A
+model whose resident size exceeds the phone's RAM budget, or whose class
+does not fit, is not tried. Runs are stored in `<state-dir>/mmb/`. Expect
+minutes per model: the first load downloads the model to the phone.
+
+---
+
+**Part 4 · Daily operations**
+
+*The web panel and the routine tasks behind it.*
+
+## Web panel
+
+Open http://127.0.0.1:18080/ (redirects to `/ui/`). The panel needs the admin
+API (`-admin-token-file`). Sign in with the admin token; it is kept for this
+browser tab only (session storage) and sent as a bearer header. **Log out**
+forgets it. The panel loads nothing from the internet. There is no TLS, so
+use it on localhost or a trusted network.
+
+| View | What it does |
+|---|---|
+| Overview | Nodes by state; ready, drained and hot nodes; requests/s and tokens/s (last 30 s, computed in the browser); errors; models served; placement warnings; a **Virtual models** card listing `/v1/models` by kind (`auto`, `pool/<name>` with eligible node counts, `node/<alias>` with served model and readiness), each with a copy button for its `phoneborg/<id>` reference. |
+| Nodes | Every node with device, class/tier, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. Aliases are shown in place of ids. **Set alias**/**Edit alias**; drain, undrain and forget (with confirmation). Select a node for its inventory and runtime details. |
+| Devices | USB devices `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [USB device detection and provisioning](#usb-device-detection-and-provisioning)). |
+| Models | The catalog: download status, size, estimated RAM, fitting classes, tags. Add from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`; edit tags, recommended classes/tiers and the default flag; delete (the reason is shown if refused). |
+| Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
+| Pools | Pools routed as `pool/<name>`, each with a status badge (ready · N nodes, no ready node with the reason, disabled) and **Enable/Disable**: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
+| Proxy | Gateway settings: routing policy, affinity spill, upstream timeout, thermal limit, and enforcing API keys (one-way, with confirmation). Not saved across restarts. |
+| MMB | [Multi-model benchmark](#multi-model-benchmark-mmb): start a run on phones or a pool (models, one by one or at the same time), live runs, results table with the best values marked, and a model × phone comparison. |
+| Jobs | [Super Borg jobs](#super-borg-jobs): New job, the job list (live), and for the selected job its goal, your messages, tasks, documents (click to read, rendered as Markdown), progress log, a message box, **Preview result** (the assembled result rendered in the panel), **Download .md**, Cancel and Delete. |
+| Chat | Send a test chat completion from the browser: pick a model (concrete, `auto`, `pool/<name>` or `node/<alias>`; a Super Borg pool shows its delegation progress in the thinking block), an optional system prompt, a message; the reply streams in. Shows the serving node, token counts and tok/s (from the response's usage/timings) and latency after each reply; a "thinking" model's reasoning (`reasoning_content` deltas) shows in a collapsed block above the answer. A collapsed **Options** panel next to the model selector sets, per conversation: **Thinking** (Auto/Off/On — sends `chat_template_kwargs.enable_thinking`, verified against Qwen3); **Thinking language** (Auto/Polski/English/custom — seeds the reply with an assistant `<think>` prefix in that language, since Qwen3 ignores a plain system prompt for its own reasoning language; the UI splits the streamed `content` back into reasoning/answer at `</think>` itself, since llama-server does not emit `reasoning_content` when a prefill is used); and sampling params (temperature, top_p, top_k, min_p, repeat_penalty, max_tokens, seed), each sent only when set. **Reset to defaults** clears them; a new conversation starts from the last-used options. Options actually used are shown compactly in each reply's stats line (e.g. "temp 0.7 · think off · lang pl"). **Stop** ends a reply the model will not finish, keeping what arrived so far. A reply keeps streaming when you switch to another view or conversation and shows live again on return; only a reload or close cuts it off (marked interrupted). **New chat** starts a fresh conversation; a history list keeps up to 50 past conversations (title, model, last-used time) to reopen or delete. History (including options) is per-browser, kept in `localStorage`, not sent anywhere or synced across devices. |
+| API keys | Keys with their usage. Create (shown once, with a copy button) and revoke. Below them, **Admin tokens**: the named tokens for this panel and pbctl; create (shown once) and revoke. |
+| Usage | Requests, errors, prompt, cached and completion tokens, average tok/s and last use, per key and per node, since start or since first use (with `-state-dir`). |
+
+Chat goes through `POST /admin/chat/completions` and `GET /admin/chat/models`
+(admin token, not the gateway's own auth), so it works from a remote browser
+that holds only the admin token even under `-gateway-access local`, where
+such a browser is neither a trusted peer nor has an API key (ADR-018). The
+request is otherwise proxied through the normal gateway path — routing,
+failover, affinity, usage and metrics all apply — attributed to the
+principal `panel` in usage stats and `phoneborg_gateway_requests_total`, so
+it is never conflated with `anonymous`, `local` or a real API key's traffic.
+
+### Screenshots
+
+Taken on the four-phone cluster (OnePlus 10 Pro, POCO F3, Pixel 8 Pro, Mi 8) in 2026-10, while it served load on several pools and ran a Super Borg job.
+
+The other views' screenshots sit next to their topics: [Devices](#usb-device-detection-and-provisioning), [Models](#adding-models) and [Placement](#placement-policies), [Pools](#virtual-models-pools-and-aliases), [Chat](#sending-requests), [Jobs](#super-borg-jobs), [MMB](#multi-model-benchmark-mmb), [API keys](#api-keys), [Usage](#usage-statistics), [Proxy](#gateway-settings), [Nodes](#draining-a-phone-for-maintenance), [Node details](#firmware-check), [Tokens](#token-analyzer), and [Dashboards](#grafana-in-the-panel).
+
+**Sign-in screen** — the token field is a password field.
+
+![Sign-in screen (the token field is a password field).](images/panel-login.png)
+
+**Overview** — cluster health, throughput, models served, placement warnings and virtual models.
+
+![Overview: cluster health, throughput, models served, placement warnings and virtual models.](images/panel-overview.png)
+
+Live views refresh every 5 s. **Settings** sets the Grafana and Prometheus
+links (default: ports 3000 and 9090 on the controller's host), or open
+`/ui/?grafana=URL&prometheus=URL` once. Against a controller without the
+models or pools API, those views say so and the rest works.
+
+## Draining a phone for maintenance
+
+```sh
+pbctl nodes                      # find the node id (serial or android_id)
+pbctl drain 5f1e2d3c4b5a6978     # no new requests; running ones finish
+pbctl nodes                      # wait until INFLIGHT is 0
+# unplug, reflash, cool down, replace the battery...
+pbctl undrain 5f1e2d3c4b5a6978
+```
+
+Pinned sessions move to other phones on their next request. The drain is
+kept by node id, so it survives the phone re-registering, but not a
+controller restart. The panel and `/status` show **DRAINED**; Prometheus has
+`phoneborg_node_drained{node_id}`.
+
+`pbctl forget <id>` removes a node, e.g. a retired phone. A running phone
+registers again on its next heartbeat. Requests in flight on a forgotten
+node are retried elsewhere, so drain first if they should finish.
+
+**Nodes** — firmware with patch age and update badges, class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.
+
+![Nodes: class/tier, state badges, model and build, threads, context, measured tok/s, RAM, temperature.](images/panel-nodes.png)
+
+## Gateway settings
+
+[![Life of a request in the gateway: auth, resolve model (auto, model id, pool, node), optional semantic router, candidate filter, picker (affinity, spill, thermal, spread), forward and stream to the phone's llama-server; errors 401, 403, 404, 400, 502 backends_failed, 503 busy, and one retry elsewhere before the first byte](../assets/diagrams/gateway-routing.png)](../assets/diagrams/src/gateway-routing.svg)
+
+```sh
+pbctl gateway                                    # current settings
+pbctl gateway set policy=least_inflight          # plain load balancing
+pbctl gateway set policy=affinity spill=3        # session affinity, tolerate 3 extra in-flight requests
+pbctl gateway set timeout=900s                   # silence limit once a response has started
+pbctl gateway set first_token_timeout=45m        # wait for the first token (prompt processing)
+pbctl gateway set thermal_limit=70               # phones at/above 70 °C get no new sessions; 0 disables
+pbctl gateway set router=on router_classifier=node/pixel   # semantic router and its classes: pbctl router, see above
+```
+
+Two time limits apply to every proxied call (ADR-024). Until the node sends
+its first byte, the **first-token timeout** applies: that wait is prompt
+processing, and an agent prompt of 10k+ tokens (opencode's build agent
+sends ~11.7k) takes a phone 10–15 minutes at 12–17 tok/s. From the first
+byte on, the **upstream timeout** is the longest silence between chunks, so
+a node that keeps generating is never cut off. A non-streaming response
+arrives in one piece, so for it the first-token timeout covers the whole
+request. Changes apply to requests that start afterwards.
+
+Changes apply at once and are not saved. After a restart the controller uses
+its flags again: policy `affinity` with `spill=2`, `-upstream-timeout`, `-first-token-timeout`,
+`-thermal-limit-c` (default 75 °C). A hot phone gets no new sessions unless
+every ready phone is hot, and loses its pinned sessions to a cooler one
+(ADR-010).
+
+**Proxy** — gateway routing policy, spill, timeout, thermal limit and key enforcement.
+
+![Proxy: gateway routing policy, spill, timeout, thermal limit and key enforcement.](images/panel-proxy.png)
+
+## Usage statistics
+
+```sh
+pbctl stats
+```
+
+Shows uptime, nodes by state, drained and ready phones, models, then usage by
+API key and by node: requests, errors, prompt, cached prompt and completion
+tokens, average generation speed (token-weighted) and last use.
+
+- **Since start**: always.
+- **Since first use**: only with `-state-dir`; saved to `usage.json` every
+  30 s and on SIGINT/SIGTERM. A corrupt `usage.json` stops startup; move it
+  away to start from zero.
+
+Key counts include only client requests. A failed attempt retried on another
+phone counts as an error for that node, not as a request for the key. Errors
+are all outcomes other than 200, including disconnected clients (499).
+
+**Usage** — requests and tokens per API key and per node.
+
+![Usage: requests and tokens per API key and per node.](images/panel-usage.png)
+
+## Firmware check
+
+Every phone reports its build, security patch date and bootloader state;
+the **Nodes** view shows them in the **Firmware** column, with the patch
+age in months (green up to 3, amber up to 12, red above), and in the node
+details (ADR-030).
+
+With `-firmware-check` the controller also looks for newer firmware once a
+day:
+
+| Phones | Source | Shows |
+|---|---|---|
+| any phone LineageOS supports | LineageOS build API | a newer nightly (`update`), a newer version (`upgrade`), or LineageOS for a phone on stock firmware (`alternative`) |
+| Google Pixel | Google's full OTA image page | a newer factory build (`update`) |
+| Xiaomi, Redmi, POCO | XiaomiFirmwareUpdater tracker (community) | a newer MIUI/HyperOS build of the same region (`update`) |
+| Samsung, OnePlus, others | none | the patch age only |
+
+The badge **update** means a newer build of what the phone runs;
+**LineageOS** means an official LineageOS build exists. The details list
+each with its date, a download link and notes (e.g. that the bootloader is
+locked). Flashing stays manual: drain the phone first
+(`pbctl drain <alias>`); after it boots again, `pcprov watch` provisions it.
+
+```sh
+curl -s -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0.1:18080/admin/firmware        # the report
+curl -s -X POST -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0.1:18080/admin/firmware/check   # check now
+```
+
+The first check runs a minute after the controller starts; a phone that
+appears later is covered within the next hour. A source that fails keeps
+its previous result and is listed under `errors`. The phone fields need the
+agent from 2026-10 or later; re-provision older ones
+(`pbctl devices provision <serial>`).
+
+**Node details** — firmware with the newer builds and their download links, inventory and runtime as reported in heartbeats.
+
+![Node details: inventory and runtime as reported in heartbeats.](images/panel-node-details.png)
+
+---
+
+**Part 5 · Monitoring**
+
+*Prometheus metrics and Grafana dashboards.*
+
 ## Grafana and Prometheus
 
 `make cluster-up` provisions Prometheus on http://127.0.0.1:9090 and Grafana
@@ -1610,6 +1561,14 @@ user may do is Grafana's decision: with anonymous Viewer access the
 dashboards are read-only. Grafana's own port, if still open, now answers at
 `http://<host>:3000/grafana/`.
 
+**Dashboards** — the Grafana dashboard inside the panel, served by the controller under `/grafana/` ([Grafana in the panel](#grafana-in-the-panel)).
+
+![Dashboards: the PhoneBorg Grafana dashboard embedded in the panel.](images/panel-dashboards.png)
+
+**Dashboards → Node** — the analytics of one phone, chosen by alias.
+
+![Node analytics: one phone's state, tokens and health.](images/panel-node-analytics.png)
+
 ### Token analyzer
 
 The panel's **Tokens** view counts a text's tokens with every model the
@@ -1625,6 +1584,10 @@ curl -s -X POST -H "Authorization: Bearer $PHONEBORG_ADMIN_TOKEN" http://127.0.0
 ```
 
 Counts include no chat template. Texts are limited to 256 KiB.
+
+**Tokens** — the [token analyzer](#token-analyzer): counts per served model, share of the context, reading time, the text split into tokens, and token usage below.
+
+![Tokens: token counts per model, the text split into tokens and token usage.](images/panel-tokens.png)
 
 ### Dashboard screenshots
 
@@ -1682,6 +1645,12 @@ enable the flag; add it to your own Prometheus too. Tokens of a stream
 that is cut off (Stop in the chat, a closed client) are counted from the
 streamed chunks, as completion tokens only.
 
+---
+
+**Part 6 · Troubleshooting**
+
+*Symptoms, causes and fixes.*
+
 ## Troubleshooting
 
 Phone-side problems (adb, SIGILL, sleep, thermal) are in
@@ -1696,6 +1665,12 @@ Phone-side problems (adb, SIGILL, sleep, thermal) are in
 | 503 `no ready nodes` | no phone is `ACTIVE` with a ready runtime | `pbctl nodes`, then [REAL_PHONES.md](REAL_PHONES.md#troubleshooting) |
 | 502 `backends_failed` | both attempts failed | controller log `backend failed`, the phone's `runtime.log` |
 | 401 `invalid_api_key` | keys enforced, key missing or wrong | `pbctl keys`; send `Authorization: Bearer <key>` |
+| 403 `remote_requires_api_key` | `-gateway-access local` (default): the client is not in `-trusted-cidrs` and sent no valid key | `pbctl keys create <name>` and send the key, or add the client's network to `-trusted-cidrs` ([Access control](#access-control)) |
+| 503 `pool_disabled` | the pool is switched off | `pbctl pools set <name> enabled=on` |
+| 503 `busy` | every candidate is at its concurrency limit: an external node at `max_concurrency`, or a Big Brain head already serving a request | retry later; raise `concurrency=` of the external node; a Big Brain head takes one request at a time |
+| Big Brain pool stays `preparing` or `error` | members not in `rpc` mode (the reason names them), or the model × 1.05 is more than the members' usable RAM (free RAM − 900 MiB each) | re-provision the phones so the agents get `-rpc-server`; add phones or pick a smaller model; head log `<state-dir>/bigbrain/<pool>.log` ([Big Brain pools](#big-brain-pools)) |
+| Router always answers `X-Phoneborg-Route: fallback` | the classifier's model (e.g. Gemma 3/3n, sliding-window attention) cannot reuse the prompt cache, so every decision reprocesses the prompt and hits `router_timeout` | use a Qwen3 or Llama classifier ([Semantic router](#semantic-router-experimental)) |
+| First-token timeout on long prompts | prompt processing of a long (agent) prompt takes longer than `-first-token-timeout` | raise it: `pbctl gateway set first_token_timeout=45m` or the flag ([Gateway settings](#gateway-settings)) |
 | `/admin/...` answers 503 | admin API disabled | start the controller with `-admin-token-file` |
 | Controller refuses to start: usage state | `usage.json` is corrupt | move it away (usage restarts from zero) |
 | Model stays `error` in `pbctl models` | not a GGUF (e.g. a login page for a gated repo), split file, or 4xx | check the URL and file name on Hugging Face; `pbctl models add` again to retry |
@@ -1703,3 +1678,125 @@ Phone-side problems (adb, SIGILL, sleep, thermal) are in
 | Node shows `runtime.state` `error` after a switch | download, sizing or load failed; the old model keeps serving if cached | `pbctl nodes -json`, the phone's `agent.log`; the agent retries after 30 s, backing off to 10 min |
 | Prometheus stops ingesting, Grafana empty | Docker/colima disk full | `docker system df`, free space; the compose stack caps Prometheus at 15 d / 1 GB so this should not recur from Prometheus alone |
 | Requests pile up on one phone | session affinity with a shared prompt prefix | `pbctl gateway set spill=1`, or a pool with `routing=spread` |
+
+## Upgrading
+
+How to update the code and the services: [INSTALL.md](INSTALL.md#updating).
+Notes in this guide that matter when upgrading:
+
+- [Super Borg pools](#super-borg-pools): the old cluster-wide Super Borg mode becomes a pool named `superborg`.
+- [Big Brain pools](#big-brain-pools): re-provision the phones so the agents get `-rpc-server`.
+- [Firmware check](#firmware-check): the phone fields need the agent from 2026-10 or later.
+- [Grafana and Prometheus](#grafana-and-prometheus): run Prometheus with `--enable-feature=created-timestamp-zero-ingestion`.
+
+---
+
+**Appendix**
+
+*Every `pbctl` command.*
+
+## pbctl reference
+
+Build with `make pbctl` (also part of `make all`).
+
+```text
+pbctl [-json] [-url URL] [-token-file FILE] <command> [args]
+```
+
+| Global flag / variable | Default | Meaning |
+|---|---|---|
+| `-url`, `PHONEBORG_URL` | `http://127.0.0.1:18080` | controller URL (flag wins) |
+| `-token-file FILE`, `PHONEBORG_ADMIN_TOKEN` | none | admin token (flag wins) |
+| `PHONEBORG_API_KEY` | none | only used by `pbctl served` when keys are enforced |
+| `-json` | off | print the raw API response; accepted anywhere on the line |
+
+```sh
+export PHONEBORG_ADMIN_TOKEN=$(grep -v '^#' deploy/dev-admin-token)   # dev stack only: this token is public
+bin/pbctl nodes
+```
+
+**Nodes**
+
+| Command | What |
+|---|---|
+| `pbctl nodes` | nodes: `KIND` (`phone` or `external`), state (with `DRAINED`/`HOT`), class/tier (e.g. `m/t2`), runtime, `TOK/S` (self-test), in-flight. `-json` prints `/admin/nodes` (phones only) |
+| `pbctl nodes alias <id> <alias>` | set an alias, addressed as `node/<alias>`; `-` clears |
+| `pbctl drain <id>` | no new requests; running ones finish (`ext:<name>` for an external node) |
+| `pbctl undrain <id>` | back into rotation |
+| `pbctl forget <id>` | remove a node (it re-registers if still running) |
+| `pbctl devices` | USB devices `pcprov watch` reports: adb state, status (with step/error/hint), linked node, reporting host (ADR-019) |
+| `pbctl devices auto on\|off` | turn automatic provisioning of newly detected devices on or off |
+| `pbctl devices provision <serial>` | request a one-shot provision/retry for one device |
+
+**API keys, gateway, usage**
+
+| Command | What |
+|---|---|
+| `pbctl keys` | key names, creation time and usage (never the keys) |
+| `pbctl keys create <name>` | create a key, printed once |
+| `pbctl keys revoke <name>` | revoke all keys of `<name>` |
+| `pbctl admin-tokens` | admin tokens: `admin` (from `-admin-token-file`) and the named ones |
+| `pbctl admin-tokens create <name>` / `revoke <name>` | create a named admin token (printed once) / revoke it |
+| `pbctl gateway` | current gateway settings |
+| `pbctl gateway set k=v ...` | `policy=affinity\|least_inflight`, `spill=<n>`, `timeout=<duration>`, `first_token_timeout=<duration>`, `auth=keys`, `thermal_limit=<celsius, 0 disables>`, `router=on\|off`, `router_classifier=node/<alias>`, `router_timeout=<duration>` |
+| `pbctl router` | semantic router: on/off, classifier, timeout and the class table (letter, class, target, description, examples) ([details](#semantic-router-experimental)) |
+| `pbctl router on\|off` | switch the router; classes and targets are kept while off |
+| `pbctl router class add <name> desc=<text> [target=<t>] [example=<text>]...` | add a class; target `pool/<name>`, `node/<alias>`, a model id or `auto` |
+| `pbctl router class set <name> [name=<new>] [desc=<text>] [target=<t>] [example=<text>]...` | change a class; examples given replace all of its examples |
+| `pbctl router class rm <name>` | remove a class |
+| `pbctl router classes reset` | back to the six default classes, targets cleared |
+| `pbctl stats` | uptime, cluster summary, usage by key and node |
+| `pbctl mmb` | multi-model benchmark runs |
+| `pbctl mmb run [nodes=a,b] [pool=P] [models=x,y] [parallel]` | benchmark every model that fits (or the given ones) on each phone, one by one or at the same time ([details](#multi-model-benchmark-mmb)) |
+| `pbctl mmb show\|cancel\|rm <id>` | results table / stop (phones get their models back) / delete |
+| `pbctl mcp` | serve the cluster as MCP tools on stdin/stdout ([details](#the-cluster-as-mcp-tools)) |
+| `pbctl jobs` | Super Borg jobs: status, steps, tasks done/total |
+| `pbctl jobs new [title=T] [pool=P] <goal>` | start a job on Super Borg pool P (default: the first one) |
+| `pbctl jobs show <id>` | tasks, documents and the latest events |
+| `pbctl jobs say <id> <text>` | send an instruction; resumes a waiting, finished or cancelled job |
+| `pbctl jobs doc <id> <name>` / `pbctl jobs result <id>` | one document / the assembled Markdown result |
+| `pbctl jobs cancel <id>` / `pbctl jobs rm <id>` | stop (resumable) / delete |
+| `pbctl served` | what ready phones serve, plus `auto`, pools and aliased nodes (`/v1/models`) |
+
+**Models and placement**
+
+| Command | What |
+|---|---|
+| `pbctl models` | catalog: status/progress, size, quantization, `FITS (16k)`, tags, serving |
+| `pbctl models add <source> [-id ID] [-name NAME] [-tag a,b] [-recommend s,m]` | download a model (`hf://`, `https://`, `file:///`) |
+| `pbctl models rm <id>` | remove a model and its file (refused while a policy or the default uses it) |
+| `pbctl models tag <id> a,b` | set tags; `-` clears |
+| `pbctl models recommend <id> classes=s,m tiers=t2,t3` | recommended classes/tiers (older form `<id> s,m` sets classes); `-` clears |
+| `pbctl models default <id>\|none` | model for nodes no policy claims |
+| `pbctl classes` | RAM classes and performance tiers with node counts |
+| `pbctl placement` | policies, plan per node (`BUDGET`, `PRED TOK/S`), node model states, warnings |
+| `pbctl placement set <model> pin=<node,...>\|replicas=<n>\|percent=<p> [classes=s,m] [min_tok_s=<n>]` | set the model's policy |
+| `pbctl placement unset <model>` | remove the model's policy |
+| `pbctl placement preview [set\|unset] [<model> ...]` | show the plan a change would give; applies nothing |
+
+**Pools**
+
+| Command | What |
+|---|---|
+| `pbctl pools` | pools and every node's eligibility per pool |
+| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [model=<id>] [ctx=<n>] [enabled=on\|off] [desc="..."]` | create a pool or change only the given fields; `-` clears a list; `orchestrator` and `thinking` apply to [Super Borg pools](#super-borg-pools), `model` and `ctx` to [Big Brain pools](#big-brain-pools); `enabled=off` switches it off; a conflict with another enabled pool is refused |
+| `pbctl pools rm <name>` | remove a pool |
+
+**External nodes** (see [External nodes (Mac / PC)](#external-nodes-mac--pc))
+
+| Command | What |
+|---|---|
+| `pbctl external` | external nodes: URL, state, allowlist, models, in-flight/limit, context, tok/s, key set, last check and error |
+| `pbctl external add <name> <url> [key-file=path] [models=a,b] [concurrency=N] [ctx=N] [speed=N] [role=orchestrator\|worker]` | add or replace an external node, addressed as `node/<name>`; without `key-file` the current key is kept, `key-file=-` removes it |
+| `pbctl external rm <name>` | remove an external node |
+| `pbctl external selftest <name>` | measure each of its models' generation tok/s |
+
+**OpenCode** (see [OpenCode agent bridge](#opencode-agent-bridge))
+
+| Command | What |
+|---|---|
+| `pbctl opencode init [-dir D] [-global] [-provider P] [-base-url URL] [-force] [-read-tools] [-small-model]` | write `opencode.json` (provider, MCP server) and `.opencode/agent/` subagents; `-dir` default `.`, `-provider` default `phoneborg`, `-base-url` default controller URL + `/v1`; `-small-model` sets `small_model` to `<provider>/pool/fast` if unset |
+| `pbctl opencode sync [-dir D]` | regenerate from the current cluster (idempotent) |
+| `pbctl opencode watch [-dir D] [-interval 15s]` | loop `sync`, logging only changes |
+| `pbctl opencode status [-dir D]` | managed agents vs. cluster state |
+| `pbctl opencode prewarm [-dir D]` | warm each managed agent's target |
