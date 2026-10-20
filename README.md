@@ -16,6 +16,8 @@
 
 **Turn a drawer full of old Android phones into an AI inference cluster.**
 
+> *We are PhoneBorg. Resistance is futile. Your Android will be assimilated.*
+
 ## Overview
 
 Plug phones into a Linux or macOS host over USB. PhoneBorg installs a small
@@ -235,6 +237,7 @@ make e2e                                      # provisioning, serving, failover,
 | [docs/CONCEPTS.md](docs/CONCEPTS.md) | ways to use the cluster, with pros, cons and measured numbers |
 | [docs/REAL_PHONES.md](docs/REAL_PHONES.md) | choosing, preparing, provisioning and troubleshooting real phones |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | running the cluster: requests, web panel, `pbctl`, models, pools, keys, monitoring |
+| [docs/PBCTL.md](docs/PBCTL.md) | every `pbctl` command, grouped by task, with examples |
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |

@@ -5,7 +5,10 @@ the web panel, `pbctl`, models and placement, virtual models, API keys,
 draining, gateway settings, usage, the OpenCode agent bridge and monitoring.
 To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 [DEV_EMULATION.md](DEV_EMULATION.md). How it works inside:
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md). Every `pbctl` command with examples:
+[PBCTL.md](PBCTL.md).
+
+> *Resistance is futile. Your Android will be assimilated.*
 
 ## Contents
 
@@ -1653,7 +1656,7 @@ streamed chunks, as completion tokens only.
 
 ## Troubleshooting
 
-Phone-side problems (adb, SIGILL, sleep, thermal) are in
+*Even the collective has bad days.* Phone-side problems (adb, SIGILL, sleep, thermal) are in
 [REAL_PHONES.md](REAL_PHONES.md#troubleshooting).
 
 | Symptom | Cause | What to do |
@@ -1697,7 +1700,8 @@ Notes in this guide that matter when upgrading:
 
 ## pbctl reference
 
-Build with `make pbctl` (also part of `make all`).
+Build with `make pbctl` (also part of `make all`). The full guide, grouped by
+task with examples, is [PBCTL.md](PBCTL.md).
 
 ```text
 pbctl [-json] [-url URL] [-token-file FILE] <command> [args]
