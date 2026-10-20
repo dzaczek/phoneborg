@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="780" rx="24" fill="#FAFAF7"/>
+
+  <!-- title -->
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Super Borg: one request, many phones</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">An orchestrator phone splits the request with a delegate tool; workers answer the parts in parallel</text>
+
+  <!-- client -->
+  <rect x="40" y="140" width="180" height="160" rx="14" fill="#ECE8F3" stroke="#7A6A9E" stroke-width="2"/>
+  <text x="58" y="172" font-size="17" font-weight="700" fill="#4A3F66">client</text>
+  <text x="58" y="200" font-size="14" fill="#4A3F66">one chat request</text>
+  <text x="58" y="226" font-size="13.5" fill="#5E4F85">model:</text>
+  <text x="58" y="246" font-size="13.5" fill="#5E4F85">pool/&lt;name&gt;</text>
+
+  <!-- gateway -->
+  <rect x="270" y="140" width="210" height="160" rx="14" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2.5"/>
+  <text x="288" y="172" font-size="17" font-weight="700" fill="#1F3F5E">gateway</text>
+  <text x="288" y="200" font-size="14" fill="#1F3F5E">routing=superborg</text>
+  <text x="288" y="226" font-size="14" fill="#1F3F5E">runs the round loop</text>
+  <text x="288" y="248" font-size="14" fill="#1F3F5E">and the delegate calls</text>
+  <text x="288" y="278" font-size="13.5" fill="#1F3F5E">in the controller</text>
+
+  <!-- client <-> gateway -->
+  <line x1="220" y1="190" x2="267" y2="190" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="270" y1="250" x2="223" y2="250" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- orchestrator -->
+  <rect x="540" y="140" width="250" height="306" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+  <use href="#phone" x="558" y="156" width="28" height="48"/>
+  <text x="598" y="176" font-size="17" font-weight="700" fill="#24563A">orchestrator</text>
+  <text x="598" y="198" font-size="14" fill="#24563A">a pool phone</text>
+  <g font-size="14" fill="#24563A">
+    <text x="558" y="238">picked: tools-tagged model,</text>
+    <text x="558" y="258">then largest, then fastest</text>
+    <text x="558" y="292">gets the delegate tool and</text>
+    <text x="558" y="312">a roster of the workers</text>
+    <text x="558" y="346">fails before the first byte</text>
+    <text x="558" y="366">→ another pool phone</text>
+  </g>
+  <text x="558" y="420" font-size="13.5" fill="#2E6E46">progress → reasoning_content</text>
+
+  <!-- gateway <-> orchestrator -->
+  <line x1="480" y1="190" x2="537" y2="190" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="540" y1="250" x2="483" y2="250" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- external orchestrator note -->
+  <rect x="40" y="330" width="440" height="116" rx="14" fill="#ECE8F3" stroke="#7A6A9E" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="58" y="360" font-size="16" font-weight="700" fill="#4A3F66">optional: external orchestrator</text>
+  <text x="58" y="386" font-size="14" fill="#4A3F66">an external endpoint with role=orchestrator,</text>
+  <text x="58" y="408" font-size="14" fill="#4A3F66">used only when named as the pool's orchestrator</text>
+  <text x="58" y="430" font-size="13.5" fill="#5E4F85">never a worker, never normal traffic</text>
+  <path d="M480,400 H537" fill="none" stroke="#7A6A9E" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+
+  <!-- delegate header -->
+  <text x="845" y="128" font-size="14" font-weight="700" fill="#1E2328" text-anchor="middle">delegate</text>
+
+  <!-- workers -->
+  <g font-size="14" fill="#24563A">
+    <rect x="900" y="140" width="260" height="90" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="916" y="161" width="28" height="48"/>
+    <text x="956" y="178" font-size="16" font-weight="700">worker A</text>
+    <text x="956" y="202">task 1</text>
+
+    <rect x="900" y="248" width="260" height="90" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="916" y="269" width="28" height="48"/>
+    <text x="956" y="286" font-size="16" font-weight="700">worker B</text>
+    <text x="956" y="310">task 2</text>
+
+    <rect x="900" y="356" width="260" height="90" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="916" y="377" width="28" height="48"/>
+    <text x="956" y="394" font-size="16" font-weight="700">worker C</text>
+    <text x="956" y="418">task 3</text>
+  </g>
+  <text x="1144" y="202" font-size="13.5" fill="#2E6E46" text-anchor="end">in parallel</text>
+  <text x="1144" y="310" font-size="13.5" fill="#2E6E46" text-anchor="end">in parallel</text>
+  <text x="1144" y="418" font-size="13.5" fill="#2E6E46" text-anchor="end">in parallel</text>
+
+  <!-- tasks out / results back -->
+  <g stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)">
+    <line x1="790" y1="171" x2="897" y2="171"/>
+    <line x1="790" y1="279" x2="897" y2="279"/>
+    <line x1="790" y1="387" x2="897" y2="387"/>
+  </g>
+  <g stroke="#3C8D5A" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)">
+    <line x1="900" y1="199" x2="793" y2="199"/>
+    <line x1="900" y1="307" x2="793" y2="307"/>
+    <line x1="900" y1="415" x2="793" y2="415"/>
+  </g>
+  <g font-size="14" fill="#5B5F66">
+    <text x="900" y="474">max_tokens 512 · result ≤ 3000 B</text>
+    <text x="900" y="496">failure → retried once on another worker</text>
+  </g>
+  <g font-size="13.5" fill="#5B5F66">
+    <line x1="560" y1="480" x2="590" y2="480" stroke="#5B5F66" stroke-width="2.5"/>
+    <text x="598" y="485">task</text>
+    <line x1="650" y1="480" x2="680" y2="480" stroke="#3C8D5A" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="688" y="485">result as a tool message</text>
+  </g>
+
+  <!-- round loop -->
+  <rect x="40" y="524" width="1120" height="150" rx="14" fill="#FFFFFF" stroke="#5B5F66" stroke-width="1.5"/>
+  <text x="60" y="556" font-size="17" font-weight="700" fill="#1E2328">Round loop</text>
+  <text x="168" y="556" font-size="14" fill="#5B5F66">up to 2 delegation rounds, at most 3 orchestrator calls per request</text>
+
+  <g font-size="14" fill="#24563A">
+    <rect x="60" y="574" width="320" height="82" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="78" y="602" font-size="16" font-weight="700">round 1</text>
+    <text x="78" y="626">delegate → tasks in parallel</text>
+    <text x="78" y="646">results go back as tool messages</text>
+
+    <rect x="440" y="574" width="320" height="82" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="458" y="602" font-size="16" font-weight="700">round 2</text>
+    <text x="458" y="626">may delegate again</text>
+    <text x="458" y="646">no delegate call → its answer is final</text>
+
+    <rect x="820" y="574" width="320" height="82" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="838" y="602" font-size="16" font-weight="700">final round</text>
+    <text x="838" y="626">sent without tools</text>
+    <text x="838" y="646">must answer</text>
+  </g>
+  <line x1="380" y1="615" x2="437" y2="615" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="760" y1="615" x2="817" y2="615" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- footer -->
+  <text x="40" y="706" font-size="14" font-weight="700" fill="#1E2328">The client gets one stream:</text>
+  <text x="230" y="706" font-size="14" fill="#5B5F66">progress lines (→ worker: task, ← worker: done in N s) as reasoning_content, then one answer.</text>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="740" width="14" height="14" rx="3" fill="#7A6A9E"/><text x="62" y="752">clients</text>
+    <rect x="130" y="740" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="152" y="752">host processes</text>
+    <rect x="270" y="740" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="292" y="752">phones</text>
+  </g>
+</svg>

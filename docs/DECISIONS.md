@@ -6,43 +6,51 @@ Why PhoneBorg is built the way it is. The current system is described in
 added as dated "Update (2026-09)" notes instead of rewriting the original
 text.
 
-| ADR | Title | Status | Summary |
-|---|---|---|---|
-| [001](#adr-001-milestone-1-node-agent-is-a-go-binary-launched-over-adb-not-an-android-app) | Node agent is a Go binary launched over adb | accepted | Static binary in `/data/local/tmp`, no Android app yet; does not survive reboots. |
-| [002](#adr-002-v0-transport-is-json-over-http) | v0 transport is JSON over HTTP | accepted | Curl-able wire types in `proto/v0.go`; gRPC + mTLS before non-localhost use. |
-| [003](#adr-003-phones-reach-the-controller-through-adb-reverse) | Phones reach the controller through `adb reverse` | accepted | Agent always talks to `127.0.0.1:18080`; phones stay on USB. |
-| [004](#adr-004-redroid-as-the-development-phone) | redroid as the development "phone" | accepted | Real arm64 Android in containers with real adb, sized by cgroups. |
-| [005](#adr-005-llamacpp-as-a-static-musl-arm64-binary-no-ndk-for-first-llm-tests) | Static musl llama.cpp, no NDK | superseded in part by 007 | CPU-only static build; variant selection moved to ADR-007. |
-| [006](#adr-006-inference-gateway-in-the-controller-reaching-phones-over-adb-forward) | Gateway in the controller, phones over `adb forward` | accepted, updated by 010 and 014 | One OpenAI endpoint; affinity picker, failover, reaping. |
-| [007](#adr-007-pcprov-selects-the-llamacpp-build-from-the-phones-cpu-features) | pcprov selects the llama.cpp build per CPU | accepted | `make llama-all` builds three variants; pcprov picks the fastest that runs. |
-| [008](#adr-008-admin-api-and-usage-statistics) | Admin API and usage statistics | accepted | Token-protected `/admin/`, `pbctl`, hashed API keys, persisted usage. |
-| [009](#adr-009-llama-server-threads-on-biglittle-phones) | llama-server threads on big.LITTLE | accepted | Default `-threads-policy all`; benchmark through llama-server. |
-| [010](#adr-010-measured-inference-speed-and-thermal-aware-routing) | Measured speed and thermal-aware routing | accepted | Self-test tok/s replaces the synthetic score; hot nodes get no new sessions. |
-| [011](#adr-011-model-catalog-and-placement) | Model catalog and placement | accepted, updated by 012 and 015 | Controller downloads GGUFs, plans placement, phones download over USB. |
-| [012](#adr-012-agent-side-model-switching-and-memory-sizing) | Agent-side model switching and memory sizing | accepted, with updates | Download, verify, size to RAM, load, fall back; resident bytes. |
-| [013](#adr-013-web-management-panel) | Web management panel | accepted | Static embedded panel that is just another admin API client. |
-| [014](#adr-014-virtual-models-and-pools-for-agent-workloads) | Virtual models and pools | accepted | `auto`, `pool/<name>`, `node/<alias>`; `spread` routing for small agents. |
-| [015](#adr-015-performance-tiers-from-measured-bandwidth) | Performance tiers from measured bandwidth | accepted, with update | Effective bandwidth per node, tiers `t1`..`t4`, predicted tok/s gate placement. |
-| [016](#adr-016-external-engine-nodes) | External engine nodes | accepted | Operator-added OpenAI-compatible servers (`ext:<name>`) routed like phones, polled via `/v1/models`, never planned. |
-| [017](#adr-017-ollama-compatible-front-and-local-by-default-access) | Ollama-compatible front and local-by-default access | accepted | `/api/*` translates to the OpenAI gateway; `-gateway-access local\|keys\|open` gates inference/listing endpoints by peer CIDR. |
-| [018](#adr-018-chat-test-in-the-web-panel) | "Chat test" in the web panel | accepted | Admin-token-authenticated `POST /admin/chat/completions` proxies through the normal gateway path, attributed to principal `panel`. |
-| [019](#adr-019-usb-device-auto-detection-in-the-panel-and-conflict-free-provisioning) | USB device auto-detection in the panel and conflict-free provisioning | accepted | `pcprov watch` reports its adb device view to a new admin endpoint; `auto_provision` setting and one-shot provision/retry; per-serial backoff, duplicate/placeholder rejection and a host-wide flock. |
-| [020](#adr-020-super-borg-mode--one-model-an-orchestrator-delegating-to-phones) | Super Borg mode | accepted, replaced in part by 022 | A cluster-wide mode in which an orchestrator node delegates subtasks to the other nodes through a `delegate` tool; idle timeout for orchestrator calls. |
-| [021](#adr-021-super-borg-jobs--long-work-with-server-side-state) | Super Borg jobs | accepted | Long work in the background: task list and documents on the controller, stateless one-tool orchestrator steps, guards against small-model mistakes, gateway-assigned parallel workers. |
-| [022](#adr-022-super-borg-as-a-pool-routing-instead-of-a-cluster-wide-mode) | Super Borg as a pool routing | accepted | `routing: superborg` on pools replaces the cluster-wide mode; the old setting migrates to `pool/superborg`; jobs run on a pool. |
-| [023](#adr-023-route-tool-requests-to-tool-capable-models) | Route tool requests to tool-capable models | accepted | Catalog tag `tools`; requests with tools avoid untagged models; the orchestrator choice prefers them. |
-| [024](#adr-024-separate-limits-for-prompt-processing-and-generation) | Separate limits for prompt processing and generation | accepted | `-first-token-timeout` until the first byte, then `-upstream-timeout` as an idle limit. |
-| [025](#adr-025-the-cluster-as-mcp-tools-pbctl-mcp) | The cluster as MCP tools | accepted | `pbctl mcp` over stdio: ask, map, vote, jobs; opencode config, agents and instructions generated by `pbctl opencode init`. |
-| [026](#adr-026-named-admin-tokens) | Named admin tokens | accepted | Hashed per-device admin tokens next to `-admin-token-file`; the audit log names the token. |
-| [027](#adr-027-pool-status-onoff-switch-and-no-conflicting-pools) | Pool status, on/off switch, no conflicting pools | accepted | Computed pool status, `disabled` flag, 409 for enabled pools that claim one node with no common model. |
-| [028](#adr-028-multi-model-benchmark-mmb) | Multi-model benchmark (MMB) | accepted | Load every fitting model on chosen phones under a benchmark override and time cold, warm and short requests. |
-| [029](#adr-029-external-orchestrators) | External orchestrators | accepted | External nodes with `role=orchestrator` get no normal traffic and orchestrate only the Super Borg pools that name them. |
-| [030](#adr-030-firmware-check) | Firmware check | accepted | Agents report build, patch and bootloader; with `-firmware-check` the controller compares them daily with LineageOS, Google's OTA page and the Xiaomi tracker. |
-| [031](#adr-031-grafana-in-the-panel) | Grafana in the panel | accepted | The controller serves Grafana under `/grafana/`; the panel embeds the dashboard and per-node charts with a cookie-based session. |
-| [032](#adr-032-token-analyzer) | Token analyzer | accepted | The phones' own tokenizers count a text per served model; Grafana dashboards break token usage down per phone, model and key, and show one phone at a time. |
-| [033](#adr-033-semantic-router-for-auto-experimental) | Semantic router for "auto" | accepted, experimental | One phone sorts each `auto` request into operator-editable classes from a one-token logprobs answer; each class has a target; any failure is plain `auto`. |
+The index below lists every ADR with its status and the date it was first
+written (— for ADR-001 to 010, whose dates were lost in the history import).
+Each ADR heading is followed by one metadata line with the same status, the
+date and the later ADRs that update it.
+
+| ADR | Title | Status | Date | Summary |
+|---|---|---|---|---|
+| [001](#adr-001-milestone-1-node-agent-is-a-go-binary-launched-over-adb-not-an-android-app) | Node agent is a Go binary launched over adb | accepted | — | Static binary in `/data/local/tmp`, no Android app yet; does not survive reboots. |
+| [002](#adr-002-v0-transport-is-json-over-http) | v0 transport is JSON over HTTP | accepted | — | Curl-able wire types in `proto/v0.go`; gRPC + mTLS before non-localhost use. |
+| [003](#adr-003-phones-reach-the-controller-through-adb-reverse) | Phones reach the controller through `adb reverse` | accepted | — | Agent always talks to `127.0.0.1:18080`; phones stay on USB. |
+| [004](#adr-004-redroid-as-the-development-phone) | redroid as the development "phone" | accepted | — | Real arm64 Android in containers with real adb, sized by cgroups. |
+| [005](#adr-005-llamacpp-as-a-static-musl-arm64-binary-no-ndk-for-first-llm-tests) | Static musl llama.cpp, no NDK | superseded in part by 007 | — | CPU-only static build; variant selection moved to ADR-007. |
+| [006](#adr-006-inference-gateway-in-the-controller-reaching-phones-over-adb-forward) | Gateway in the controller, phones over `adb forward` | accepted, updated by 010 and 014 | — | One OpenAI endpoint; affinity picker, failover, reaping. |
+| [007](#adr-007-pcprov-selects-the-llamacpp-build-from-the-phones-cpu-features) | pcprov selects the llama.cpp build per CPU | accepted | — | `make llama-all` builds three variants; pcprov picks the fastest that runs. |
+| [008](#adr-008-admin-api-and-usage-statistics) | Admin API and usage statistics | accepted | — | Token-protected `/admin/`, `pbctl`, hashed API keys, persisted usage. |
+| [009](#adr-009-llama-server-threads-on-biglittle-phones) | llama-server threads on big.LITTLE | accepted | — | Default `-threads-policy all`; benchmark through llama-server. |
+| [010](#adr-010-measured-inference-speed-and-thermal-aware-routing) | Measured speed and thermal-aware routing | accepted, updated by 015 | — | Self-test tok/s replaces the synthetic score; hot nodes get no new sessions. |
+| [011](#adr-011-model-catalog-and-placement) | Model catalog and placement | accepted, updated by 012 and 015 | 2026-09-24 | Controller downloads GGUFs, plans placement, phones download over USB. |
+| [012](#adr-012-agent-side-model-switching-and-memory-sizing) | Agent-side model switching and memory sizing | accepted, with updates | 2026-09-24 | Download, verify, size to RAM, load, fall back; resident bytes. |
+| [013](#adr-013-web-management-panel) | Web management panel | accepted | 2026-09-24 | Static embedded panel that is just another admin API client. |
+| [014](#adr-014-virtual-models-and-pools-for-agent-workloads) | Virtual models and pools | accepted | 2026-09-24 | `auto`, `pool/<name>`, `node/<alias>`; `spread` routing for small agents. |
+| [015](#adr-015-performance-tiers-from-measured-bandwidth) | Performance tiers from measured bandwidth | accepted, with update | 2026-09-24 | Effective bandwidth per node, tiers `t1`..`t4`, predicted tok/s gate placement. |
+| [016](#adr-016-external-engine-nodes) | External engine nodes | accepted | 2026-09-25 | Operator-added OpenAI-compatible servers (`ext:<name>`) routed like phones, polled via `/v1/models`, never planned. |
+| [017](#adr-017-ollama-compatible-front-and-local-by-default-access) | Ollama-compatible front and local-by-default access | accepted | 2026-09-25 | `/api/*` translates to the OpenAI gateway; `-gateway-access local\|keys\|open` gates inference/listing endpoints by peer CIDR. |
+| [018](#adr-018-chat-test-in-the-web-panel) | "Chat test" in the web panel | accepted | 2026-09-28 | Admin-token-authenticated `POST /admin/chat/completions` proxies through the normal gateway path, attributed to principal `panel`. |
+| [019](#adr-019-usb-device-auto-detection-in-the-panel-and-conflict-free-provisioning) | USB device auto-detection in the panel and conflict-free provisioning | accepted | 2026-09-28 | `pcprov watch` reports its adb device view to a new admin endpoint; `auto_provision` setting and one-shot provision/retry; per-serial backoff, duplicate/placeholder rejection and a host-wide flock. |
+| [020](#adr-020-super-borg-mode--one-model-an-orchestrator-delegating-to-phones) | Super Borg mode | superseded by 022 (mode) and 024 (timeouts); loop still current | 2026-10-02 | A cluster-wide mode in which an orchestrator node delegates subtasks to the other nodes through a `delegate` tool; idle timeout for orchestrator calls. |
+| [021](#adr-021-super-borg-jobs--long-work-with-server-side-state) | Super Borg jobs | accepted | 2026-10-03 | Long work in the background: task list and documents on the controller, stateless one-tool orchestrator steps, guards against small-model mistakes, gateway-assigned parallel workers. |
+| [022](#adr-022-super-borg-as-a-pool-routing-instead-of-a-cluster-wide-mode) | Super Borg as a pool routing | accepted | 2026-10-03 | `routing: superborg` on pools replaces the cluster-wide mode; the old setting migrates to `pool/superborg`; jobs run on a pool. |
+| [023](#adr-023-route-tool-requests-to-tool-capable-models) | Route tool requests to tool-capable models | accepted | 2026-10-03 | Catalog tag `tools`; requests with tools avoid untagged models; the orchestrator choice prefers them. |
+| [024](#adr-024-separate-limits-for-prompt-processing-and-generation) | Separate limits for prompt processing and generation | accepted | 2026-10-03 | `-first-token-timeout` until the first byte, then `-upstream-timeout` as an idle limit. |
+| [025](#adr-025-the-cluster-as-mcp-tools-pbctl-mcp) | The cluster as MCP tools | accepted | 2026-10-03 | `pbctl mcp` over stdio: ask, map, vote, jobs; opencode config, agents and instructions generated by `pbctl opencode init`. |
+| [026](#adr-026-named-admin-tokens) | Named admin tokens | accepted | 2026-10-03 | Hashed per-device admin tokens next to `-admin-token-file`; the audit log names the token. |
+| [027](#adr-027-pool-status-onoff-switch-and-no-conflicting-pools) | Pool status, on/off switch, no conflicting pools | accepted | 2026-10-04 | Computed pool status, `disabled` flag, 409 for enabled pools that claim one node with no common model. |
+| [028](#adr-028-multi-model-benchmark-mmb) | Multi-model benchmark (MMB) | accepted | 2026-10-04 | Load every fitting model on chosen phones under a benchmark override and time cold, warm and short requests. |
+| [029](#adr-029-external-orchestrators) | External orchestrators | accepted | 2026-10-04 | External nodes with `role=orchestrator` get no normal traffic and orchestrate only the Super Borg pools that name them. |
+| [030](#adr-030-firmware-check) | Firmware check | accepted | 2026-10-06 | Agents report build, patch and bootloader; with `-firmware-check` the controller compares them daily with LineageOS, Google's OTA page and the Xiaomi tracker. |
+| [031](#adr-031-grafana-in-the-panel) | Grafana in the panel | accepted | 2026-10-06 | The controller serves Grafana under `/grafana/`; the panel embeds the dashboard and per-node charts with a cookie-based session. |
+| [032](#adr-032-token-analyzer) | Token analyzer | accepted | 2026-10-07 | The phones' own tokenizers count a text per served model; Grafana dashboards break token usage down per phone, model and key, and show one phone at a time. |
+| [033](#adr-033-semantic-router-for-auto-experimental) | Semantic router for "auto" | accepted, experimental | 2026-10-09 | One phone sorts each `auto` request into operator-editable classes from a one-token logprobs answer; each class has a target; any failure is plain `auto`. |
+| [034](#adr-034-big-brain-pools) | Big Brain pools | accepted | 2026-10-16 | One catalog model split over several phones via llama.cpp RPC; head on the controller's host, reachable only as `pool/<name>`. |
 
 ## ADR-001: Milestone-1 node agent is a Go binary launched over ADB, not an Android app
+
+**Status:** accepted · **Date:** —
 
 **Problem.** The target architecture is a Kotlin app + NDK runtime on the phone. Milestone 1
 only needs inventory, benchmark and heartbeats, and must work with zero taps on
@@ -63,6 +71,8 @@ without controller changes. Revisit before relying on long unattended runs.
 
 ## ADR-002: v0 transport is JSON over HTTP
 
+**Status:** accepted · **Date:** —
+
 **Problem.** The target protocol is Protobuf/gRPC. Milestone 1 has three small
 messages and benefits from being curl-able while the design settles.
 
@@ -73,6 +83,8 @@ non-localhost deployment. Development traffic only goes over `adb reverse`
 
 ## ADR-003: Phones reach the controller through `adb reverse`
 
+**Status:** accepted · **Date:** —
+
 **Problem.** Phones need a route to the controller without Wi-Fi setup.
 
 **Decision.** The provisioner runs `adb reverse tcp:18080 tcp:18080`; the agent
@@ -82,6 +94,8 @@ attached to the host running adb. Wi-Fi/Ethernet transport is a later
 milestone.
 
 ## ADR-004: redroid as the development "phone"
+
+**Status:** accepted · **Date:** —
 
 **Problem.** Need to test the adb provisioning path before owning phones. The
 dev host is Apple Silicon M2 (no nested virtualisation), so an AVD/QEMU
@@ -94,6 +108,8 @@ cgroup limits, which the agent honours. See `docs/DEV_EMULATION.md` for what
 this does *not* model.
 
 ## ADR-005: llama.cpp as a static musl arm64 binary (no NDK) for first LLM tests
+
+**Status:** superseded in part by 007 · **Date:** —
 
 **Problem.** The target native runtime is built with the Android NDK.
 The dev host has no NDK, and the Linux NDK is x86_64-only, so it cannot run in
@@ -114,13 +130,16 @@ The smoke test checks `/proc/cpuinfo` for `asimddp` before running.
 `make llama`). Switch to an NDK build when GPU backends or the Kotlin service
 arrive.
 
-
 **Update (2026-09).** The smoke test no longer only checks for `asimddp`:
 like pcprov it picks the fastest built variant the CPU supports (ADR-007).
 The Makefile's `make llama` still defaults to `armv8.2-a+dotprod+fp16`;
 `make llama-all` builds all three variants.
 
 ## ADR-006: Inference gateway in the controller, reaching phones over adb forward
+
+**Status:** accepted, updated by 010 and 014 · **Date:** — · **Updated by:** ADR-010, ADR-014
+
+[![Life of a request: auth, resolve model, optional semantic router, candidates, picker (affinity, spill, hot), forward and stream; failures before the first byte cool the phone down 30 s and retry once, then 502 backends_failed or 503 busy](../assets/diagrams/gateway-routing.png)](../assets/diagrams/src/gateway-routing.svg)
 
 **Problem.** Clients need one OpenAI-compatible endpoint for the whole
 cluster, not one per phone. The gateway must later support API keys, quotas
@@ -159,7 +178,6 @@ a node that leaves the ready set (e.g. SUSPECT) are cancelled and retried
 elsewhere. Once response bytes have reached the client, a request cannot be
 retried.
 
-
 **Update (2026-09).** Changed since this ADR: the speed tie-break is the
 node's measured llama.cpp self-test tok/s, falling back to the synthetic
 benchmark only when no node has one, and hot nodes get no new sessions
@@ -171,6 +189,8 @@ a node that rejects a prompt as too long is not marked down. Switching
 nodes (downloading or loading a model) are skipped (ADR-011).
 
 ## ADR-007: pcprov selects the llama.cpp build from the phone's CPU features
+
+**Status:** accepted · **Date:** —
 
 **Problem.** ADR-005's build targets `armv8.2-a+dotprod+fp16`. A real Xiaomi Mi
 8 (Snapdragon 845) turned out to lack dotprod (`asimddp`) entirely, so that
@@ -199,6 +219,8 @@ in heartbeats as `engine: "llama.cpp/<variant>"`, so Grafana/the dashboard can
 tell which build each phone runs.
 
 ## ADR-008: Admin API and usage statistics
+
+**Status:** accepted · **Date:** —
 
 (Numbered 008 because ADR-007 is reserved for llama.cpp variant selection,
 which is being written on a parallel branch.)
@@ -286,13 +308,14 @@ no TLS: run the admin API only on localhost or a trusted network until the
 mTLS work (ADR-002). Keys have no scopes, expiry or quotas yet. Drain flags
 and gateway settings are lost when the controller restarts.
 
-
 **Update (2026-09).** ADR-007 (llama.cpp variant selection) has since been
 merged, so the numbering note above is only historical. `thermal_limit` was
 added to the runtime gateway settings by ADR-010; like the others it is not
 persisted.
 
 ## ADR-009: llama-server threads on big.LITTLE phones
+
+**Status:** accepted · **Date:** —
 
 **Problem.** Phones mix fast and slow cores. llama.cpp can be held back by slow
 "little" cores, so the agent gained `-threads N` and `-threads-policy all|big`
@@ -318,11 +341,14 @@ usable cores are also catastrophic.
 `-threads` remain as per-phone overrides, to be re-measured on other SoCs.
 Benchmark through llama-server, not pinned `llama-bench` runs.
 
-
 **Update (2026-09).** The measurements are also listed in
 [BENCHMARKS.md](BENCHMARKS.md#threads-on-biglittle).
 
 ## ADR-010: Measured inference speed and thermal-aware routing
+
+**Status:** accepted, updated by 015 · **Date:** — · **Updated by:** ADR-015
+
+[![Node lifecycle: BENCHMARKING, ACTIVE, SUSPECT after 15 s, OFFLINE after 30 s without heartbeats; drained is a flag; the node-agent registers, benchmarks itself and heartbeats every 5 s](../assets/diagrams/node-lifecycle.png)](../assets/diagrams/src/node-lifecycle.svg)
 
 **Problem.** The gateway's `Affinity` picker breaks ties with `Backend.Speed`,
 which was the agent's synthetic benchmark (`Benchmark.CPUGFLOPS`, kind
@@ -373,6 +399,8 @@ Nodes with no readable thermal zone (e.g. redroid) are never marked hot,
 matching the existing gap in `phoneborg_node_temperature_celsius`.
 
 ## ADR-011: Model catalog and placement
+
+**Status:** accepted, updated by 012 and 015 · **Date:** 2026-09-24 · **Updated by:** ADR-012, ADR-015
 
 **Problem.** Every phone served the one GGUF file `pcprov -model` pushed at
 provisioning. Serving a different model meant re-provisioning phones one by
@@ -490,7 +518,6 @@ checked against the source (Hugging Face publishes it); the hash only
 lets agents verify their copy. Context size, slots and KV type are not
 yet configurable per policy.
 
-
 **Update (2026-09).** The RAM heuristic and the per-node fit check now use
 the model's resident bytes instead of the file size (ADR-012 update below),
 and placement also excludes nodes whose predicted speed is below
@@ -498,6 +525,10 @@ and placement also excludes nodes whose predicted speed is below
 moved from `/` to `/status` (ADR-013).
 
 ## ADR-012: Agent-side model switching and memory sizing
+
+**Status:** accepted, with updates · **Date:** 2026-09-24
+
+[![Model switch on a phone: idle, downloading with SHA check and LRU eviction, loading with memory sizing f16 KV → q8_0 → halve ctx → 1 slot, serving with a 32-token self-test; failures fall back to the previous model with 30 s–10 min backoff; rpc mode for Big Brain](../assets/diagrams/model-switch.png)](../assets/diagrams/src/model-switch.svg)
 
 **Problem.** The controller is gaining a model catalog and a placement
 planner (parallel work) that assigns each node a model over heartbeats. The
@@ -667,6 +698,8 @@ and reports no error instead of failing the switch.
 
 ## ADR-013: Web management panel
 
+**Status:** accepted · **Date:** 2026-09-24
+
 **Problem.** Managing the cluster meant `pbctl`, curl, Grafana and the old
 `/` table side by side. Model placement adds editing that a CLI does poorly:
 choosing nodes, percentages and class filters, and checking what a change
@@ -726,6 +759,8 @@ the files are embedded, served with the right types, and reference no
 missing file.
 
 ## ADR-014: Virtual models and pools for agent workloads
+
+**Status:** accepted · **Date:** 2026-09-24
 
 **Problem.** Agent tools such as opencode run several subagents at once,
 and each subagent names one model. With only served model ids, every
@@ -816,6 +851,8 @@ from pools that list the old alias. Prewarm does not pin anything, so under
 `affinity` routing the first real request may still land on another node.
 
 ## ADR-015: Performance tiers from measured bandwidth
+
+**Status:** accepted, with update · **Date:** 2026-09-24
 
 **Problem.** Devices are classed only by RAM (ADR-011's `xs`..`xl`). A phone
 with enough RAM but a slow CPU/memory system (an older SoC, a busy background
@@ -942,6 +979,8 @@ The tier (`t2`) and the conclusions are unchanged. See
 
 ## ADR-016: External engine nodes
 
+**Status:** accepted · **Date:** 2026-09-25
+
 **Problem.** Phones run small models. A developer who also has a Mac with
 LM Studio, oMLX or Ollama, or a PC with llama-server, wants one endpoint for
 both: for example an opencode primary agent on a 14B model on the Mac and
@@ -1032,7 +1071,10 @@ loading can make the first test very slow). A server that lists models it
 cannot load (LM Studio lists every downloaded model) routes requests to
 them; use the allowlist. TLS verification uses the system roots; there is
 no option for self-signed certificates.
+
 ## ADR-017: Ollama-compatible front and local-by-default access
+
+**Status:** accepted · **Date:** 2026-09-25
 
 **Problem.** Many local-LLM clients (Open WebUI, Continue, Raycast, some
 opencode-adjacent tools) speak Ollama's HTTP API, not OpenAI's, and default
@@ -1159,6 +1201,8 @@ beyond the first `X-Forwarded-For` address.
 
 ## ADR-018: "Chat test" in the web panel
 
+**Status:** accepted · **Date:** 2026-09-28
+
 **Problem.** Operators had no way to try inference from the panel itself:
 proving a model works meant a terminal and curl or `pbctl`. The obvious
 implementation, the panel calling `POST /v1/chat/completions` with the admin
@@ -1240,6 +1284,8 @@ generate beyond the gateway's normal `-upstream-timeout` and node
 concurrency limits.
 
 ## ADR-019: USB device auto-detection in the panel and conflict-free provisioning
+
+**Status:** accepted · **Date:** 2026-09-28
 
 **Problem.** The controller only knows about nodes that have registered: a
 phone that is `unauthorized`, `offline`, mid-provisioning or failed is
@@ -1383,6 +1429,8 @@ misbehaving reporter could still be throttled only by revoking its token.
 
 ## ADR-020: Super Borg mode — one model, an orchestrator delegating to phones
 
+**Status:** superseded by 022 (mode) and 024 (timeouts); loop still current · **Date:** 2026-10-02 · **Updated by:** ADR-022, ADR-024
+
 **Problem.** With four phones of very different strength, the operator
 wants the cluster to behave as one assistant: a stronger phone (the
 OnePlus, 12 GB, Qwen3-8B) reasons about the request and hands parts of it
@@ -1458,6 +1506,10 @@ design.
 
 ## ADR-021: Super Borg jobs — long work with server-side state
 
+**Status:** accepted · **Date:** 2026-10-03
+
+[![Super Borg jobs: a queue runs one job at a time; each step is one stateless orchestrator call with one tool; delegate runs tasks in parallel on worker phones; results become documents](../assets/diagrams/jobs-loop.png)](../assets/diagrams/src/jobs-loop.svg)
+
 **Problem.** Super Borg chat (ADR-020) broke down on a real multi-step
 request: a story for a 5-year-old in 20 chapters of about 3 minutes each,
 planned and written together with the workers. Over several chat turns the
@@ -1527,6 +1579,10 @@ for the same phones, and only one runs at a time.
 
 ## ADR-022: Super Borg as a pool routing instead of a cluster-wide mode
 
+**Status:** accepted · **Date:** 2026-10-03
+
+[![Super Borg: the orchestrator phone delegates tasks to worker phones in parallel for up to two rounds, then answers without tools](../assets/diagrams/superborg-delegate.png)](../assets/diagrams/src/superborg-delegate.svg)
+
 **Problem.** ADR-020 made Super Borg a switch for the whole cluster: while
 on, `/v1/models` listed only `superborg` and every request went to the
 orchestrator. That does not scale to a large fleet, where some phones
@@ -1566,6 +1622,8 @@ of the old setting and a pool to choose for jobs.
 
 ## ADR-023: Route tool requests to tool-capable models
 
+**Status:** accepted · **Date:** 2026-10-03
+
 **Problem.** Agent clients (opencode with tools) send `tools`. A pool such
 as `pool/fast` mixes models that call tools well (Qwen3) with ones that do
 not: Gemma 3n answers with the text `tool_code …` instead of a tool call,
@@ -1585,6 +1643,8 @@ must tag new models. A wrong tag shows up as a failing agent, a missing one
 as a `fallback` count.
 
 ## ADR-024: Separate limits for prompt processing and generation
+
+**Status:** accepted · **Date:** 2026-10-03
 
 **Problem.** `-upstream-timeout` bounded a whole proxied request. On phones
 two different waits hide in it: prompt processing (no output at all; an
@@ -1610,6 +1670,8 @@ stopped while it produces tokens; generation is bounded by its context
 size and the client's own cancel.
 
 ## ADR-025: The cluster as MCP tools (`pbctl mcp`)
+
+**Status:** accepted · **Date:** 2026-10-03
 
 **Problem.** Super Borg jobs (ADR-021) are reachable from the panel and
 `pbctl`, but an agent that a user works with, such as opencode on a strong
@@ -1646,6 +1708,8 @@ future work.
 
 ## ADR-026: Named admin tokens
 
+**Status:** accepted · **Date:** 2026-10-03
+
 **Problem.** ADR-008 has one admin token. With the panel open on a laptop
 and `pbctl` on the server sharing it, the audit log could only say
 `"principal":"admin"` and an address: a placement change that cleared every
@@ -1676,6 +1740,8 @@ the single admin role; scopes are future work.
 
 ## ADR-027: Pool status, on/off switch and no conflicting pools
 
+**Status:** accepted · **Date:** 2026-10-04
+
 **Problem.** Operators read pools as modes that are "on" or "off". When
 every phone was switched to a model a pool did not allow, `pool/smart` had
 no eligible node and opencode failed with "no eligible ready node", with
@@ -1699,6 +1765,8 @@ common model, while a phone serves one model at a time.
   chooses models (ADR-011); pools still do not load models.
 
 ## ADR-028: Multi-model benchmark (MMB)
+
+**Status:** accepted · **Date:** 2026-10-04
 
 **Problem.** Choosing a model per phone relied on the planner's predicted
 speed (ADR-015) and one self-test per loaded model. Operators asked for real,
@@ -1731,6 +1799,8 @@ need those phones lose them for that time. Numbers depend on temperature
 
 ## ADR-029: External orchestrators
 
+**Status:** accepted · **Date:** 2026-10-04
+
 **Problem.** The Super Borg orchestrator (ADR-020, ADR-022) is the
 bottleneck: Qwen3-8B on a phone processes prompts at about 6 tok/s and
 plans weakly. Strong models are available elsewhere: Ollama or oMLX on a
@@ -1755,6 +1825,8 @@ APIs still see the controller's health polls and one short self-test per
 model.
 
 ## ADR-030: Firmware check
+
+**Status:** accepted · **Date:** 2026-10-06
 
 **Problem.** Old phones often run outdated firmware: the POCO F3 of the
 reference cluster had a 31-month-old security patch and stock MIUI, which
@@ -1792,6 +1864,8 @@ wipes it.
 
 ## ADR-031: Grafana in the panel
 
+**Status:** accepted · **Date:** 2026-10-06
+
 **Problem.** Metrics live in Grafana on its own port, the panel on the
 controller's: two places, two logins, and Grafana's port must be reachable
 from every browser. The panel's CSP only allows content from its own origin,
@@ -1822,6 +1896,8 @@ cookies; the panel asks for a new one when it loads.
 
 ## ADR-032: Token analyzer
 
+**Status:** accepted · **Date:** 2026-10-07
+
 **Problem.** On phones every prompt token costs seconds (Qwen3-4B reads
 about 12 tokens/s, see BENCHMARKS.md), and the context is 16k tokens. An
 operator needs to know how long a prompt is for each served model before
@@ -1850,6 +1926,8 @@ few tokens longer. The reading time uses the self-test prompt speed from a
 short prompt, so long prompts take longer than shown.
 
 ## ADR-033: Semantic router for "auto" (experimental)
+
+**Status:** accepted, experimental · **Date:** 2026-10-09
 
 **Problem.** `auto` sends every request to any ready phone. A greeting and
 a request to write a red-black tree land on the same kind of phone, though
@@ -1916,6 +1994,10 @@ decides in about 2 s. Calibration per model and other decisions (retry,
 verification in Super Borg) are left for later.
 
 ## ADR-034: Big Brain pools
+
+**Status:** accepted · **Date:** 2026-10-16
+
+[![Big Brain: a head llama-server on the host holds no weights and drives ggml-rpc-server on several phones, each holding a slice of the layers; one request at a time](../assets/diagrams/bigbrain-rpc.png)](../assets/diagrams/src/bigbrain-rpc.svg)
 
 **Problem.** A phone serves only a model that fits its own free RAM: 3–8 GB
 here, so at most a quantised 8–14B model. Several phones together hold

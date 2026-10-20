@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="750" rx="24" fill="#FAFAF7"/>
+
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">From one command to a serving phone</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">deploy/install.sh on Debian or Ubuntu, then plug phones in; pcprov and the node-agent do the rest</text>
+
+  <!-- column headers -->
+  <g font-size="14" font-weight="600">
+    <text x="40" y="125" fill="#2F5D8A">1 · ON THE HOST</text>
+    <text x="410" y="125" fill="#2E6E46">2 · ON THE PHONE (you)</text>
+    <text x="700" y="125" fill="#2F5D8A">3 · pcprov PROVISIONS IT OVER adb</text>
+  </g>
+
+  <!-- 1: install variants -->
+  <rect x="40" y="140" width="330" height="140" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="60" y="168" font-size="16" font-weight="700" fill="#1F3F5E">install.sh host</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="60" y="194">systemd units:</text>
+    <text x="60" y="214">phoneborg-controller.service</text>
+    <text x="60" y="234">phoneborg-pcprov.service</text>
+  </g>
+  <text x="60" y="262" font-size="13.5" fill="#7A4B14">+ apt prometheus, grafana (optional)</text>
+
+  <text x="205" y="303" font-size="14" font-weight="700" fill="#5B5F66" text-anchor="middle">or</text>
+
+  <rect x="40" y="315" width="330" height="140" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="60" y="343" font-size="16" font-weight="700" fill="#1F3F5E">install.sh docker</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="60" y="369">docker-compose.linux.yml</text>
+    <text x="60" y="389">network_mode: host</text>
+    <text x="60" y="409">pcprov privileged, /dev/bus/usb</text>
+  </g>
+  <text x="60" y="437" font-size="13.5" fill="#7A4B14">monitoring profile (optional)</text>
+
+  <!-- both variants lead to the same services -->
+  <path d="M370,210 H390 V587" fill="none" stroke="#5B5F66" stroke-width="2.5"/>
+  <path d="M370,385 H390" fill="none" stroke="#5B5F66" stroke-width="2.5"/>
+  <path d="M390,587 H373" fill="none" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="40" y="495" width="330" height="185" rx="14" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="60" y="523" font-size="16" font-weight="700" fill="#1F3F5E">running services</text>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="60" y="549">controller :18080 · Ollama :11434</text>
+    <text x="60" y="571">pcprov watch</text>
+  </g>
+  <g font-size="14" fill="#7A4B14">
+    <text x="60" y="593">Prometheus :9090 (optional)</text>
+    <text x="60" y="615">Grafana :3000 (optional)</text>
+  </g>
+  <g font-size="13.5" fill="#1F3F5E">
+    <text x="60" y="645">state in /srv/phoneborg</text>
+    <text x="60" y="665">bootstrap model qwen2.5-0.5b q4_k_m</text>
+  </g>
+
+  <!-- 2: the phone -->
+  <g font-size="14" fill="#24563A">
+    <rect x="410" y="140" width="250" height="100" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="426" y="166" width="28" height="48"/>
+    <text x="468" y="182" font-size="16" font-weight="700">plug in by USB</text>
+    <text x="468" y="206">one cable per phone</text>
+
+    <rect x="410" y="275" width="250" height="100" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="428" y="305" font-size="16" font-weight="700">enable USB debugging</text>
+    <text x="428" y="331">in Developer options</text>
+
+    <rect x="410" y="410" width="250" height="130" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="428" y="440" font-size="16" font-weight="700">tap "Allow"</text>
+    <text x="428" y="466">on the USB debugging prompt</text>
+    <text x="428" y="498" font-size="13.5" fill="#2E6E46">until then pcprov shows</text>
+    <text x="428" y="518" font-size="13.5" fill="#2E6E46">waiting-authorization</text>
+  </g>
+  <line x1="535" y1="240" x2="535" y2="272" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="535" y1="375" x2="535" y2="407" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="660" y1="455" x2="697" y2="455" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- 3: pcprov steps -->
+  <rect x="700" y="140" width="460" height="334" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="720" y="168" font-size="16" font-weight="700" fill="#1F3F5E">pcprov steps</text>
+  <text x="836" y="168" font-size="14" fill="#5B5F66">for each new device, in order</text>
+  <g font-size="14" fill="#1F3F5E">
+    <rect x="720" y="180" width="420" height="44" rx="10" fill="#DCE7F2"/>
+    <text x="736" y="207" font-weight="700">check-abi</text>
+    <text x="870" y="207">needs arm64-v8a</text>
+
+    <rect x="720" y="232" width="420" height="44" rx="10" fill="#DCE7F2"/>
+    <text x="736" y="259" font-weight="700">adb-reverse</text>
+    <text x="870" y="259">tcp:18080 → controller</text>
+
+    <rect x="720" y="284" width="420" height="44" rx="10" fill="#DCE7F2"/>
+    <text x="736" y="311" font-weight="700">push</text>
+    <text x="870" y="311">node-agent binary</text>
+
+    <rect x="720" y="336" width="420" height="70" rx="10" fill="#DCE7F2"/>
+    <text x="736" y="376" font-weight="700">push-runtime</text>
+    <text x="870" y="363">llama-server build by CPU features</text>
+    <text x="870" y="385">+ bootstrap GGUF · adb forward</text>
+
+    <rect x="720" y="414" width="420" height="44" rx="10" fill="#DCE7F2"/>
+    <text x="736" y="441" font-weight="700">restart-agent</text>
+    <text x="870" y="441">start node-agent on the phone</text>
+  </g>
+
+  <text x="720" y="501" font-size="13.5" fill="#8A2F25">a failed step → failed, retried after 30 s … 10 min</text>
+  <line x1="1110" y1="474" x2="1110" y2="517" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- 4: the phone joins -->
+  <rect x="700" y="520" width="460" height="160" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+  <text x="720" y="548" font-size="16" font-weight="700" fill="#24563A">4 · the node-agent joins the cluster</text>
+  <g font-size="14" fill="#24563A">
+    <rect x="720" y="565" width="115" height="66" rx="10" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="1.5"/>
+    <text x="777" y="603" text-anchor="middle" font-weight="700">registers</text>
+
+    <rect x="865" y="565" width="140" height="66" rx="10" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="1.5"/>
+    <text x="935" y="593" text-anchor="middle" font-weight="700">benchmarks</text>
+    <text x="935" y="613" text-anchor="middle">itself</text>
+
+    <rect x="1035" y="565" width="105" height="66" rx="10" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="1.5"/>
+    <text x="1087" y="593" text-anchor="middle" font-weight="700">ACTIVE</text>
+    <text x="1087" y="613" text-anchor="middle">serving</text>
+  </g>
+  <line x1="835" y1="598" x2="862" y2="598" stroke="#3C8D5A" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1005" y1="598" x2="1032" y2="598" stroke="#3C8D5A" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="720" y="662" font-size="13.5" fill="#2E6E46">CPU GFLOPS + memory bandwidth · heartbeat every 5 s</text>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="708" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="62" y="720">host processes</text>
+    <rect x="180" y="708" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="202" y="720">phone</text>
+    <rect x="262" y="708" width="14" height="14" rx="3" fill="#C27C2C"/><text x="284" y="720">monitoring (optional)</text>
+  </g>
+</svg>

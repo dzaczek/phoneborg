@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <marker id="arrow-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#B5473A"/>
+    </marker>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="660" rx="24" fill="#FAFAF7"/>
+
+  <!-- title -->
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Model switch on a phone</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">How the node-agent's runtime follows the model the controller wants it to serve</text>
+
+  <!-- trigger -->
+  <rect x="330" y="108" width="540" height="40" rx="10" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+  <text x="346" y="133" font-size="14" fill="#1F3F5E"><tspan font-weight="700">trigger</tspan> · heartbeat reply carries a Desired model that differs</text>
+  <line x1="455" y1="148" x2="455" y2="187" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M1035,190 V128 H873" fill="none" stroke="#5B5F66" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+  <text x="1047" y="160" font-size="13.5" fill="#5B5F66">next Desired</text>
+
+  <!-- states -->
+  <g font-size="14">
+    <!-- idle -->
+    <rect x="40" y="190" width="250" height="200" rx="14" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="58" y="221" font-size="17" font-weight="700" fill="#24563A">idle</text>
+    <text x="58" y="250" fill="#24563A">no model running yet</text>
+    <text x="58" y="271" fill="#24563A">reports its memory budget</text>
+    <text x="58" y="292" fill="#24563A">in every heartbeat</text>
+
+    <!-- downloading -->
+    <rect x="330" y="190" width="250" height="200" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="348" y="221" font-size="17" font-weight="700" fill="#24563A">downloading</text>
+    <text x="348" y="250" fill="#24563A">file cached with the right</text>
+    <text x="348" y="271" fill="#24563A">SHA-256? skip this step</text>
+    <text x="348" y="300" fill="#24563A">low on storage: evict</text>
+    <text x="348" y="321" fill="#24563A">least recently used models</text>
+    <text x="348" y="350" font-size="13.5" fill="#2E6E46">GET /v1/model-files/{id}</text>
+    <text x="348" y="369" font-size="13.5" fill="#2E6E46">Range resume · SHA verify</text>
+
+    <!-- loading -->
+    <rect x="620" y="190" width="250" height="200" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="638" y="221" font-size="17" font-weight="700" fill="#24563A">loading</text>
+    <text x="638" y="250" fill="#24563A">fit the memory budget:</text>
+    <text x="638" y="271" fill="#24563A">f16 KV → q8_0 KV</text>
+    <text x="638" y="292" fill="#24563A">→ halve ctx → 1 slot</text>
+    <text x="638" y="321" fill="#24563A">restart llama-server</text>
+    <text x="638" y="350" font-size="13.5" fill="#2E6E46">wait for /health</text>
+    <text x="638" y="369" font-size="13.5" fill="#2E6E46">up to 2 min</text>
+
+    <!-- serving -->
+    <rect x="910" y="190" width="250" height="200" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2.5"/>
+    <use href="#phone" x="1112" y="204" width="28" height="48"/>
+    <text x="928" y="221" font-size="17" font-weight="700" fill="#24563A">serving</text>
+    <text x="928" y="250" fill="#24563A">llama-server is ready</text>
+    <text x="928" y="279" fill="#24563A">self-test: 32 tokens</text>
+    <text x="928" y="300" fill="#24563A">→ gen and prompt tok/s</text>
+    <text x="928" y="350" font-size="13.5" fill="#2E6E46">tok/s go to the controller</text>
+    <text x="928" y="369" font-size="13.5" fill="#2E6E46">in the next heartbeat</text>
+  </g>
+
+  <!-- state arrows -->
+  <g stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)">
+    <line x1="290" y1="290" x2="327" y2="290"/>
+    <line x1="580" y1="290" x2="617" y2="290"/>
+    <line x1="870" y1="290" x2="907" y2="290"/>
+  </g>
+
+  <!-- rpc branch -->
+  <line x1="165" y1="390" x2="165" y2="447" stroke="#3C8D5A" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+  <text x="177" y="424" font-size="13.5" font-weight="600" fill="#2E6E46">Desired mode = rpc</text>
+  <g font-size="14" fill="#24563A">
+    <rect x="40" y="450" width="250" height="150" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2" stroke-dasharray="7 5"/>
+    <text x="58" y="481" font-size="17" font-weight="700">rpc</text>
+    <text x="102" y="481" font-size="14" fill="#2E6E46">Big Brain member</text>
+    <text x="58" y="508">ggml-rpc-server replaces</text>
+    <text x="58" y="529">llama-server, lends RAM</text>
+    <text x="58" y="558" font-size="13.5" fill="#2E6E46">from any state; the old model</text>
+    <text x="58" y="577" font-size="13.5" fill="#2E6E46">comes back when it leaves</text>
+  </g>
+
+  <!-- error -->
+  <line x1="455" y1="390" x2="455" y2="447" stroke="#B5473A" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow-err)"/>
+  <line x1="745" y1="390" x2="745" y2="447" stroke="#B5473A" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow-err)"/>
+  <text x="467" y="424" font-size="13.5" font-weight="600" fill="#8A2F25">fails</text>
+  <text x="757" y="424" font-size="13.5" font-weight="600" fill="#8A2F25">fails</text>
+  <g font-size="14" fill="#8A2F25">
+    <rect x="330" y="450" width="830" height="150" rx="14" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="348" y="481" font-size="17" font-weight="700">error</text>
+    <text x="348" y="510">fall back: restart the previous model if its file is still</text>
+    <text x="348" y="531">on disk, so the phone keeps serving</text>
+    <text x="348" y="560" font-size="13.5">bad SHA · no storage · does not fit · no /health in 2 min</text>
+    <line x1="790" y1="472" x2="790" y2="580" stroke="#B5473A" stroke-width="1.5"/>
+    <text x="808" y="481" font-size="16" font-weight="700">retry backoff</text>
+    <text x="808" y="510">same Desired again after 30 s,</text>
+    <text x="808" y="531">doubling up to 10 min</text>
+    <text x="808" y="560" font-size="13.5">sooner if the memory budget grows</text>
+  </g>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="622" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="62" y="634">controller</text>
+    <rect x="150" y="622" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="172" y="634">node-agent runtime state</text>
+    <rect x="360" y="622" width="14" height="14" rx="3" fill="#B5473A"/><text x="382" y="634">failure</text>
+  </g>
+</svg>

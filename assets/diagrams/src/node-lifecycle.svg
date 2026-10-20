@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="730" viewBox="0 0 1200 730" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <marker id="arrow-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#B5473A"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3C8D5A"/>
+    </marker>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="730" rx="24" fill="#FAFAF7"/>
+
+  <!-- title -->
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Node lifecycle</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">The controller's view of each phone, driven by the agent's register, benchmark and heartbeat calls</text>
+
+  <text x="40" y="132" font-size="14" font-weight="600" fill="#2F5D8A">CONTROLLER · registry state per node</text>
+
+  <!-- entry -->
+  <text x="40" y="190" font-size="14" font-weight="700" fill="#1E2328">register</text>
+  <circle cx="56" cy="210" r="8" fill="#5B5F66"/>
+  <line x1="64" y1="210" x2="107" y2="210" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- states -->
+  <g font-size="14">
+    <rect x="110" y="170" width="230" height="80" rx="14" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2.5"/>
+    <text x="128" y="200" font-size="17" font-weight="700" fill="#1F3F5E">BENCHMARKING</text>
+    <text x="128" y="226" fill="#1F3F5E">waiting for the benchmark</text>
+
+    <rect x="500" y="170" width="260" height="80" rx="14" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2.5"/>
+    <text x="518" y="200" font-size="17" font-weight="700" fill="#24563A">ACTIVE</text>
+    <text x="518" y="226" fill="#24563A">routable once its runtime is ready</text>
+
+    <rect x="500" y="370" width="260" height="80" rx="14" fill="#F6EBDD" stroke="#C27C2C" stroke-width="2.5"/>
+    <text x="518" y="400" font-size="17" font-weight="700" fill="#7A4B14">SUSPECT</text>
+    <text x="518" y="426" fill="#7A4B14">3 heartbeats missed · no routing</text>
+
+    <rect x="110" y="370" width="230" height="80" rx="14" fill="#F7E3E0" stroke="#B5473A" stroke-width="2.5"/>
+    <text x="128" y="400" font-size="17" font-weight="700" fill="#8A2F25">OFFLINE</text>
+    <text x="128" y="426" fill="#8A2F25">6 heartbeats missed</text>
+  </g>
+
+  <!-- transitions -->
+  <g stroke="#5B5F66" stroke-width="2.5" fill="none" marker-end="url(#arrow)">
+    <line x1="340" y1="210" x2="497" y2="210"/>
+    <line x1="590" y1="250" x2="590" y2="367"/>
+    <line x1="690" y1="370" x2="690" y2="253"/>
+    <line x1="500" y1="410" x2="343" y2="410"/>
+    <line x1="330" y1="370" x2="505" y2="252"/>
+    <line x1="160" y1="370" x2="160" y2="253"/>
+  </g>
+  <g font-size="13.5" fill="#5B5F66">
+    <text x="418" y="199" font-size="14" font-weight="700" fill="#1E2328" text-anchor="middle">benchmark report</text>
+    <text x="412" y="232" text-anchor="middle">POST /v1/benchmark</text>
+
+    <text x="580" y="304" font-size="14" font-weight="700" fill="#1E2328" text-anchor="end">no heartbeat</text>
+    <text x="580" y="322" text-anchor="end">for 15 s</text>
+
+    <text x="700" y="304" font-size="14" font-weight="700" fill="#1E2328">heartbeat</text>
+    <text x="700" y="322">resumes</text>
+
+    <text x="421" y="400" font-size="14" font-weight="700" fill="#1E2328" text-anchor="middle">no heartbeat</text>
+    <text x="421" y="432" text-anchor="middle">for 30 s</text>
+
+    <text x="404" y="342" font-size="14" font-weight="700" fill="#1E2328">heartbeat</text>
+
+    <text x="170" y="304" font-size="14" font-weight="700" fill="#1E2328">heartbeat,</text>
+    <text x="170" y="322">no benchmark yet</text>
+  </g>
+
+  <!-- notes -->
+  <rect x="40" y="490" width="370" height="170" rx="14" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2"/>
+  <g font-size="14" fill="#1F3F5E">
+    <text x="58" y="520" font-size="16" font-weight="700">timers</text>
+    <text x="58" y="546">heartbeat interval 5 s</text>
+    <text x="58" y="567">SUSPECT after 3 missed = 15 s</text>
+    <text x="58" y="588">OFFLINE after 6 missed = 30 s</text>
+    <text x="58" y="618" font-size="13.5" fill="#2F5D8A">a returning heartbeat goes to ACTIVE,</text>
+    <text x="58" y="637" font-size="13.5" fill="#2F5D8A">or BENCHMARKING if none is on record</text>
+  </g>
+
+  <rect x="430" y="490" width="360" height="170" rx="14" fill="#FFFFFF" stroke="#5B5F66" stroke-width="2" stroke-dasharray="7 5"/>
+  <g font-size="14" fill="#1E2328">
+    <text x="448" y="520" font-size="16" font-weight="700">drained = a flag, not a state</text>
+    <text x="448" y="546">set by an operator on any node</text>
+    <text x="448" y="567">no new requests go to it</text>
+    <text x="448" y="588">requests already running finish</text>
+    <text x="448" y="618" font-size="13.5" fill="#5B5F66">the node keeps its state and</text>
+    <text x="448" y="637" font-size="13.5" fill="#5B5F66">keeps heartbeating</text>
+  </g>
+
+  <!-- agent strip -->
+  <rect x="822" y="110" width="348" height="560" rx="18" fill="none" stroke="#3C8D5A" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="842" y="137" font-size="14" font-weight="600" fill="#2E6E46">PHONE · node-agent loop</text>
+
+  <g font-size="14" fill="#24563A">
+    <rect x="860" y="155" width="290" height="62" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="876" y="181" font-size="16" font-weight="700">register</text>
+    <text x="876" y="203" font-size="13.5" fill="#2E6E46">POST /v1/register · inventory</text>
+
+    <rect x="860" y="242" width="290" height="82" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="876" y="268" font-size="16" font-weight="700">self-benchmark</text>
+    <text x="876" y="290">CPU GFLOPS + memory bandwidth</text>
+    <text x="876" y="310" font-size="13.5" fill="#2E6E46">measured once, reused on re-register</text>
+
+    <rect x="860" y="349" width="290" height="62" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="876" y="375" font-size="16" font-weight="700">report benchmark</text>
+    <text x="876" y="397" font-size="13.5" fill="#2E6E46">POST /v1/benchmark</text>
+
+    <rect x="860" y="436" width="290" height="82" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <text x="876" y="462" font-size="16" font-weight="700">heartbeat every 5 s</text>
+    <text x="876" y="484">RAM · load · temperature · runtime</text>
+    <text x="876" y="504" font-size="13.5" fill="#2E6E46">reply carries the Desired model</text>
+  </g>
+
+  <g font-size="14" fill="#8A2F25">
+    <rect x="860" y="550" width="290" height="100" rx="12" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="876" y="576" font-size="16" font-weight="700">session lost</text>
+    <text x="876" y="598">3 failed heartbeats in a row,</text>
+    <text x="876" y="617">or 404: controller forgot the node</text>
+    <text x="876" y="637" font-size="13.5">→ re-register, backoff 1 s … 30 s</text>
+  </g>
+
+  <g stroke="#3C8D5A" stroke-width="2.5" fill="none" marker-end="url(#arrow-green)">
+    <line x1="1005" y1="217" x2="1005" y2="239"/>
+    <line x1="1005" y1="324" x2="1005" y2="346"/>
+    <line x1="1005" y1="411" x2="1005" y2="433"/>
+  </g>
+  <!-- heartbeat self-loop -->
+  <path d="M1150,462 H1160 V496 H1153" fill="none" stroke="#3C8D5A" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+  <!-- failure -->
+  <line x1="1005" y1="518" x2="1005" y2="547" stroke="#B5473A" stroke-width="2.5" marker-end="url(#arrow-err)"/>
+  <path d="M860,600 H842 V186 H857" fill="none" stroke="#B5473A" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#arrow-err)"/>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="690" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="62" y="702">controller</text>
+    <rect x="150" y="690" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="172" y="702">phone · healthy</text>
+    <rect x="300" y="690" width="14" height="14" rx="3" fill="#C27C2C"/><text x="322" y="702">missed heartbeats</text>
+    <rect x="465" y="690" width="14" height="14" rx="3" fill="#B5473A"/><text x="487" y="702">offline / failure</text>
+  </g>
+</svg>

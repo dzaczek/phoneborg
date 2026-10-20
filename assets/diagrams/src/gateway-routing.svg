@@ -1,0 +1,175 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5F66"/>
+    </marker>
+    <marker id="arrow-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#B5473A"/>
+    </marker>
+    <symbol id="phone" viewBox="0 0 28 48">
+      <rect x="1.5" y="1.5" width="25" height="45" rx="5" fill="#FFFFFF" stroke="#3C8D5A" stroke-width="2.5"/>
+      <rect x="5" y="7" width="18" height="30" rx="1.5" fill="#CFE7D7"/>
+      <circle cx="14" cy="41.5" r="2" fill="#3C8D5A"/>
+    </symbol>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="760" rx="24" fill="#FAFAF7"/>
+
+  <!-- title -->
+  <text x="40" y="58" font-size="26" font-weight="700" fill="#1E2328">Life of a request</text>
+  <text x="40" y="84" font-size="15" fill="#5B5F66">How the gateway turns one OpenAI call into tokens streamed from one phone</text>
+
+  <!-- client request -->
+  <rect x="40" y="104" width="330" height="36" rx="10" fill="#ECE8F3" stroke="#7A6A9E" stroke-width="2"/>
+  <text x="56" y="127" font-size="14" fill="#4A3F66"><tspan font-weight="700">client</tspan> · POST /v1/chat/completions</text>
+  <line x1="115" y1="140" x2="115" y2="167" stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- stage row -->
+  <g font-size="14" fill="#1F3F5E">
+    <!-- 1 auth -->
+    <rect x="40" y="170" width="150" height="230" rx="12" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+    <text x="54" y="200" font-size="17" font-weight="700">auth</text>
+    <text x="54" y="232">API key:</text>
+    <text x="54" y="253">Bearer or</text>
+    <text x="54" y="274">x-api-key</text>
+    <text x="54" y="306">no key → the</text>
+    <text x="54" y="327">access mode</text>
+    <text x="54" y="348">decides</text>
+
+    <!-- 2 resolve -->
+    <rect x="210" y="170" width="160" height="230" rx="12" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+    <text x="224" y="200" font-size="17" font-weight="700">resolve model</text>
+    <text x="224" y="232">auto</text>
+    <text x="224" y="253">model id</text>
+    <text x="224" y="274">node/&lt;alias&gt;</text>
+    <text x="224" y="295">pool/&lt;name&gt;</text>
+    <text x="224" y="348" font-size="13.5" fill="#2F5D8A">node/…: no picker,</text>
+    <text x="224" y="367" font-size="13.5" fill="#2F5D8A">no failover</text>
+
+    <!-- 3 router (optional) -->
+    <rect x="390" y="170" width="170" height="230" rx="12" fill="#FFFFFF" stroke="#2F5D8A" stroke-width="2" stroke-dasharray="7 5"/>
+    <text x="404" y="200" font-size="17" font-weight="700">semantic router</text>
+    <text x="404" y="232">only for auto,</text>
+    <text x="404" y="253">when switched on</text>
+    <text x="404" y="285">a classifier phone</text>
+    <text x="404" y="306">picks a class →</text>
+    <text x="404" y="327">that class's target</text>
+    <text x="404" y="361" font-size="13.5" fill="#2F5D8A">any error →</text>
+    <text x="404" y="380" font-size="13.5" fill="#2F5D8A">plain auto</text>
+
+    <!-- 4 candidates -->
+    <rect x="580" y="170" width="175" height="230" rx="12" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+    <text x="594" y="200" font-size="17" font-weight="700">candidates</text>
+    <text x="594" y="232">ACTIVE node</text>
+    <text x="594" y="253">runtime ready</text>
+    <text x="594" y="274">not switching model</text>
+    <text x="594" y="295">not drained</text>
+    <text x="594" y="316">prompt fits its ctx</text>
+    <text x="594" y="361" font-size="13.5" fill="#2F5D8A">tools → prefer</text>
+    <text x="594" y="380" font-size="13.5" fill="#2F5D8A">"tools"-tagged models</text>
+
+    <!-- 5 picker -->
+    <rect x="775" y="170" width="195" height="230" rx="12" fill="#DCE7F2" stroke="#2F5D8A" stroke-width="2"/>
+    <text x="789" y="200" font-size="17" font-weight="700">picker</text>
+    <text x="789" y="232">default: affinity</text>
+    <text x="789" y="253">same prompt prefix →</text>
+    <text x="789" y="274">same phone (pin 30 min)</text>
+    <text x="789" y="295">spill when the pin has</text>
+    <text x="789" y="316">2+ more in-flight</text>
+    <text x="789" y="337">avoid hot ≥ 75 °C</text>
+    <text x="789" y="372" font-size="13.5" fill="#2F5D8A">pools: spread</text>
+    <text x="789" y="391" font-size="13.5" fill="#2F5D8A">(fewest in-flight)</text>
+  </g>
+
+  <!-- 6 forward (phone) -->
+  <g font-size="14" fill="#24563A">
+    <rect x="990" y="170" width="170" height="230" rx="12" fill="#E3F1E7" stroke="#3C8D5A" stroke-width="2"/>
+    <use href="#phone" x="1004" y="184" width="28" height="48"/>
+    <text x="1042" y="203" font-size="17" font-weight="700">forward</text>
+    <text x="1042" y="224" font-size="17" font-weight="700">&amp; stream</text>
+    <text x="1004" y="264">to the phone's</text>
+    <text x="1004" y="285">llama-server</text>
+    <text x="1004" y="316">SSE chunks pass</text>
+    <text x="1004" y="337">straight through</text>
+    <text x="1004" y="372" font-size="13.5" fill="#2E6E46">first byte ≤ 30 min</text>
+  </g>
+
+  <!-- stage arrows -->
+  <g stroke="#5B5F66" stroke-width="2.5" marker-end="url(#arrow)">
+    <line x1="190" y1="285" x2="207" y2="285"/>
+    <line x1="370" y1="285" x2="387" y2="285"/>
+    <line x1="560" y1="285" x2="577" y2="285"/>
+    <line x1="755" y1="285" x2="772" y2="285"/>
+    <line x1="970" y1="285" x2="987" y2="285"/>
+  </g>
+
+  <!-- early rejects -->
+  <g font-size="14" fill="#8A2F25">
+    <line x1="115" y1="400" x2="115" y2="437" stroke="#B5473A" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-err)"/>
+    <rect x="40" y="440" width="150" height="58" rx="10" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="54" y="463" font-weight="700">401 · 403</text>
+    <text x="54" y="484" font-size="13.5">bad key · remote</text>
+
+    <line x1="290" y1="400" x2="290" y2="437" stroke="#B5473A" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-err)"/>
+    <rect x="210" y="440" width="160" height="58" rx="10" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="224" y="463" font-weight="700">404</text>
+    <text x="224" y="484" font-size="13.5">model_not_found</text>
+
+    <line x1="667" y1="400" x2="667" y2="437" stroke="#B5473A" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow-err)"/>
+    <rect x="572" y="440" width="190" height="58" rx="10" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="586" y="463" font-weight="700">400</text>
+    <text x="586" y="484" font-size="13.5">context_length_exceeded</text>
+  </g>
+  <text x="404" y="465" font-size="13.5" fill="#5B5F66">rejected before</text>
+  <text x="404" y="484" font-size="13.5" fill="#5B5F66">any phone is tried</text>
+
+  <!-- failure lane -->
+  <rect x="30" y="522" width="1140" height="160" rx="16" fill="none" stroke="#B5473A" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="50" y="549" font-size="14" font-weight="700" fill="#8A2F25">failure path · only while nothing has reached the client yet</text>
+
+  <g font-size="14" fill="#8A2F25">
+    <text x="50" y="590" font-size="13.5">After the first byte there is</text>
+    <text x="50" y="609" font-size="13.5">no retry: the stream ends.</text>
+    <text x="50" y="640" font-size="13.5">node/&lt;alias&gt; targets get one</text>
+    <text x="50" y="659" font-size="13.5">attempt only.</text>
+
+    <rect x="390" y="566" width="365" height="100" rx="12" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="404" y="592" font-weight="700">502 backends_failed</text>
+    <text x="404" y="613" font-size="13.5">every phone tried</text>
+    <text x="404" y="632" font-size="13.5">has failed</text>
+    <line x1="572" y1="580" x2="572" y2="652" stroke="#B5473A" stroke-width="1.5"/>
+    <text x="586" y="592" font-weight="700">503 busy</text>
+    <text x="586" y="613" font-size="13.5">no phone had a free</text>
+    <text x="586" y="632" font-size="13.5">slot, none was tried</text>
+
+    <rect x="775" y="566" width="195" height="100" rx="12" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="789" y="592" font-weight="700">cool down + retry</text>
+    <text x="789" y="614" font-size="13.5">phone avoided for 30 s</text>
+    <text x="789" y="633" font-size="13.5">retry once elsewhere</text>
+    <text x="789" y="652" font-size="13.5">(2 attempts max)</text>
+
+    <rect x="990" y="566" width="170" height="100" rx="12" fill="#F7E3E0" stroke="#B5473A" stroke-width="2"/>
+    <text x="1004" y="592" font-weight="700">phone fails</text>
+    <text x="1004" y="614" font-size="13.5">connect error, 5xx</text>
+    <text x="1004" y="633" font-size="13.5">or first-byte</text>
+    <text x="1004" y="652" font-size="13.5">timeout</text>
+  </g>
+
+  <!-- failure arrows -->
+  <line x1="1075" y1="400" x2="1075" y2="563" stroke="#B5473A" stroke-width="2.5" marker-end="url(#arrow-err)"/>
+  <line x1="990" y1="616" x2="973" y2="616" stroke="#B5473A" stroke-width="2.5" marker-end="url(#arrow-err)"/>
+  <line x1="775" y1="616" x2="758" y2="616" stroke="#B5473A" stroke-width="2.5" marker-end="url(#arrow-err)"/>
+  <line x1="872" y1="566" x2="872" y2="403" stroke="#B5473A" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#arrow-err)"/>
+  <text x="882" y="470" font-size="13.5" font-weight="600" fill="#8A2F25">retry</text>
+  <text x="1065" y="470" font-size="13.5" font-weight="600" fill="#8A2F25" text-anchor="end">before first byte</text>
+
+  <!-- legend -->
+  <g font-size="13.5" fill="#5B5F66">
+    <rect x="40" y="718" width="14" height="14" rx="3" fill="#7A6A9E"/><text x="62" y="730">client</text>
+    <rect x="125" y="718" width="14" height="14" rx="3" fill="#2F5D8A"/><text x="147" y="730">gateway (in the controller)</text>
+    <rect x="345" y="718" width="14" height="14" rx="3" fill="#3C8D5A"/><text x="367" y="730">phone</text>
+    <rect x="430" y="718" width="14" height="14" rx="3" fill="#B5473A"/><text x="452" y="730">errors</text>
+    <rect x="525" y="718" width="14" height="14" rx="3" fill="none" stroke="#2F5D8A" stroke-width="2" stroke-dasharray="4 3"/><text x="547" y="730">dashed = optional step</text>
+  </g>
+</svg>
