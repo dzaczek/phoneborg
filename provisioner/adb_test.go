@@ -43,3 +43,25 @@ func TestParseForwardList(t *testing.T) {
 		t.Fatal("matched wrong serial")
 	}
 }
+
+func TestSupportedArch(t *testing.T) {
+	cases := []struct {
+		name, abis, uname string
+		ok, u32           bool
+	}{
+		{"arm64 abilist", "arm64-v8a,armeabi-v7a,armeabi\n", "", true, false},
+		{"arm64 abilist ignores uname", "arm64-v8a\n", "armv7l\n", true, false},
+		{"v7a only + aarch64", "armeabi-v7a,armeabi\n", "aarch64\n", true, true},
+		{"v7a only + arm64", "armeabi-v7a", " arm64 \r\n", true, true},
+		{"v7a only + armv7l", "armeabi-v7a,armeabi\n", "armv7l\n", false, false},
+		{"empty both", "", "", false, false},
+		{"whitespace only", " \n", "\n", false, false},
+		{"x86 + x86_64 uname", "x86_64,x86\n", "x86_64\n", false, false},
+	}
+	for _, c := range cases {
+		ok, u32 := SupportedArch(c.abis, c.uname)
+		if ok != c.ok || u32 != c.u32 {
+			t.Errorf("%s: got (%v,%v) want (%v,%v)", c.name, ok, u32, c.ok, c.u32)
+		}
+	}
+}

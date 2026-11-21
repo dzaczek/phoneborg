@@ -429,10 +429,17 @@ func gib(b uint64) string { return fmt.Sprintf("%.1f GiB", float64(b)/GiB) }
 // fall back to the class heuristic (EstRAM/Fits, ADR-011).
 func fitsNode(m PlanModel, n Node) bool {
 	if n.BudgetBytes > 0 {
-		shape := memplan.Shape{Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
-		return memplan.Plan(m.SizeBytes, m.ResidentBytes, shape, m.CtxSize(), 1, "auto", n.BudgetBytes).Fits
+		return PlanBudget(m, n.BudgetBytes).Fits
 	}
 	return Fits(m.EstRAM(), n.RAMTotalBytes)
+}
+
+// PlanBudget plans m into a node memory budget the way the node agent
+// degrades a model switch: halved context and a q8_0 KV cache. When it does
+// not fit, Need is the memory required at the smallest context.
+func PlanBudget(m PlanModel, budget int64) memplan.Result {
+	shape := memplan.Shape{Layers: m.Layers, KVHeads: m.KVHeads, HeadDim: m.HeadDim}
+	return memplan.Plan(m.SizeBytes, m.ResidentBytes, shape, m.CtxSize(), 1, "auto", budget)
 }
 
 // noFitReason explains why no node was eligible for policy p and model m: no

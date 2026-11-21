@@ -1,8 +1,10 @@
 # Android TV boxes as PhoneBorg nodes
 
-Working note, 2026-10-20: hardware options and the code changes needed to run
-Android TV boxes next to the phones. Nothing here has been tested on a real
-box yet; performance figures are estimates until measured.
+Started 2026-10-20 as a working note; since 2026-11-21 TV boxes are part of
+the collective. The first box, an NVIDIA Shield TV (2017), joined the
+reference cluster over network adb: see [Measured: NVIDIA Shield TV
+(2017)](#measured-nvidia-shield-tv-2017). Figures for other boxes are still
+estimates.
 
 ## Why
 
@@ -13,7 +15,36 @@ boxes (~$55 each) with the same layer-split idea as Big Brain
 study is also the warning: cheap, poorly secured devices with network adb are
 exactly the attack surface it describes.
 
-## NVIDIA Shield TV Pro (ordered, first test device)
+## Measured: NVIDIA Shield TV (2017)
+
+`darcy`, Android 11, Tegra X1 (4× Cortex-A57, no dotprod), 3 GB, Ethernet.
+Its 64-bit userland and real serial needed none of the fallbacks below.
+
+| Step | Result |
+|---|---|
+| Discovery | `-scan` of the boxes' /22 (1022 hosts, a routed subnet, not the controller's own) found it in the first round; "Allow network debugging" accepted with the remote |
+| Provisioning | about 30 s from pcprov start to `ACTIVE`, including the 491 MB model push over the network; build `armv8-a`, 4 threads |
+| Slim | 25 packages disabled (19 by `pcprov slim`, 6 more by hand: Chromecast, Play Store, home-screen recommendations, NVIDIA telemetry and updater, smartconnect) and Android's cached-process limit lowered to 4 (`device_config put activity_manager max_cached_processes 4`). MemAvailable 0.9 → 1.6 GB, agent budget 0.51 → 1.1 GiB |
+| Budget | the agent keeps a 600 MiB reserve (`-mem-reserve-mb`), which on 3 GB is most of the headroom: before the extra slimming only a 350M model fitted |
+
+`pbctl mmb run nodes=shield` after slimming (generation speed, short answer
+latency):
+
+| Model | Gen tok/s | Prompt tok/s | Short answer |
+|---|---|---|---|
+| LFM2-350M Q4_K_M | **17.9** | 39.9 | 0.6 s |
+| Qwen2.5-0.5B Q4_K_M | 10.3 | 21.4 | 1.1 s |
+| LFM2-700M Q4_K_M | 9.8 | 18.9 | 1.2 s |
+| Qwen3-0.6B Q4_K_M | 9.0 | 22.5 | 1.1 s |
+| Gemma 3 1B Q4_K_L | 6.0 | 11.3 | 2.2 s |
+| Llama 3.2 1B Q4_K_M | 5.4 | 11.5 | 1.7 s |
+
+Big Brain: a Big Brain slice is the node's free RAM minus 900 MiB, so the
+Shield would add only about 0.7 GB of layers, and every extra node slows
+every token. A 3 GB box is worth more as a fast small-model worker
+(`pool/fast`); boxes with 8–16 GB are the Big Brain candidates.
+
+## NVIDIA Shield TV Pro (2019): expectations before the test
 
 - **SoC:** Tegra X1+, 4× Cortex-A57 (ARMv8.0, no dotprod). pcprov will pick the
   slowest llama.cpp build, `armv8-a`.
@@ -52,13 +83,45 @@ boxes are often fake.
 Open or drill the case, stick a heatsink on the SoC and add a small 5 V fan
 powered from the box's own USB port. Without it tok/s drop after a few minutes.
 
+## Network discovery
+
+Boxes without a USB device port (the Shield) run adb over the network.
+`pcprov watch -scan` finds them, so a box can be added by just enabling
+network debugging on it:
+
+```sh
+pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  -scan 192.168.50.0/24          # also: 192.168.50.20, 192.168.50.20:5556,
+                                 #       192.168.50.10-40, 192.168.50.10-192.168.50.40
+```
+
+- Every `-scan-interval` (default `2m`) pcprov TCP-probes each target on
+  `-scan-port` (default `5555`, 800 ms timeout, 64 in parallel) and runs
+  `adb connect` on the open ones that are not already connected. Devices in
+  `offline` state are reconnected; `unauthorized` ones are left alone until
+  "Allow network debugging" is accepted on the TV with the remote.
+- The watch loop then sees `<ip>:5555` in `adb devices` and provisions it
+  like a USB phone (backoff, Devices panel, auto-provision toggle).
+- `-scan` is repeatable and adds to USB detection; with `-serial`/`-connect`
+  the scanned hosts are managed on top of that allow-list. A spec that expands
+  to more than 4096 hosts, IPv6 and malformed specs are rejected at start.
+- A box reachable over both USB and the network shows up twice under two
+  serials; use one path per box.
+- `pcprov slim -serial <ip>:5555` (or `watch -slim`) also knows the TV apps:
+  streaming (Netflix, Prime Video, YouTube, Plex, ...), games, Live TV, the
+  Assistant and NVIDIA's NAS/SMB server. Launcher, keyboard, Play services,
+  Chromecast and remote pairing stay; `pcprov unslim` restores everything.
+  On the Shield it freed 169 MiB (MemAvailable 899 → 1068 MiB).
+- Scan only the boxes' own VLAN (row 4 below): anything there with adb open
+  gets connected and, once authorized, provisioned.
+
 ## Code changes
 
 | # | Problem | Where | Fix |
 |---|---|---|---|
-| 1 | Many cheap boxes have a 64-bit CPU and kernel but a 32-bit Android userland: `abilist` lacks `arm64-v8a`, so provisioning rejects them | `provisioner/provision.go:59-64` (`SupportedABI` at `:38-41`) | if `abilist` has no `arm64-v8a`, accept the device when `uname -m` is `aarch64`; the agent (`CGO_ENABLED=0`) and llama.cpp are static arm64 binaries and should run there. Needs a test on a real box |
-| 2 | Cheap boxes often report the placeholder serial `0123456789ABCDEF`. Over USB pcprov refuses them; over network adb every box would get the **same** node ID | `node-agent/inventory.go:236` (`NodeID`), placeholder list in `provisioner/devices.go:39` | skip placeholder serials in `NodeID` and fall back to `android_id` |
-| 3 | Boxes on network adb are not found by the USB hot-plug watch | `pcprov watch` (`-connect` in `provisioner/cmd/pcprov/main.go:57`) | document `-connect <ip>:5555`; optionally reconnect dropped network devices on each watch tick |
+| 1 | Many cheap boxes have a 64-bit CPU and kernel but a 32-bit Android userland: `abilist` lacks `arm64-v8a`, so provisioning rejects them | `provisioner/provision.go:59-64` (`SupportedABI` at `:38-41`) | Done: `SupportedArch` falls back to `uname -m`; a 32-bit userland is logged as a warning. llama variant selection reads `/proc/cpuinfo`, which on a 32-bit userland lists 32-bit feature names, so such a box gets the baseline `armv8-a` build. Still needs a test on a real box |
+| 2 | Cheap boxes often report the placeholder serial `0123456789ABCDEF`. Over USB pcprov refuses them; over network adb every box would get the **same** node ID | `node-agent/inventory.go:236` (`NodeID`), placeholder list in `provisioner/devices.go:39` | Done: `pickNodeID` skips placeholder serials and falls back to `android_id`, then hostname |
+| 3 | Boxes on network adb are not found by the USB hot-plug watch | `pcprov watch` (`-connect` in `provisioner/cmd/pcprov/main.go:57`) | Done: `pcprov watch -scan <ip, CIDR or range>` probes the targets every `-scan-interval` (2 min) and runs `adb connect` on new hosts with the adb port open, see [Network discovery](#network-discovery) |
 | 4 | Network adb is an open door | docs | put boxes on their own VLAN, never expose port 5555 beyond it, keep adb key authorization on |
 
 Already fine, no change needed:
@@ -78,7 +141,8 @@ the agent and llama.cpp, and would be too slow to be worth it.
 2. `pcprov provision` / `pcprov watch -connect <ip>:5555`; the box should reach
    `ACTIVE` in `pbctl nodes`.
 3. Measure with `pbctl mmb run nodes=<alias>`: tok/s for 0.5B and 1.5B, and the
-   temperature after 10 minutes of load.
+   temperature after 10 minutes of load. Done for 0.35B–1B, see above;
+   temperature under sustained load is still open.
 4. Add the box to a pool and to a Big Brain test, then record the numbers in
    `docs/BENCHMARKS.md` and turn this note into a "TV boxes" section in
    `docs/REAL_PHONES.md`.

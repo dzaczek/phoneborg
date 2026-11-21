@@ -230,12 +230,32 @@ func MaxTemperature(batteryTemp *float64) *float64 {
 
 func Battery() (*int, *float64) { return ParseBatteryDumpsys(run("dumpsys", "battery")) }
 
-// NodeID prefers the hardware serial, then Android ID (stable per device and
-// readable by the shell user), then hostname.
+// placeholderSerials are junk serials cheap boxes report; keep in sync with
+// placeholderSerials in provisioner/devices.go (node-agent must not import
+// provisioner).
+var placeholderSerials = map[string]bool{
+	"0123456789ABCDEF": true,
+	"UNKNOWN":          true,
+}
+
+// NodeID prefers the hardware serial (unless it is a placeholder), then
+// Android ID (stable per device and readable by the shell user), then hostname.
 func NodeID(props map[string]string) string {
-	id := firstNonEmpty(props["ro.serialno"], strings.TrimSpace(run("settings", "get", "secure", "android_id")))
-	if id == "" || id == "null" {
-		id, _ = os.Hostname()
+	host, _ := os.Hostname()
+	return pickNodeID(props["ro.serialno"], strings.TrimSpace(run("settings", "get", "secure", "android_id")), host)
+}
+
+func pickNodeID(serial, androidID, hostname string) string {
+	serial = strings.TrimSpace(serial)
+	if placeholderSerials[strings.ToUpper(serial)] {
+		serial = ""
+	}
+	if androidID == "null" {
+		androidID = ""
+	}
+	id := firstNonEmpty(serial, androidID)
+	if id == "" {
+		id = hostname
 	}
 	return sanitize(id)
 }

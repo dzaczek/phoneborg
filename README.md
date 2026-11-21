@@ -173,6 +173,27 @@ prefer MoE models. Full results:
 [BENCHMARKS.md](docs/BENCHMARKS.md#big-brain-one-model-across-phones) and
 [issue #6](https://github.com/dzaczek/phoneborg/issues/6).
 
+## A new era: TV boxes
+
+> *The collective has outgrown the drawer. Android TV boxes are now
+> assimilated over the network. A Thermomix in the kitchen is under
+> long-range scanning.*
+
+Since 2026-11-21 PhoneBorg also assimilates Android TV boxes, which have no
+USB device port and run adb over the network. `pcprov watch -scan` probes an
+IP, range or subnet every two minutes and connects any new box with network
+debugging on; from there it is provisioned like a phone:
+
+```sh
+pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -scan 192.168.50.0/24
+```
+
+The first drone, an NVIDIA Shield TV (2017, 3 GB), reached `ACTIVE` about
+30 s after pcprov started. With `pcprov slim`, which now knows the TV apps,
+it serves LFM2-350M at 17.9 tok/s and Qwen2.5-0.5B at 10.3 tok/s. Keep the
+boxes on their own network: anything there with adb open gets connected.
+Details, buying advice and measurements: [docs/TVBOXES.md](docs/TVBOXES.md).
+
 ## Model benchmark (MMB)
 
 MMB loads every model that fits on the chosen phones and measures load time,
@@ -281,7 +302,8 @@ The drones do not need to be asked twice.
 | [docs/DEV_EMULATION.md](docs/DEV_EMULATION.md) | developer environment with emulated phones, e2e and load tests |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: components, routing, placement, ports, security |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | every measurement, with setup and method |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..034) |
+| [docs/TVBOXES.md](docs/TVBOXES.md) | Android TV boxes: network discovery, buying advice, Shield measurements |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | architecture decision records (ADR-001..035) |
 
 ## Repository layout
 
@@ -309,7 +331,8 @@ docs/                  guides, architecture, benchmarks, ADRs
   spreading across cheap, poorly secured devices. Its demo splits a 26B model
   over 15 off-brand Android TV boxes (~$55 each), the same layer-split idea
   as [Big Brain](#big-brain). It is also a reminder of why PhoneBorg keeps
-  phones on USB, the gateway local by default and adb off the network.
+  phones on USB, the gateway local by default, and network adb (TV boxes)
+  opt-in, limited to the subnets given to `-scan`.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp): the inference engine on
   every phone, and its RPC backend behind Big Brain.
 

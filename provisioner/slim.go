@@ -31,6 +31,17 @@ var SlimTargets = []slimCategory{
 	{Name: "messaging", Packages: []string{"com.android.messaging"}},
 	{Name: "email", Packages: []string{"com.android.email"}},
 	{Name: "telephony", Telephony: true, Packages: []string{"com.android.contacts", "com.android.dialer"}},
+	// Android TV boxes (seen on an NVIDIA Shield, docs/TVBOXES.md). The
+	// launcher, keyboard, Play services/Store and remote pairing stay;
+	// Chromecast (apps.mediashell) does too, the "shell" guard covers it.
+	{Name: "tv-streaming", Packages: []string{"com.netflix.ninja", "com.amazon.amazonvideo.livingroom",
+		"com.amazon.amazonvideo.livingroom.nvidia", "com.google.android.youtube.tv", "com.google.android.videos",
+		"com.plexapp.android", "com.plexapp.mediaserver.smb", "com.zattoo.player"}},
+	{Name: "tv-games", Packages: []string{"com.google.android.play.games", "com.nvidia.tegrazone3", "com.nvidia.nvgamecast"}},
+	{Name: "tv-assistant", Packages: []string{"com.google.android.katniss", "com.android.hotwordenrollment.okgoogle",
+		"com.android.hotwordenrollment.xgoogle", "com.nvidia.hotwordsetup"}},
+	{Name: "tv-livetv", Packages: []string{"com.android.tv"}},
+	{Name: "tv-nas", Packages: []string{"com.nvidia.shield.nas", "com.nvidia.shield.smbserver"}},
 }
 
 // SetupWizardPackages are force-stopped once setup is marked complete, and

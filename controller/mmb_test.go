@@ -117,3 +117,41 @@ func TestMMBWithOverrides(t *testing.T) {
 func specWithPin(model string, nodes ...string) models.Spec {
 	return models.Spec{Policies: []models.Policy{{ModelID: model, Mode: models.ModePin, Nodes: nodes}}}
 }
+
+// modelsFor decides by the node's reported memory budget when it has one,
+// and by the RAM class otherwise.
+func TestMMBModelsForBudget(t *testing.T) {
+	e, src := newModelEnv(t, map[string]float64{"xs1": 2.9, "xs2": 2.9})
+	dir := filepath.Dir(strings.TrimPrefix(src, "file://"))
+	small := strings.TrimPrefix(src, "file://")
+	big := filepath.Join(dir, "Big-Model-Q4_K_M.gguf")
+	data, _ := os.ReadFile(small)
+	_ = os.WriteFile(big, data, 0o600)
+	_ = os.Truncate(small, 400<<20)
+	_ = os.Truncate(big, 800<<20)
+	e.admin(http.MethodPost, "/admin/models", `{"source":"`+src+`"}`, http.StatusAccepted, nil)
+	e.admin(http.MethodPost, "/admin/models", `{"source":"file://`+big+`"}`, http.StatusAccepted, nil)
+	e.waitReady("qwen2.5-0.5b-instruct-q4_k_m")
+	e.waitReady("big-model-q4_k_m")
+
+	e.heartbeat(proto.Heartbeat{NodeID: "xs1", Runtime: &proto.RuntimeStatus{State: "serving", BudgetBytes: 640 << 20}})
+	e.heartbeat(proto.Heartbeat{NodeID: "xs2", Runtime: &proto.RuntimeStatus{State: "serving"}})
+	nodes := map[string]proto.Node{}
+	all, _ := e.reg.View()
+	for _, n := range all {
+		nodes[n.ID] = n
+	}
+	want := []string{"qwen2.5-0.5b-instruct-q4_k_m", "big-model-q4_k_m"}
+
+	got := e.srv.mmb.modelsFor(nodes["xs1"], want)
+	if len(got) != 2 || got[0].Status != MMBQueued || got[1].Status != MMBSkipped ||
+		!strings.Contains(got[1].Error, "even at the smallest context") || !strings.Contains(got[1].Error, "budget is 0.6 GiB") {
+		t.Errorf("with a budget: %+v", got)
+	}
+	// Without a budget the class heuristic applies: nothing fits xs.
+	for _, r := range e.srv.mmb.modelsFor(nodes["xs2"], want) {
+		if r.Status != MMBSkipped || !strings.Contains(r.Error, "does not fit a xs phone") {
+			t.Errorf("without a budget: %+v", r)
+		}
+	}
+}
