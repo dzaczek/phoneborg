@@ -228,15 +228,12 @@ func (b *mmb) modelsFor(n proto.Node, want []string) []MMBResult {
 			continue
 		}
 		r := MMBResult{NodeID: n.ID, Alias: n.Alias, Device: device, ModelID: m.ID, Params: m.Params, SizeBytes: m.SizeBytes, Status: MMBQueued}
-		resident := m.ResidentBytes
-		if resident == 0 {
-			resident = m.SizeBytes
-		}
-		switch {
-		case !slices.Contains(m.FitsClasses, class):
+		if budget > 0 {
+			if res := models.PlanBudget(m.PlanModel(), budget); !res.Fits {
+				r.Status, r.Error = MMBSkipped, fmt.Sprintf("needs %.1f GiB even at the smallest context, the phone's budget is %.1f GiB", float64(res.Need)/(1<<30), float64(budget)/(1<<30))
+			}
+		} else if !slices.Contains(m.FitsClasses, class) {
 			r.Status, r.Error = MMBSkipped, fmt.Sprintf("does not fit a %s phone with a 16k context", class)
-		case budget > 0 && resident > budget:
-			r.Status, r.Error = MMBSkipped, fmt.Sprintf("needs %.1f GiB, the phone's budget is %.1f GiB", float64(resident)/(1<<30), float64(budget)/(1<<30))
 		}
 		if r.Status == MMBSkipped && len(want) == 0 {
 			continue // only requested models are listed as skipped
