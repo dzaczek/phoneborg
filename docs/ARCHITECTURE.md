@@ -100,8 +100,11 @@ as the `shell` user (ADR-001).
 llama.cpp build the CPU supports (`bin/llama/<ARM_ARCH>/`, ADR-007), pushes
 the agent, llama-server and an optional model, sets up the adb links and
 starts the agent detached. `watch` does this for every device that appears
-(polling every 3 s) and re-checks adb links every 15 s. `slim`/`unslim`
-reversibly disable user-facing apps to free RAM.
+(polling every 3 s) and re-checks adb links every 15 s. With `-scan`
+(ADR-035) it also probes the given IPv4 hosts, ranges or subnets for an open
+adb port every `-scan-interval` (2 min) and runs `adb connect` on new ones,
+so network-adb devices such as Android TV boxes are provisioned the same
+way. `slim`/`unslim` reversibly disable user-facing apps to free RAM.
 
 ### Monitoring (`deploy/`)
 
@@ -525,6 +528,7 @@ no TLS anywhere yet.
 | `/v1/nodes`, `/status`, `/metrics`, `/healthz` | **unauthenticated**, read-only |
 | `/v1/model-files/<id>` | **unauthenticated**, same trust as the heartbeat: anything that reaches the port can download catalog models, including `file://` sources (ADR-011). |
 | llama-server on the phone | bound to the phone's 127.0.0.1, reachable only through `adb forward` |
+| Network adb (TV boxes, `pcprov watch -scan`, ADR-035) | opt-in; only the given subnets are probed, and a box joins only after its owner accepts the adb key on screen. Legacy network adb is not encrypted, so the node protocol and llama-server traffic tunnelled through it cross that network in clear: keep the boxes on their own VLAN. |
 | External nodes (ADR-016) | the controller sends each its own API key, if set; the key is stored in `external.json` (mode 0600), never returned by the admin API and never logged. A client's PhoneBorg key is never forwarded. The external server's own exposure is the operator's responsibility. |
 
 Why unauthenticated in v0: the node protocol is meant to move to gRPC + mTLS
@@ -535,6 +539,8 @@ localhost or a trusted network and do not expose it to untrusted networks.
 ## Known limitations
 
 - Phones must stay on USB to the adb host; no Wi-Fi nodes yet (ADR-003).
+  Android TV boxes are the exception: network adb, opt-in with `-scan`
+  (ADR-035).
 - The agent is started over adb and does not survive a phone reboot;
   `pcprov watch` re-provisions when the phone is plugged in (ADR-001).
 - One model per phone; no model split across phones.

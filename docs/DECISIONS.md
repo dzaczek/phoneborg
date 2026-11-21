@@ -2074,3 +2074,60 @@ processing is slow (1–10 tok/s), so long prompts hit the gateway's
 first-token timeout; raise it for these pools' clients. The RPC protocol
 has no authentication: the phones bind 127.0.0.1 and are reached only
 through adb.
+
+## ADR-035: Android TV boxes over network adb
+
+**Status:** accepted · **Date:** 2026-11-21
+
+**Problem.** Android TV boxes are cheap, mains-powered and never sleep, but
+most have no USB device port (the NVIDIA Shield TV has USB-A host ports
+only), so adb runs over the network and `pcprov watch`, which only sees
+devices the adb server already knows, never finds them. Cheap boxes also
+break two phone assumptions: a 64-bit kernel under a 32-bit userland
+(`abilist` without `arm64-v8a`) and the placeholder serial
+`0123456789ABCDEF`, which would give every box the same node ID. On 3 GB the
+multi-model benchmark refused the box outright: the RAM class `xs` starts at
+0 GiB, so the class heuristic fits nothing there.
+
+**Alternatives.**
+- `-connect <ip>:5555` per box (already existed): manual, and a box that
+  reboots or changes address drops out.
+- mDNS (`adb mdns services`): needs Android 11 wireless-debugging pairing,
+  which most TV boxes do not offer, and does not cross subnets.
+- Probing operator-given addresses (chosen): works with legacy
+  `adb tcpip` on any box and across routed subnets.
+
+**Decision.**
+- `pcprov watch -scan <spec>` (repeatable; IPv4, IP:port, CIDR, `a.b.c.d-e`
+  or `a.b.c.d-a.b.c.e`; at most 4096 hosts) TCP-probes every target that is
+  not already a `device` or `unauthorized` adb entry, every `-scan-interval`
+  (default 2 min, 800 ms timeout, 64 in parallel), and runs `adb connect` on
+  the open ones; an `offline` entry is disconnected first, because adb
+  answers "already connected" to a connect on it and does nothing. The watch
+  loop then provisions `<ip>:5555` like a USB phone. `-scan` adds to USB
+  detection; with `-serial`/`-connect` the scanned hosts are managed on top
+  of that allow-list. pcprov starts the adb server once before the scanner,
+  so the scanner and the first watch tick do not both spawn it.
+- Provisioning accepts a device without `arm64-v8a` in `abilist` when
+  `uname -m` is `aarch64`/`arm64` (static arm64 binaries run on a 32-bit
+  userland), with a warning.
+- The agent skips placeholder serials for its node ID and falls back to
+  `android_id`, then the hostname.
+- `pcprov slim` knows the TV apps (streaming, games, Live TV, Assistant,
+  NVIDIA NAS); launcher, keyboard, Play services and remote pairing stay.
+- MMB decides fit by the node's reported memory budget, the same
+  `memplan.Plan` as the placement planner (ADR-012), and falls back to the
+  class heuristic only for nodes without a budget.
+
+**Consequences.**
+- A new box joins with no command: enable network debugging, accept the
+  key on screen. The Shield TV (2017) reached `ACTIVE` about 30 s after
+  pcprov started (docs/TVBOXES.md).
+- Network adb is an attack surface: anything in a scanned subnet with adb
+  open is connected, and once its key is accepted, provisioned. Legacy
+  network adb is unencrypted, so node-protocol and llama-server traffic
+  through it crosses that network in clear. Boxes belong on their own VLAN.
+- A box reachable over both USB and the network appears twice, under two
+  serials.
+- The agent's fixed 600 MiB reserve is most of a 3 GB box's headroom; a
+  reserve scaled to the device's RAM is an open follow-up.
