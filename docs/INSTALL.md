@@ -240,6 +240,26 @@ Tip: put `export PHONEBORG_ADMIN_TOKEN=$(cat /srv/phoneborg/admin-token)`
 and `export PATH=$PATH:/srv/phoneborg/app/bin` in `~/.profile`, so `pbctl`
 works in every shell.
 
+### Adding TV boxes (optional)
+
+Android TV boxes without a USB device port join over network adb (ADR-035).
+Put them on their own VLAN first: network adb is not encrypted. On each box,
+turn on network debugging. Then add the box subnet to the provisioner's
+`ExecStart` in `/etc/systemd/system/phoneborg-pcprov.service`, right after
+`watch`:
+
+```text
+ExecStart=/srv/phoneborg/app/bin/pcprov watch -scan 192.168.50.0/24 -model ...
+```
+
+`-scan` takes an IP, a CIDR, a range or `IP:port`, and can be repeated. Then
+`sudo systemctl daemon-reload && sudo systemctl restart phoneborg-pcprov`.
+The scan repeats every 2 minutes. When the box shows "Allow network
+debugging", accept it with the remote. The box is then provisioned like a
+phone and listed by `pbctl nodes` as kind `phone`. A box that is also on USB
+appears twice; use one path per box. Details and the measured Shield TV are in
+[TVBOXES.md](TVBOXES.md#network-discovery).
+
 ## 10. The web panel
 
 Open `http://<host>:18080/ui/` from any machine that reaches the host and

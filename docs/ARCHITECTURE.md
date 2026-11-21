@@ -57,6 +57,11 @@ Everything the phones do goes over the USB cable: the agent talks to
 and the controller reaches each phone's llama-server through an `adb forward`
 on the host (ADR-003, ADR-006).
 
+Android TV boxes without a USB device port are nodes too, reached over network
+adb instead of the cable: the same agent and the same `adb reverse` /
+`adb forward` links run over a TCP connection (ADR-035, see
+[Provisioning over adb](#provisioning-over-adb)).
+
 ## Components
 
 ### Controller (`controller/`, binary `controller`)
@@ -142,6 +147,11 @@ sequenceDiagram
 loose cable, a hot phone) while it stays listed. `pcprov watch` restores them
 on the same host port the agent advertises; `pcprov heal -serial S` does it
 once.
+
+TV boxes on network adb (`<ip>:5555`, found by `pcprov watch -scan`, ADR-035)
+get the same steps. They are not on the USB hot-plug path, so the scanner
+connects them and the watch loop then provisions them; the box asks for
+"Allow network debugging" once, and its adb key must be accepted there.
 
 ## Node lifecycle
 
@@ -369,8 +379,8 @@ on the `controller-state` volume.
 | Port | Where | What |
 |---|---|---|
 | 18080 | host | controller: gateway `/v1`, admin `/admin`, `/ui/`, `/status`, `/metrics`, `/healthz` (`-listen`) |
-| 18080 | phone | `adb reverse` to the controller (`pcprov -controller-port`) |
-| 18090 | phone, 127.0.0.1 only | llama-server (`pcprov -serve-port`, agent `-serve-port`) |
+| 18080 | phone or TV box | `adb reverse` to the controller (`pcprov -controller-port`) |
+| 18090 | phone or TV box, 127.0.0.1 only | llama-server (`pcprov -serve-port`, agent `-serve-port`) |
 | ephemeral | host | `adb forward` to each phone's 18090, chosen by adb and reused on re-provisioning; the controller reaches it on `-backend-host` (default 127.0.0.1, `host.docker.internal` in compose) |
 | 18091 | phone | `tests/e2e/llm_smoke.sh` test server, so it does not disturb the agent |
 | 9090 | host | Prometheus (compose) |
@@ -470,12 +480,14 @@ for them with `read_doc`. Rationale: ADR-021.
 ## Production deployment
 
 The reference deployment is one Linux VM next to the phones; the phones
-reach it only over USB. [INSTALL.md](INSTALL.md) installs it step by step
-with the templates in `deploy/host/`.
+reach it only over USB, and TV boxes only over network adb on their own VLAN
+(ADR-035). [INSTALL.md](INSTALL.md) installs it step by step with the
+templates in `deploy/host/`.
 
 ```mermaid
 flowchart TB
   phones["phones"] -->|"USB"| hv["hypervisor<br>USB passthrough by host port, not by vendor:product id<br>(two phones of one vendor share 18d1:4ee7 and get mixed up)"]
+  boxes["TV boxes"] -->|"network adb, own VLAN"| pc
   hv --> pc
   subgraph vm["Linux VM (Debian): adb, a user with the phones' adb keys"]
     pc["phoneborg-pcprov.service (Requires= the controller)<br>pcprov watch -model state/models/qwen2.5-0.5b-….gguf<br>-agent-args '-ctx-size 16384' -admin-token-file …"]

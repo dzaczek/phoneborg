@@ -63,6 +63,7 @@ different phones (see [Splitting a fleet](#splitting-a-fleet)).
 | **MCP tools** | `pbctl mcp`: lets an agent (opencode) use the cluster as tools: ask, map tasks in parallel, vote, run and follow jobs. |
 | **MMB** | the multi-model benchmark: loads every model that fits on chosen phones and measures them the same way. |
 | **Big Brain pool** | a pool with routing `bigbrain`: its phones lend their RAM to one catalog model through llama.cpp RPC, and the controller runs it. |
+| **TV box** | an Android TV box on network adb. It is a node like a phone (kind `phone` in `pbctl`), found by `pcprov watch -scan`; see [TVBOXES.md](TVBOXES.md). |
 
 ## 1. A model, `auto` or a phone
 
@@ -232,6 +233,12 @@ fewest phones whose free RAM holds the model, the fastest first; a slow
 phone (the Mi 8) slows every token. **Choose the model:** a
 mixture-of-experts model (Qwen3-30B-A3B) rather than a dense one of the
 same size; a dense 32B or a 2-bit 70B is a demonstration more than a tool.
+
+TV boxes can be Big Brain members too, but the RAM decides it: a Big Brain
+slice is a node's free RAM minus 900 MiB, so a 3 GB box (the NVIDIA Shield TV,
+2017) adds only about 0.7 GB of layers and is worth more as a fast small-model
+worker. Boxes with 8–16 GB are the Big Brain candidates
+([TVBOXES.md](TVBOXES.md#measured-nvidia-shield-tv-2017)).
 
 ## Function calling (tools)
 

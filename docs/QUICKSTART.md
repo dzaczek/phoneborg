@@ -119,6 +119,28 @@ Keep the phone awake on USB (vendor ROMs may sleep with the screen off):
 adb shell svc power stayon usb
 ```
 
+### A TV box instead of a phone
+
+A TV box has no USB device port, so it joins over the network. These steps
+replace steps 2 and 4; steps 0, 1 and 3 are the same as for a phone:
+
+1. On the box, open **Settings → Device Preferences → About** (the menu
+   may differ) and tap **Build** 7 times to unlock Developer options.
+2. Settings → Developer options → turn on **Network debugging**. Note the
+   box's IP address (Settings → Network).
+3. Run `watch` with `-scan`, giving the box's IP or its subnet:
+
+```sh
+bin/pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf -agent-args "-ctx-size 16384" -scan 192.168.1.50
+```
+
+4. On the TV, accept **Allow network debugging?** with the remote. Within
+   about a minute `bin/pbctl nodes` shows the box as ACTIVE.
+
+Keep boxes on their own VLAN. Network adb is unencrypted, so never let
+port 5555 reach other networks. Details, scan options and measurements:
+[TVBOXES.md](TVBOXES.md#network-discovery).
+
 ## 5. First request
 
 ```sh
@@ -228,7 +250,7 @@ next start.
 
 | Symptom | Fix |
 |---|---|
-| `adb devices` shows `unauthorized` | unlock the phone and accept the prompt; replug |
+| `adb devices` shows `unauthorized` | unlock the phone and accept the prompt; replug. A TV box: accept "Allow network debugging" on the TV |
 | `adb devices` shows `no permissions` (Linux) | you are not in `plugdev` yet: log out and in; after a reboot, `adb kill-server`, then replug |
 | `make llama-all`: `exec format error` | x86-64 host without QEMU: run the `binfmt` command from step 0 |
 | the phone is not listed at all | a charge-only cable or USB debugging off |
