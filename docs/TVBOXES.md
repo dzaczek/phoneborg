@@ -22,7 +22,7 @@ Its 64-bit userland and real serial needed none of the fallbacks below.
 
 | Step | Result |
 |---|---|
-| Discovery | `-scan` of the boxes' /22 (1022 hosts, a routed subnet, not the controller's own) found it in the first round; "Allow network debugging" accepted with the remote |
+| Discovery | `-scan 192.168.44.0/22` (1022 hosts, routed from the controller's 10.10.100.0/24) found it in the first round; "Allow network debugging" accepted with the remote |
 | Provisioning | about 30 s from pcprov start to `ACTIVE`, including the 491 MB model push over the network; build `armv8-a`, 4 threads |
 | Slim | 25 packages disabled (19 by `pcprov slim`, 6 more by hand: Chromecast, Play Store, home-screen recommendations, NVIDIA telemetry and updater, smartconnect) and Android's cached-process limit lowered to 4 (`device_config put activity_manager max_cached_processes 4`). MemAvailable 0.9 → 1.6 GB, agent budget 0.51 → 1.1 GiB |
 | Budget | the agent keeps a 600 MiB reserve (`-mem-reserve-mb`), which on 3 GB is most of the headroom: before the extra slimming only a 350M model fitted |
@@ -38,6 +38,24 @@ latency):
 | Qwen3-0.6B Q4_K_M | 9.0 | 22.5 | 1.1 s |
 | Gemma 3 1B Q4_K_L | 6.0 | 11.3 | 2.2 s |
 | Llama 3.2 1B Q4_K_M | 5.4 | 11.5 | 1.7 s |
+
+The reference cluster runs the scan from a systemd drop-in kept in the repo,
+[`deploy/host/phoneborg-pcprov.service.d/tvbox-scan.conf`](../deploy/host/phoneborg-pcprov.service.d/tvbox-scan.conf).
+The extra slimming beyond `pcprov slim`, recorded in the slim state file so
+`pcprov unslim` restores it too:
+
+```sh
+S=192.168.44.213:5555
+P="com.google.android.apps.mediashell com.android.vending com.google.android.tvrecommendations
+   com.nvidia.stats com.nvidia.NvCPLUpdater com.google.android.apps.nbu.smartconnect.tv"
+for p in $P; do adb -s $S shell pm disable-user --user 0 $p; done
+adb -s $S shell "cd /data/local/tmp/phoneborg && (cat slim.state; printf '%s\n' $P) | sort -u > slim.state.new && mv slim.state.new slim.state"
+adb -s $S shell device_config put activity_manager max_cached_processes 4
+```
+
+Disabling the Play Store stops app updates and installs; re-enable it with
+`pcprov unslim` when needed. `com.nvidia.nvgamecast` is persistent and keeps
+running (about 9 MB) until the next reboot.
 
 Big Brain: a Big Brain slice is the node's free RAM minus 900 MiB, so the
 Shield would add only about 0.7 GB of layers, and every extra node slows
