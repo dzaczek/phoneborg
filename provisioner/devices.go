@@ -112,7 +112,7 @@ func planDevice(rec *deviceRecord, duplicate, placeholder, forced, autoProvision
 func hintForADBState(state string) string {
 	switch state {
 	case "unauthorized":
-		return "unlock the phone and accept the USB debugging prompt (tick \"always allow\")"
+		return "unlock the phone and accept the USB debugging prompt (tick \"always allow\"); on a TV box accept \"Allow network debugging\" on the screen with the remote"
 	case "offline":
 		return "run 'adb kill-server && adb start-server', or replug the cable"
 	default:

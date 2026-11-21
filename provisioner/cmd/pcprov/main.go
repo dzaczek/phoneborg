@@ -2,7 +2,7 @@
 //
 //	pcprov devices
 //	pcprov provision -serial <serial> | -all
-//	pcprov watch                 # auto-provision phones as they are plugged in
+//	pcprov watch [-scan <ip|cidr|a-b>]...   # auto-provision phones as they are plugged in; -scan also finds network-adb boxes
 //	pcprov status -serial <serial>
 //	pcprov stop   -serial <serial>
 //	pcprov slim   -serial <serial> | -all    # disable non-essential apps to free RAM
@@ -52,9 +52,12 @@ func main() {
 	slimTelephony := fs.Bool("slim-telephony", false, "slim/unslim: also disable dialer/contacts (off by default)")
 	controllerURL := fs.String("controller-url", "http://127.0.0.1:18080", "controller URL for device reporting (watch only, ADR-019)")
 	adminTokenFile := fs.String("admin-token-file", "", "admin token file for device reporting (watch only); empty = reporting disabled")
-	var serials, connects multi
+	scanPort := fs.Int("scan-port", 5555, "adb port probed on -scan targets (watch only)")
+	scanInterval := fs.Duration("scan-interval", 2*time.Minute, "how often -scan targets are probed (watch only)")
+	var serials, connects, scans multi
 	fs.Var(&serials, "serial", "device serial (repeatable); for watch, restricts to these serials")
 	fs.Var(&connects, "connect", "adb connect host:port first (repeatable), e.g. emulated phones")
+	fs.Var(&scans, "scan", "watch only: IP, IP:port, CIDR or range (a.b.c.d-e or a.b.c.d-a.b.c.e) probed for network adb, e.g. TV boxes (repeatable)")
 	_ = fs.Parse(os.Args[2:])
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -102,6 +105,20 @@ func main() {
 			os.Exit(1)
 		}
 		defer release()
+	}
+
+	var scanTargets []string
+	if cmd == "watch" && len(scans) > 0 {
+		var err error
+		scanTargets, err = provisioner.ParseScanTargets(scans, *scanPort)
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		if *scanInterval <= 0 {
+			log.Error("-scan-interval must be positive", "got", *scanInterval)
+			os.Exit(1)
+		}
 	}
 
 	switch cmd {
@@ -155,9 +172,20 @@ func main() {
 		} else {
 			log.Info("device reporting disabled; pass -admin-token-file to show devices in the web panel (ADR-019)")
 		}
+		if len(scanTargets) > 0 {
+			// Start the adb server here, once: otherwise the scanner and the
+			// first Watch tick both spawn it and one fails with "Address
+			// already in use".
+			if _, err := adb.Devices(ctx); err != nil {
+				log.Warn("adb devices failed", "err", err)
+			}
+			sc := &provisioner.Scanner{ADB: adb, Targets: scanTargets, Log: log}
+			go sc.Run(ctx, *scanInterval)
+			log.Info("scanning for network adb devices", "targets", len(scanTargets), "interval", *scanInterval)
+		}
 		log.Info("watching for devices", "only", serials)
 		_ = p.Watch(ctx, 3*time.Second, provisioner.WatchOptions{
-			Include:  func(s string) bool { return len(allowed) == 0 || allowed[s] },
+			Include:  provisioner.WatchInclude(allowed, provisioner.IsScanTarget(scanTargets)),
 			After:    afterProvision,
 			Reporter: reporter,
 		})

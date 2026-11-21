@@ -45,6 +45,22 @@ func SupportedABI(abiList string) bool {
 	return false
 }
 
+// SupportedArch decides whether the device can run the static arm64 binaries.
+// abiList is `ro.product.cpu.abilist`, unameM is `uname -m`. Many cheap TV
+// boxes have a 64-bit kernel under a 32-bit Android userland: abilist then
+// lacks arm64-v8a but uname reports aarch64, and static arm64 binaries still
+// run. userland32 is true in that case.
+func SupportedArch(abiList, unameM string) (ok bool, userland32 bool) {
+	if SupportedABI(abiList) {
+		return true, false
+	}
+	switch strings.TrimSpace(unameM) {
+	case "aarch64", "arm64":
+		return true, true
+	}
+	return false, false
+}
+
 // Provision is idempotent: it replaces any running agent with the pushed one.
 func (p *Provisioner) Provision(ctx context.Context, serial string) error {
 	log := p.Log.With("serial", serial)
@@ -60,8 +76,17 @@ func (p *Provisioner) Provision(ctx context.Context, serial string) error {
 	if err != nil {
 		return err
 	}
+	var uname string
 	if !SupportedABI(abis) {
-		return fmt.Errorf("device %s: unsupported ABI list %q (need arm64-v8a)", serial, strings.TrimSpace(abis))
+		// Best effort: a failed uname just leaves the device rejected below.
+		uname, _ = p.ADB.Shell(ctx, serial, "uname -m")
+	}
+	ok, userland32 := SupportedArch(abis, uname)
+	if !ok {
+		return fmt.Errorf("device %s: unsupported ABI list %q (need arm64-v8a, or uname -m aarch64; uname -m reported %q)", serial, strings.TrimSpace(abis), strings.TrimSpace(uname))
+	}
+	if userland32 {
+		log.Warn("32-bit Android userland on a 64-bit kernel; using the static arm64 binaries anyway", "abilist", strings.TrimSpace(abis), "uname", strings.TrimSpace(uname))
 	}
 
 	step("adb-reverse")

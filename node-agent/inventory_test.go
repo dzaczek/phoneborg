@@ -110,3 +110,21 @@ func TestDiscoverFirmware(t *testing.T) {
 		t.Errorf("firmware fields = %+v", inv)
 	}
 }
+
+func TestPickNodeID(t *testing.T) {
+	cases := []struct{ name, serial, aid, host, want string }{
+		{"real serial wins", "R58M123ABC", "abcd1234", "box", "R58M123ABC"},
+		{"placeholder uses android_id", "0123456789ABCDEF", "abcd1234", "box", "abcd1234"},
+		{"lowercase placeholder", "0123456789abcdef", "abcd1234", "box", "abcd1234"},
+		{"unknown placeholder padded", " unknown\n", "abcd1234", "box", "abcd1234"},
+		{"placeholder and null android_id", "0123456789ABCDEF", "null", "box", "box"},
+		{"empty everything but host", "", "", "box", "box"},
+		{"serial sanitized", "AB 12/34", "", "box", "AB1234"},
+		{"android_id sanitized", "0123456789ABCDEF", "ab:cd", "box", "abcd"},
+	}
+	for _, c := range cases {
+		if got := pickNodeID(c.serial, c.aid, c.host); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}

@@ -71,6 +71,11 @@ func (a ADB) Connect(ctx context.Context, hostPort string) error {
 	return err
 }
 
+func (a ADB) Disconnect(ctx context.Context, hostPort string) error {
+	_, err := a.run(ctx, "disconnect", hostPort)
+	return err
+}
+
 func (a ADB) Shell(ctx context.Context, serial, cmd string) (string, error) {
 	return a.run(ctx, "-s", serial, "shell", cmd)
 }

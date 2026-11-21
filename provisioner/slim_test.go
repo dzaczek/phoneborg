@@ -1,6 +1,9 @@
 package provisioner
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // mi8EnabledPackages mirrors what `cmd package list packages -e` reports on
 // the Xiaomi Mi 8 (LineageOS 22.2) described in docs/REAL_PHONES.md: the
@@ -187,5 +190,89 @@ func TestParseMemAvailable(t *testing.T) {
 
 	if _, ok := ParseMemAvailable("MemAvailable: not-a-number kB\n"); ok {
 		t.Fatal("expected ok=false for a malformed value")
+	}
+}
+
+// shieldEnabledPackages is `cmd package list packages -e` on an NVIDIA Shield
+// TV (2017, Android 11), as names.
+var shieldEnabledPackages = []string{
+	"android", "android.autoinstalls.config.nvidia", "com.amazon.amazonvideo.livingroom",
+	"com.amazon.amazonvideo.livingroom.nvidia", "com.android.backupconfirm", "com.android.bluetooth",
+	"com.android.bluetoothmidiservice", "com.android.captiveportallogin", "com.android.certinstaller",
+	"com.android.companiondevicemanager", "com.android.cts.ctsshim", "com.android.cts.priv.ctsshim",
+	"com.android.documentsui", "com.android.dreams.basic", "com.android.dynsystem",
+	"com.android.externalstorage", "com.android.gallery3d", "com.android.hotspot2.osulogin",
+	"com.android.hotwordenrollment.okgoogle", "com.android.hotwordenrollment.xgoogle", "com.android.htmlviewer",
+	"com.android.inputdevices", "com.android.keychain", "com.android.localtransport",
+	"com.android.location.fused", "com.android.mtp", "com.android.networkstack.inprocess",
+	"com.android.networkstack.permissionconfig", "com.android.networkstack.tethering.inprocess",
+	"com.android.networkstack.tethering.nvidia", "com.android.pacprocessor", "com.android.printspooler",
+	"com.android.providers.calendar", "com.android.providers.contacts", "com.android.providers.downloads",
+	"com.android.providers.media", "com.android.providers.media.module", "com.android.providers.settings",
+	"com.android.providers.tv", "com.android.providers.userdictionary", "com.android.proxyhandler",
+	"com.android.se", "com.android.settings.intelligence", "com.android.sharedstoragebackup",
+	"com.android.shell", "com.android.soundpicker", "com.android.statementservice", "com.android.systemui",
+	"com.android.tv", "com.android.tv.settings", "com.android.tv.settings.gms.resoverlay",
+	"com.android.vending", "com.android.vpndialogs", "com.android.wallpaperbackup",
+	"com.android.wifi.resources", "com.google.android.apps.mediashell",
+	"com.google.android.apps.nbu.smartconnect.tv", "com.google.android.backdrop",
+	"com.google.android.ext.services", "com.google.android.ext.shared", "com.google.android.feedback",
+	"com.google.android.gms", "com.google.android.gsf", "com.google.android.inputmethod.latin",
+	"com.google.android.katniss", "com.google.android.leanback.ime", "com.google.android.marvin.talkback",
+	"com.google.android.modulemetadata", "com.google.android.onetimeinitializer",
+	"com.google.android.overlay.modules.ext.services",
+	"com.google.android.overlay.modules.modulemetadata.forframework",
+	"com.google.android.overlay.modules.permissioncontroller",
+	"com.google.android.overlay.modules.permissioncontroller.forframework",
+	"com.google.android.packageinstaller", "com.google.android.partnersetup",
+	"com.google.android.permissioncontroller", "com.google.android.play.games",
+	"com.google.android.sss.authbridge", "com.google.android.syncadapters.calendar", "com.google.android.tts",
+	"com.google.android.tungsten.setupwraith", "com.google.android.tv.frameworkpackagestubs",
+	"com.google.android.tvlauncher", "com.google.android.tvrecommendations",
+	"com.google.android.tv.remote.service", "com.google.android.videos", "com.google.android.webview",
+	"com.google.android.youtube.tv", "com.netflix.ninja", "com.nvidia.app.messaging", "com.nvidia.avsync",
+	"com.nvidia.blakepairing", "com.nvidia.bluetooth.ps3usbpairer",
+	"com.nvidia.bluetooth.ShieldBluetoothManager", "com.nvidia.ControllerMapper", "com.nvidia.developerwidget",
+	"com.nvidia.diagtools", "com.nvidia.factory", "com.nvidia.factorybundling", "com.nvidia.factorysyschecker",
+	"com.nvidia.feedback", "com.nvidia.hotwordsetup", "com.nvidia.inputviewer", "com.nvidia.irtuner",
+	"com.nvidia.KeyComboOta", "com.nvidia.nvaudiosvc", "com.nvidia.NvCPLSvc", "com.nvidia.NvCPLUpdater",
+	"com.nvidia.nvgamecast", "com.nvidia.osc", "com.nvidia.ota", "com.nvidia.overscancomp",
+	"com.nvidia.packagemanagerservice", "com.nvidia.remotelocator", "com.nvidia.shield.appselector",
+	"com.nvidia.shield.ask", "com.nvidia.shieldbeta", "com.nvidia.shield.nas", "com.nvidia.shield.nvcustomize",
+	"com.nvidia.shield.registration", "com.nvidia.shield.remote.server", "com.nvidia.shieldservice",
+	"com.nvidia.shield.smbauth", "com.nvidia.shield.smbserver", "com.nvidia.shieldtech.accessoryui",
+	"com.nvidia.shieldtech.hooks", "com.nvidia.shieldtech.proxy", "com.nvidia.shield.welcome",
+	"com.nvidia.stats", "com.nvidia.tegraprofiler.security", "com.nvidia.tegrazone3",
+	"com.nvidia.wifi.countrycode", "com.plexapp.android", "com.plexapp.mediaserver.smb", "com.zattoo.player",
+}
+
+// TestComputeDisableSetShield pins what slim disables on a real Android TV
+// box: the streaming/games/assistant apps go, while everything the box
+// needs to stay usable with its remote is kept.
+func TestComputeDisableSetShield(t *testing.T) {
+	got := ComputeDisableSet(shieldEnabledPackages, false)
+	want := []string{
+		"com.amazon.amazonvideo.livingroom", "com.amazon.amazonvideo.livingroom.nvidia",
+		"com.android.gallery3d", "com.android.hotwordenrollment.okgoogle", "com.android.hotwordenrollment.xgoogle",
+		"com.android.tv", "com.google.android.katniss",
+		"com.google.android.play.games", "com.google.android.videos", "com.google.android.youtube.tv",
+		"com.netflix.ninja", "com.nvidia.hotwordsetup", "com.nvidia.nvgamecast", "com.nvidia.shield.nas",
+		"com.nvidia.shield.smbserver", "com.nvidia.tegrazone3", "com.plexapp.android",
+		"com.plexapp.mediaserver.smb", "com.zattoo.player",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("disable set:\n got  %v\n want %v", got, want)
+	}
+	keep := []string{
+		"com.google.android.tvlauncher", "com.google.android.leanback.ime", "com.google.android.apps.mediashell", "com.google.android.gms",
+		"com.android.vending", "com.android.tv.settings", "com.nvidia.blakepairing",
+		"com.nvidia.shield.remote.server", "com.google.android.tv.remote.service", "com.android.systemui",
+	}
+	for _, k := range keep {
+		for _, g := range got {
+			if g == k {
+				t.Errorf("%s must not be disabled on a TV box", k)
+			}
+		}
 	}
 }
