@@ -162,7 +162,10 @@ WantedBy=multi-user.target
 Android TV boxes on network adb (no USB device port, e.g. NVIDIA Shield) are
 found with `-scan <ip, CIDR or range>` (repeatable; probed every
 `-scan-interval`, default 2 min): see [TV boxes: network
-discovery](TVBOXES.md#network-discovery).
+discovery](TVBOXES.md#network-discovery). For the systemd unit, add it with
+the drop-in
+[`deploy/host/phoneborg-pcprov.service.d/tvbox-scan.conf`](../deploy/host/phoneborg-pcprov.service.d/tvbox-scan.conf)
+(the reference cluster's subnet; change `-scan` to yours).
 
 The **auto-provision** toggle (panel, or `pbctl devices auto on|off`) turns
 off automatic provisioning of newly detected devices; pcprov keeps
