@@ -2,6 +2,7 @@ package provisioner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +12,16 @@ import (
 // on USB (a loose cable, a hot phone briefly disconnecting). The agent then
 // cannot reach the controller, or the gateway cannot reach llama-server,
 // while adb still lists the device as connected. Heal restores both.
+
+// ErrAgentNotRunning means the pid file's process is not a running node-agent
+// (typically the device rebooted, ADR-001); the device needs re-provisioning.
+var ErrAgentNotRunning = errors.New("node-agent not running")
+
+// AgentRunning reports whether a /proc/<pid>/cmdline read shows a live
+// node-agent. After a reboot the stale pid may belong to another process.
+func AgentRunning(cmdline string) bool {
+	return strings.Contains(cmdline, "node-agent")
+}
 
 // ParseAdvertisePort extracts the node agent's --advertise-port value from its
 // command line (arguments separated by spaces or NULs).
@@ -62,10 +73,19 @@ func (p *Provisioner) Heal(ctx context.Context, serial string) ([]string, error)
 		fixed = append(fixed, fmt.Sprintf("reverse tcp:%d", p.Opts.ControllerPort))
 	}
 
-	cmdline, _ := p.ADB.Shell(ctx, serial, "cat /proc/$(cat "+RemoteDir+"/agent.pid 2>/dev/null)/cmdline 2>/dev/null")
+	// "; true": a missing process gives empty output, not an exit code, so
+	// an adb failure (a real error) is never mistaken for a dead agent and
+	// never triggers a re-provision.
+	cmdline, err := p.ADB.Shell(ctx, serial, "cat /proc/$(cat "+RemoteDir+"/agent.pid 2>/dev/null)/cmdline 2>/dev/null; true")
+	if err != nil {
+		return fixed, err
+	}
+	if !AgentRunning(cmdline) {
+		return fixed, fmt.Errorf("%s: %w", serial, ErrAgentNotRunning)
+	}
 	port, ok := ParseAdvertisePort(cmdline)
 	if !ok {
-		return fixed, nil // agent not running or not serving: nothing to forward
+		return fixed, nil // agent running but not serving: nothing to forward
 	}
 	list, err := p.ADB.run(ctx, "forward", "--list")
 	if err != nil {

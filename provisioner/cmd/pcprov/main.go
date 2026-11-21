@@ -12,6 +12,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -212,6 +213,10 @@ func main() {
 		}
 		for _, s := range dedupe(serials) {
 			fixed, err := p.Heal(ctx, s)
+			if errors.Is(err, provisioner.ErrAgentNotRunning) {
+				log.Error("agent not running on the device; run 'pcprov provision' to start it", "serial", s)
+				os.Exit(1)
+			}
 			fail(log, err)
 			if len(fixed) == 0 {
 				log.Info("adb links ok", "serial", s)
