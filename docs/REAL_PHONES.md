@@ -331,7 +331,30 @@ are in [OPERATIONS.md](OPERATIONS.md#troubleshooting).
 
 Not supported yet. The phone must stay on the USB cable, because the
 controller reaches it through `adb reverse` and `adb forward`, and the cable
-also powers it. Wi-Fi nodes are on the roadmap.
+also powers it. Wi-Fi nodes are on the roadmap. TV boxes are the exception,
+see [TV boxes](#tv-boxes).
+
+## TV boxes
+
+Android TV boxes are nodes too, with one difference in the link: most have no
+USB device port, so they join over network adb (ADR-035). The steps above
+still apply (ABI or `uname -m`, RAM, preflight checks), with these changes:
+
+- **Connect over the network**, not the cable: `pcprov watch -scan <subnet>`
+  finds the box. Prefer it over `-connect <ip>:5555`: in `watch`,
+  `-connect` limits pcprov to the named serials, so USB phones would no
+  longer be provisioned. Keep the box
+  on its own VLAN; legacy network adb is not encrypted.
+- **Authorize on the TV**: the box asks for "Allow network debugging"; accept
+  it with the remote. Until then it stays `unauthorized`.
+- **Slim knows the TV apps**: `pcprov slim` also disables streaming, games,
+  Live TV and the Assistant; launcher, keyboard, Play services and remote
+  pairing stay, and `pcprov unslim` restores them.
+- **RAM decides the role**: a 3 GB box is a fast small-model worker; 8–16 GB
+  boxes are the Big Brain candidates.
+
+Setup, measurements and the buying notes are in [TVBOXES.md](TVBOXES.md), with
+the network setup in [TVBOXES.md](TVBOXES.md#network-discovery).
 
 ## Choosing a model per phone class
 

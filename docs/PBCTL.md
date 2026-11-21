@@ -14,6 +14,7 @@ the same one the web panel uses. What each feature does is explained in
 - [Daily cheat sheet](#daily-cheat-sheet)
 - [Guides](#guides)
   - [Check the cluster and name the phones](#check-the-cluster-and-name-the-phones)
+  - [Add an Android TV box](#add-an-android-tv-box)
   - [Add a model and put it on phones](#add-a-model-and-put-it-on-phones)
   - [A pool for parallel agents](#a-pool-for-parallel-agents)
   - [One answer from many phones, and long jobs](#one-answer-from-many-phones-and-long-jobs)
@@ -69,7 +70,7 @@ Global flags: `-json` (raw JSON, for scripts and `jq`), `-url URL`,
 | Task | Command |
 |---|---|
 | Is the collective healthy? | `pbctl nodes` |
-| Phones waiting to be assimilated (USB, not yet authorized, failed) | `pbctl devices` |
+| Phones and TV boxes waiting to be assimilated (USB or network adb, not yet authorized, failed) | `pbctl devices` |
 | What can clients call? | `pbctl served` |
 | Usage and cluster summary | `pbctl stats` |
 | Take a phone out for maintenance | `pbctl drain <id>` … `pbctl undrain <id>` |
@@ -88,7 +89,7 @@ it worked. Aliases like `pixel` or `mi8` are examples: use your own.
 
 ```sh
 pbctl nodes                         # every phone: STATE should be ACTIVE, RUNTIME ready
-pbctl devices                       # a phone missing above? see if it waits for "Allow"
+pbctl devices                       # a phone missing above? see if it waits for "Allow" (a TV box: "Allow network debugging")
 pbctl nodes alias <pixel-id> pixel   # <id> is the NODE column of pbctl nodes
 pbctl nodes alias <mi8-id> mi8       # from now on: node/pixel, node/mi8
 ```
@@ -97,6 +98,37 @@ pbctl nodes alias <mi8-id> mi8       # from now on: node/pixel, node/mi8
 `curl -s 127.0.0.1:18080/v1/models | jq '.data[].id'` lists `node/pixel`.
 A phone stuck in `BENCHMARKING` for more than a minute: see
 [REAL_PHONES.md](REAL_PHONES.md#troubleshooting).
+
+### Add an Android TV box
+
+A TV box has no USB device port, so it joins over network adb. On the box,
+turn on developer options and network debugging (the menu names vary by
+box), and keep it on the boxes' own VLAN. Then, on the host that runs
+`pcprov watch`, scan that network: add `-scan` to the `pcprov watch` that
+already runs, or start one with it:
+
+```sh
+pcprov watch -model models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  -scan 192.168.50.0/24 \
+  -controller-url http://127.0.0.1:18080 -admin-token-file admin-token
+```
+
+Every `-scan-interval` (2 min) pcprov probes the range and connects to boxes
+with adb open. The box asks "Allow network debugging": accept it with the
+remote. Then:
+
+```sh
+pbctl devices                              # the box as <ip>:5555: unauthorized, then provisioning
+pbctl nodes                                # ACTIVE once provisioned (about 30 s on a Shield)
+pbctl nodes alias <id> shield              # <id> is the NODE column, not the serial
+pbctl mmb run nodes=shield                 # then: pbctl mmb show <id>
+```
+
+**Check:** `pbctl nodes` shows the `shield` alias, and `pbctl mmb show <id>`
+lists the models that fit its memory. Network adb is unencrypted and any
+host in the scanned range with adb open gets connected, so keep the boxes on
+their own VLAN. Details, and the boxes' measured numbers:
+[TV boxes: network discovery](TVBOXES.md#network-discovery).
 
 ### Add a model and put it on phones
 
@@ -225,12 +257,12 @@ Every command, grouped as in `pbctl -h`.
 
 | Command | What |
 |---|---|
-| `pbctl nodes` | nodes, phones and external: state, drain, runtime, model, tok/s, in-flight, last seen |
+| `pbctl nodes` | nodes, phones, TV boxes and external: state, drain, runtime, model, tok/s, in-flight, last seen |
 | `pbctl nodes alias <id> <alias>` | name a node, addressed as `node/<alias>` (`-` clears) |
 | `pbctl drain <id>` | no new requests to the node; requests already running finish |
 | `pbctl undrain <id>` | put a drained node back into rotation |
 | `pbctl forget <id>` | remove a node (it re-registers on its next heartbeat if alive) |
-| `pbctl devices` | USB devices pcprov sees: not yet authorized, provisioning, failed |
+| `pbctl devices` | USB devices and network-adb TV boxes (`<ip>:5555`) pcprov sees: not yet authorized, provisioning, failed |
 | `pbctl devices auto on\|off` | automatic provisioning of new devices on or off |
 | `pbctl devices provision <serial>` | one-shot "provision now" / "retry" for one device |
 | `pbctl classes` | device classes (by RAM) and performance tiers (by GB/s) with node counts |

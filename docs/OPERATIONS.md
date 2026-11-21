@@ -64,7 +64,7 @@ To add phones, see [REAL_PHONES.md](REAL_PHONES.md); for emulated phones,
 
 *Start the controller, connect phones and decide who may use the gateway.*
 
-[![Host topology: the controller on :18080 serves /v1, /admin, /ui, /metrics and /grafana/, plus :11434 for the Ollama API; the adb server on :5037 keeps a forward per phone to tcp:18090 and a reverse to :18080; pcprov watch, Prometheus :9090, Grafana :3000 and Big Brain heads on 127.0.0.1:18200+ run next to it, with state in /srv/phoneborg; each phone runs node-agent and llama-server; systemd and docker variants](../assets/diagrams/host-topology.png)](../assets/diagrams/src/host-topology.svg)
+[![Host topology: the controller on :18080 serves /v1, /admin, /ui, /metrics and /grafana/, plus :11434 for the Ollama API; the adb server on :5037 keeps a forward per phone to tcp:18090 and a reverse to :18080; pcprov watch (USB polling plus -scan of the LAN for adb on :5555), Prometheus :9090, Grafana :3000 and Big Brain heads on 127.0.0.1:18200+ run next to it, with state in /srv/phoneborg; each phone, and each TV box reached over the LAN via network adb on tcp:5555, runs node-agent and llama-server; systemd and docker variants](../assets/diagrams/host-topology.png)](../assets/diagrams/src/host-topology.svg)
 
 ## Endpoints
 
@@ -175,7 +175,7 @@ an explicit retry resets it. Only one `pcprov watch`/`provision` may drive a
 given adb server at a time; a second instance exits naming the first one's
 PID.
 
-**Devices** — USB devices pcprov sees, with their provisioning state.
+**Devices** — USB devices and network-adb TV boxes pcprov sees, with their provisioning state.
 
 ![Devices: USB devices seen by pcprov and their provisioning state.](images/panel-devices.png)
 
@@ -1331,9 +1331,11 @@ not skew the numbers) and its model is forced with a benchmark override
 done, or the run is cancelled, the override goes and the phone gets its
 placement and drain state back; a controller restart drops a running run
 (marked `cancelled`) and leaves the phones normal. One run at a time. A
-model whose resident size exceeds the phone's RAM budget, or whose class
-does not fit, is not tried. Runs are stored in `<state-dir>/mmb/`. Expect
-minutes per model: the first load downloads the model to the phone.
+model whose resident size exceeds the node's memory budget is not tried;
+only a node that has not reported a budget yet is checked by class. A TV box
+on network adb is benchmarked the same way (`pbctl mmb run nodes=shield`).
+Runs are stored in `<state-dir>/mmb/`. Expect minutes per model: the first
+load downloads the model to the phone.
 
 ---
 
@@ -1353,7 +1355,7 @@ use it on localhost or a trusted network.
 |---|---|
 | Overview | Nodes by state; ready, drained and hot nodes; requests/s and tokens/s (last 30 s, computed in the browser); errors; models served; placement warnings; a **Virtual models** card listing `/v1/models` by kind (`auto`, `pool/<name>` with eligible node counts, `node/<alias>` with served model and readiness), each with a copy button for its `phoneborg/<id>` reference. |
 | Nodes | Every node with device, class/tier, state (DRAINED and HOT badges), model and build, threads, context, measured tok/s, RAM, temperature, battery, in-flight requests, pinned sessions and last heartbeat. Aliases are shown in place of ids. **Set alias**/**Edit alias**; drain, undrain and forget (with confirmation). Select a node for its inventory and runtime details. |
-| Devices | USB devices `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [USB device detection and provisioning](#usb-device-detection-and-provisioning)). |
+| Devices | USB devices and network-adb TV boxes (serial `<ip>:5555`) `pcprov watch` sees over adb, including ones that are not (yet) nodes: status badges (`new`, `waiting-authorization`, `provisioning` with step, `provisioned`, `failed` with error and hint, `gone`), the node it became (if any), and which host reported it (with a "not reporting" badge once that pcprov has gone quiet). An **auto-provision** toggle and per-device **Provision**/**Retry** buttons (ADR-019). Empty until a `pcprov watch` reports (see [USB device detection and provisioning](#usb-device-detection-and-provisioning)). |
 | Models | The catalog: download status, size, estimated RAM, fitting classes, tags. Add from `https://…`, `hf://owner/repo/file.gguf` or `file:///path`; edit tags, recommended classes/tiers and the default flag; delete (the reason is shown if refused). |
 | Placement | Device classes and tiers; policies per model (pin, replicas, or percent with a live node count; optional classes and min tok/s); the default model. **Preview** shows which nodes would change, with RAM estimates, predicted tok/s and warnings; **Apply** is enabled only after a preview of the current edits. The plan table shows current and target model and download progress. |
 | Pools | Pools routed as `pool/<name>`, each with a status badge (ready · N nodes, no ready node with the reason, disabled) and **Enable/Disable**: description, routing (`spread`/`affinity`), filters and a members table with eligibility and reason. Add, edit, delete; **Prewarm** sends an optional system prompt to every eligible node and shows per-node results. |
@@ -1728,12 +1730,12 @@ bin/pbctl nodes
 
 | Command | What |
 |---|---|
-| `pbctl nodes` | nodes: `KIND` (`phone` or `external`), state (with `DRAINED`/`HOT`), class/tier (e.g. `m/t2`), runtime, `TOK/S` (self-test), in-flight. `-json` prints `/admin/nodes` (phones only) |
+| `pbctl nodes` | nodes: `KIND` (`phone` or `external`; an Android TV box also shows as `phone`), state (with `DRAINED`/`HOT`), class/tier (e.g. `m/t2`), runtime, `TOK/S` (self-test), in-flight. `-json` prints `/admin/nodes` (phones only) |
 | `pbctl nodes alias <id> <alias>` | set an alias, addressed as `node/<alias>`; `-` clears |
 | `pbctl drain <id>` | no new requests; running ones finish (`ext:<name>` for an external node) |
 | `pbctl undrain <id>` | back into rotation |
 | `pbctl forget <id>` | remove a node (it re-registers if still running) |
-| `pbctl devices` | USB devices `pcprov watch` reports: adb state, status (with step/error/hint), linked node, reporting host (ADR-019) |
+| `pbctl devices` | USB devices and network-adb TV boxes (serial `<ip>:5555`) `pcprov watch` reports: adb state, status (with step/error/hint), linked node, reporting host (ADR-019) |
 | `pbctl devices auto on\|off` | turn automatic provisioning of newly detected devices on or off |
 | `pbctl devices provision <serial>` | request a one-shot provision/retry for one device |
 

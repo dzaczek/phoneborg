@@ -24,7 +24,7 @@
 
   <!-- wordmark -->
   <text x="64" y="146" font-size="84" font-weight="800" fill="#1E2328" letter-spacing="-2">Phone<tspan fill="#2F5D8A">Borg</tspan></text>
-  <text x="68" y="190" font-size="18" fill="#5B5F66">Old Android phones → one AI inference cluster</text>
+  <text x="68" y="190" font-size="18" fill="#5B5F66">Old Android phones and TV boxes → one AI inference cluster</text>
   <text x="68" y="224" font-size="16" font-style="italic" font-weight="600" fill="#2E6E46">Resistance is futile. Your Android will be assimilated.</text>
 
   <!-- phones -->
@@ -46,6 +46,26 @@
   <line x1="925" y1="170" x2="925" y2="206" stroke="#3C8D5A" stroke-width="4" stroke-linecap="round" stroke-dasharray="5 5"/>
   <text x="620" y="236" font-size="13.5" fill="#2E6E46">4 of 5 assimilated</text>
   <text x="958" y="196" font-size="14" font-weight="700" fill="#2E6E46" text-anchor="middle">USB</text>
+
+  <!-- TV box joins over the network, not USB -->
+  <g stroke="#3C8D5A" stroke-width="2.5" stroke-linejoin="round">
+    <rect x="762" y="240" width="96" height="30" rx="6" fill="#FFFFFF"/>
+    <rect x="738" y="236" width="12" height="38" rx="4" fill="#FFFFFF"/>
+  </g>
+  <rect x="770" y="249" width="46" height="4" rx="2" fill="url(#grid)"/>
+  <circle cx="842" cy="255" r="3" fill="#3C8D5A"/>
+  <circle cx="744" cy="246" r="2" fill="#3C8D5A"/>
+  <path d="M858,257 H1066 V252" fill="none" stroke="#3C8D5A" stroke-width="3" stroke-linecap="round" stroke-dasharray="5 5"/>
+  <text x="960" y="278" font-size="13.5" font-weight="700" fill="#2E6E46" text-anchor="middle">network adb</text>
+  <text x="810" y="288" font-size="13.5" fill="#2E6E46" text-anchor="middle">TV box</text>
+
+  <!-- long-range scan: a kitchen appliance (jug on a base) in the far corner -->
+  <g opacity="0.5" stroke="#8A9097" stroke-width="2" stroke-linejoin="round" fill="#FFFFFF">
+    <path d="M1116,36 H1144 L1140,64 H1120 Z"/>
+    <rect x="1110" y="64" width="40" height="26" rx="5"/>
+  </g>
+  <circle cx="1130" cy="77" r="5" fill="#8A9097" opacity="0.5"/>
+  <text x="1130" y="108" font-size="12.5" font-style="italic" fill="#8A9097" text-anchor="middle">scanning…</text>
 
   <!-- the collective: the host as a cube -->
   <g stroke="#2F5D8A" stroke-width="2.5" stroke-linejoin="round">

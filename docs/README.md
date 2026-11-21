@@ -12,7 +12,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | [REAL_PHONES.md](REAL_PHONES.md) | choosing phones, preparing them, adb checks, provisioning, verification, slim, model storage, files and logs on the phone, removal, phone-side troubleshooting, which model suits which phone |
 | [OPERATIONS.md](OPERATIONS.md) | controller flags, sending requests, web panel, full `pbctl` reference, models and placement, pools and aliases, API keys, draining, gateway settings, semantic router, usage, OpenCode bridge, Grafana, controller-side troubleshooting |
 | [PBCTL.md](PBCTL.md) | every `pbctl` command grouped by task, with examples and a daily cheat sheet |
-| [TVBOXES.md](TVBOXES.md) | working note: Android TV boxes as nodes, what to buy, the code changes needed (not yet tested) |
+| [TVBOXES.md](TVBOXES.md) | Android TV boxes as nodes over network adb: `pcprov watch -scan`, the measured NVIDIA Shield TV, what to buy, the code changes |
 | [BENCHMARKS.md](BENCHMARKS.md) | what to expect: tok/s per model, threads, endurance, failover, prompt cache, parallel agents, bandwidth tiers, the four-phone multi-model benchmark, Super Borg and job timings |
 
 ## Developers: architecture, decisions, tests
@@ -20,7 +20,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | Document | Covers |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | components, provisioning, node lifecycle, request routing, model placement and switching, persistence, ports, security model, limitations |
-| [DECISIONS.md](DECISIONS.md) | ADR-001..033 with an index and dated updates |
+| [DECISIONS.md](DECISIONS.md) | ADR-001..035 with an index and dated updates |
 | [DEV_EMULATION.md](DEV_EMULATION.md) | colima + redroid setup, `make test`, `make e2e`, `make llm-smoke`, load generator |
 
 ## I want to…
@@ -34,6 +34,7 @@ Start with the [project README](../README.md) for the pitch and quick start.
 | compare models and phones on real numbers | [CONCEPTS.md](CONCEPTS.md#7-benchmarks-to-choose-models-and-phones), [BENCHMARKS.md](BENCHMARKS.md#multi-model-benchmark-four-phones) |
 | plug in a desktop or API model as orchestrator | [OPERATIONS.md](OPERATIONS.md#external-orchestrators) |
 | add a real phone | [REAL_PHONES.md](REAL_PHONES.md#1-prepare-the-phone-once-per-phone) |
+| add an Android TV box over network adb | [QUICKSTART.md](QUICKSTART.md#a-tv-box-instead-of-a-phone), [TVBOXES.md](TVBOXES.md#network-discovery) |
 | try it without phones | [DEV_EMULATION.md](DEV_EMULATION.md#run) |
 | pick a model for my phones | [REAL_PHONES.md](REAL_PHONES.md#choosing-a-model-per-phone-class) |
 | send a request / use the OpenAI SDK | [OPERATIONS.md](OPERATIONS.md#sending-requests) |
