@@ -2,6 +2,7 @@ package provisioner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -239,10 +240,10 @@ func (p *Provisioner) Status(ctx context.Context, serial string) (string, error)
 // (and resets its backoff, ADR-019). healInterval is how often Watch verifies
 // adb links of already-provisioned devices; reportInterval is the same for
 // controller reports, when opts.Reporter is set.
-const (
-	healInterval   = 15 * time.Second
-	reportInterval = 15 * time.Second
-)
+const reportInterval = 15 * time.Second
+
+// healInterval is a var so tests can shorten it.
+var healInterval = 15 * time.Second
 
 // WatchOptions configures Watch beyond the poll interval.
 type WatchOptions struct {
@@ -331,7 +332,18 @@ func (p *Provisioner) Watch(ctx context.Context, interval time.Duration, opts Wa
 				}
 				if time.Since(lastHeal[d.Serial]) >= healInterval {
 					lastHeal[d.Serial] = time.Now()
-					if _, err := p.Heal(ctx, d.Serial); err != nil {
+					_, err := p.Heal(ctx, d.Serial)
+					switch {
+					case errors.Is(err, ErrAgentNotRunning):
+						// The agent does not survive a device reboot, and a network
+						// adb device never vanishes from the list to be re-provisioned.
+						// Not provisioned this run (failed, auto-provision off): no agent
+						// is expected, so stay quiet.
+						if rec.provisioned {
+							p.Log.Warn("agent not running on a provisioned device, re-provisioning", "serial", d.Serial)
+							rec.provisioned, rec.backoff, rec.nextAttempt = false, 0, time.Time{}
+						}
+					case err != nil:
 						p.Log.Warn("heal failed", "serial", d.Serial, "err", err)
 					}
 				}
