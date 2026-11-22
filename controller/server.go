@@ -330,6 +330,7 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, s.reg.Snapshot())
 	})
 	mux.HandleFunc("GET "+PathModelFiles+"{model_id}", s.handleModelFile)
+	mux.HandleFunc("GET "+proto.PathPrimaDial, s.handlePrimaDial)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.promReg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

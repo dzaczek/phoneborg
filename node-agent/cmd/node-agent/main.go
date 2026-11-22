@@ -30,6 +30,7 @@ func main() {
 	threadsPolicy := flag.String("threads-policy", "all", `automatic thread selection when -threads=0: "all" (every allowed CPU, today's behavior) or "big" (only the highest-frequency CPU cluster)`)
 	runtimeVariant := flag.String("runtime-variant", "", "llama.cpp build variant (set by pcprov); reported as the engine name")
 	rpcServer := flag.String("rpc-server", "", "ggml-rpc-server binary; lets the controller make this node a Big Brain member (ADR-034)")
+	primaWorker := flag.String("prima-worker", "", "prima.cpp llama-cli binary; lets the controller make this node a Big Brain member on prima.cpp (ADR-037)")
 	memReserveMB := flag.Int("mem-reserve-mb", 600, "RAM reserved for Android and the agent when sizing a controller-desired model (ADR-012)")
 	flag.Parse()
 
@@ -69,6 +70,7 @@ func main() {
 			Threads: threads, Variant: *runtimeVariant, ModelsDir: modelsDir, ControllerURL: *ctrl,
 			MemReserveMB: *memReserveMB, StaticModelPath: *model, StaticCtxSize: *ctxSize,
 			RPCServerBin: *rpcServer, RPCThreads: rpcThreads, RPCCacheDir: rpcCacheDir,
+			PrimaWorkerBin: *primaWorker, NodeID: nodeID,
 		}, log)
 	}
 	log.Info("node-agent starting", "version", version, "node_id", nodeID, "controller", *ctrl, "pid", os.Getpid())

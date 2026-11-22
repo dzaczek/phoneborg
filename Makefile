@@ -1,4 +1,4 @@
-.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llama-all llama-head llm-smoke fmt lint clean help
+.PHONY: all test agent pcprov controller pbctl cluster-up cluster-down e2e llama llama-all llama-head prima prima-all prima-head llm-smoke fmt lint clean help
 
 VERSION ?= $(shell date +%Y%m%d%H%M)
 
@@ -68,6 +68,32 @@ llama-head:
 		-DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
 	cmake --build bin/llama-head-src/build -j 4 --target llama-server
 	mkdir -p bin/llama-head && cp bin/llama-head-src/build/bin/llama-server bin/llama-head/ && rm -rf bin/llama-head-src
+
+# prima.cpp for Big Brain pools with backend=prima (ADR-037): static arm64
+# llama-cli workers for the phones, one per llama.cpp variant above (pcprov
+# picks the one with its phone's variant name from bin/prima/), pinned to one
+# prima.cpp commit (deploy/prima/Dockerfile) with an Android patch.
+prima:
+	docker build --platform linux/arm64 --build-arg ARM_ARCH=$(ARM_ARCH) \
+		-f deploy/prima/Dockerfile -o type=local,dest=bin/prima/$(ARM_ARCH) deploy/prima
+
+# The same variants as llama-all.
+prima-all:
+	$(MAKE) prima ARM_ARCH=armv8.2-a+dotprod+fp16
+	$(MAKE) prima ARM_ARCH=armv8.2-a+fp16
+	$(MAKE) prima ARM_ARCH=armv8-a
+
+# prima.cpp head: its llama-server built natively for the controller host
+# (needs a C++ compiler and libzmq, e.g. libzmq3-dev; prima.cpp links it from
+# /usr/local/lib, see its Makefile). The same commit as the phones' workers:
+# the ring protocol must match.
+PRIMA_COMMIT ?= 288df6a2cc2120387e12d6f40798f30cc525c9ea
+prima-head:
+	rm -rf bin/prima-head-src
+	git clone https://github.com/OpenCPIL/prima.cpp bin/prima-head-src
+	git -C bin/prima-head-src checkout $(PRIMA_COMMIT)
+	$(MAKE) -C bin/prima-head-src -j 4 llama-server
+	mkdir -p bin/prima-head && cp bin/prima-head-src/llama-server bin/prima-head/ && rm -rf bin/prima-head-src
 
 models/qwen2.5-0.5b-instruct-q4_k_m.gguf:
 	mkdir -p models

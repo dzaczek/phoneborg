@@ -72,6 +72,9 @@ type Pool struct {
 	// pool (ADR-034): the model split across Nodes; ignored otherwise.
 	Model   string `json:"model,omitempty"`
 	CtxSize int    `json:"ctx_size,omitempty"`
+	// Backend runs the model across the nodes: BackendRPC (default, "") or
+	// BackendPrima (ADR-037). Big Brain pools only.
+	Backend string `json:"backend,omitempty"`
 	// Spec turns on speculative decoding in the head (ADR-036): SpecOff
 	// (default, ""), SpecDraft (Draft, a smaller catalog model run on the
 	// host CPU) or SpecNgram (no model). SpecMax is the most tokens drafted
@@ -248,8 +251,11 @@ func normPool(p Pool) (Pool, error) {
 	if p.Spec == "off" {
 		p.Spec = SpecOff
 	}
-	if p.Routing != RoutingBigBrain && (p.Spec != "" || p.Draft != "" || p.SpecMax != 0) {
-		return p, errors.New("spec, draft and spec_max apply to Big Brain pools only")
+	if p.Routing != RoutingBigBrain && (p.Spec != "" || p.Draft != "" || p.SpecMax != 0 || p.Backend != "") {
+		return p, errors.New("backend, spec, draft and spec_max apply to Big Brain pools only")
+	}
+	if p.Backend == BackendRPC {
+		p.Backend = ""
 	}
 	switch p.Routing {
 	case "":
@@ -270,6 +276,15 @@ func normPool(p Pool) (Pool, error) {
 			return p, errors.New("spec_max must be 0 (4) or 1..64")
 		}
 		p.Draft = strings.TrimSpace(p.Draft)
+		switch p.Backend {
+		case "":
+		case BackendPrima:
+			if p.Spec != SpecOff || p.Draft != "" || p.SpecMax != 0 {
+				return p, errors.New("speculative decoding (spec, draft, spec_max) is not supported on the prima backend")
+			}
+		default:
+			return p, fmt.Errorf("backend must be %s or %s", BackendRPC, BackendPrima)
+		}
 		switch p.Spec {
 		case SpecOff, SpecNgram:
 		case SpecDraft:
@@ -392,6 +407,7 @@ func (s *Server) withMembers(p Pool) Pool {
 		if p.Disabled {
 			st = BigBrainStatus{State: BigBrainStopped}
 		}
+		st.Backend = bigBrainBackend(p)
 		p.BigBrain = &st
 		p.Status, p.StatusReason = bigBrainPoolStatus(p)
 		return p
@@ -691,8 +707,14 @@ func (s *Server) adminSetPool(w http.ResponseWriter, r *http.Request) {
 	p.Name = r.PathValue("name")
 	p, err := normPool(p)
 	if err == nil && p.Routing == RoutingBigBrain {
-		if _, ok := s.catalog.Get(p.Model); !ok {
+		if m, ok := s.catalog.Get(p.Model); !ok {
 			err = fmt.Errorf("model %q is not in the catalog", p.Model)
+		} else if p.Backend == BackendPrima {
+			if s.bb.opts.PrimaHeadBin == "" {
+				err = errors.New("the prima backend needs the controller started with -bigbrain-prima-head (make prima-head)")
+			} else {
+				err = checkPrimaModel(m)
+			}
 		} else if p.Spec == SpecDraft {
 			err = s.checkDraft(p)
 		}

@@ -85,6 +85,9 @@ func listPools(c *client, o *out) error {
 			routing += " (orchestrator " + orch + ")"
 		}
 		if bb := p.BigBrain; bb != nil {
+			if p.Backend == controller.BackendPrima {
+				routing += "/" + p.Backend
+			}
 			routing += " (" + p.Model + ", " + bb.State
 			if bb.GenTPS > 0 {
 				routing += ", " + strconv.FormatFloat(bb.GenTPS, 'f', 2, 64) + " tok/s"
@@ -150,7 +153,7 @@ func eligibleNodes(members []controller.PoolMember) int {
 }
 
 // applyPoolSet applies "models=a,b nodes=x,y classes=s,m min_tps=5
-// routing=spread orchestrator=n thinking=on desc=text model=m ctx=4096 spec=draft draft=d spec_max=4" to
+// routing=spread orchestrator=n thinking=on desc=text model=m ctx=4096 backend=prima spec=draft draft=d spec_max=4" to
 // p; "-" clears a list.
 func applyPoolSet(p *controller.Pool, kvs []string) error {
 	for _, kv := range kvs {
@@ -198,6 +201,8 @@ func applyPoolSet(p *controller.Pool, kvs []string) error {
 				return fmt.Errorf("ctx: %w", err)
 			}
 			p.CtxSize = n
+		case "backend": // Big Brain pools: rpc (default) or prima (ADR-037)
+			p.Backend = v
 		case "spec": // speculative decoding in the head (ADR-036): off, draft or ngram
 			p.Spec = v
 		case "draft":
@@ -212,7 +217,7 @@ func applyPoolSet(p *controller.Pool, kvs []string) error {
 			}
 			p.SpecMax = n
 		default:
-			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, enabled, desc, model, ctx, spec, draft, spec_max)", k)
+			return fmt.Errorf("unknown pool setting %q (models, nodes, classes, min_tps, routing, orchestrator, thinking, enabled, desc, model, ctx, backend, spec, draft, spec_max)", k)
 		}
 	}
 	p.Members, p.BigBrain = nil, nil

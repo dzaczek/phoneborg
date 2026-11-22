@@ -32,6 +32,7 @@ func main() {
 	offline := flag.Int("offline-after-missed", 6, "missed heartbeats before a node is OFFLINE")
 	debug := flag.Bool("debug", false, "debug logging (logs every heartbeat)")
 	bigBrainHead := flag.String("bigbrain-head", "", "llama-server built with RPC for this host (make llama-head); enables Big Brain pools (ADR-034)")
+	bigBrainPrimaHead := flag.String("bigbrain-prima-head", "", "llama-server built from prima.cpp for this host (make prima-head); enables Big Brain pools with backend=prima (ADR-037)")
 	bigBrainPort := flag.Int("bigbrain-port", 18200, "first 127.0.0.1 port for Big Brain heads, one per pool")
 	backendHost := flag.String("backend-host", "127.0.0.1", "host where nodes' advertised ports (adb forwards) are reachable")
 	keysFile := flag.String("api-keys-file", "", "API keys file (\"<name> sha256:<hex>\" or legacy \"<name> <key>\" lines), reloaded on SIGHUP; empty = no auth (dev only)")
@@ -160,7 +161,7 @@ func main() {
 	}
 
 	reg := controller.NewRegistry(time.Duration(*suspect)**hb, time.Duration(*offline)**hb, log)
-	bigBrainOpts := controller.BigBrainOptions{HeadBin: *bigBrainHead, BasePort: *bigBrainPort}
+	bigBrainOpts := controller.BigBrainOptions{HeadBin: *bigBrainHead, PrimaHeadBin: *bigBrainPrimaHead, BasePort: *bigBrainPort}
 	if *stateDir != "" {
 		bigBrainOpts.LogDir = filepath.Join(*stateDir, "bigbrain") // head logs, one per pool (ADR-034)
 	}

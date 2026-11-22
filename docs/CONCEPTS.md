@@ -213,6 +213,10 @@ controller starts a head (`llama-server --rpc`) on its own host that puts
 every layer on the phones, in proportion to their free RAM, and answers as
 `pool/<name>`. With 100 phones, set ten aside as a Big Brain and keep the
 rest in pools; several Big Brains can run at once on different phones.
+With `backend=prima` (ADR-037) the pool runs on prima.cpp instead of llama.cpp
+RPC: a ring in which each phone computes a window of layers from its own full
+copy of the file, for `llama` and `qwen2` models only; see
+[PBCTL.md](PBCTL.md#pools).
 In the panel: **Pools → Add Big Brain** (pick the model, filter the phones
 by class and free RAM, watch the "fits" meter), then **Stop/Start**.
 

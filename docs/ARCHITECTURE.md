@@ -232,7 +232,14 @@ Hot nodes get no new sessions unless every candidate is hot.
   `ggml-rpc-server` instead of llama-server; a head process on the
   controller's host (`llama-server --rpc`, no weights of its own) splits
   one catalog model over them and is the pool's only backend, `bb:<pool>`.
-  It is `PoolOnly`: `auto` and model ids never reach it.
+  It is `PoolOnly`: `auto` and model ids never reach it. With
+  `backend=prima` (ADR-037) the pool runs on prima.cpp instead: the
+  phones run `llama-cli` workers of a ZeroMQ pipeline ring whose rank 0 is a
+  prima.cpp `llama-server` on the controller's host. The workers listen on
+  their serving port (reached by the usual adb forward) and send through
+  their agent, which tunnels to the controller (`/v0/nodes/{id}/prima-dial`),
+  which relays to the next phone or the head. The whole ring restarts
+  together under a controller-held epoch.
 
 - **Reaping.** Every second the controller sweeps node states and cancels
   in-flight requests on nodes that left the ready set (e.g. `SUSPECT`); those
@@ -244,7 +251,7 @@ Hot nodes get no new sessions unless every candidate is hot.
 - `X-PhoneBorg-Node` on the response names the node that answered.
 - Rationale: ADR-006 (gateway, affinity, failover), ADR-010 (measured speed,
   thermal), ADR-014 (targets, pools, spread), ADR-033 (semantic router),
-  ADR-034 (Big Brain pools).
+  ADR-034 (Big Brain pools), ADR-037 (prima.cpp backend).
 
 ## External engine nodes
 

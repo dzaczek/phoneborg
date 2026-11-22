@@ -39,6 +39,10 @@ type RuntimeConfig struct {
 	// goes to RPCCacheDir (Android's HOME=/ is not writable).
 	RPC         bool
 	RPCCacheDir string
+	// Prima runs ServerBin as a prima.cpp worker (ADR-037): ModelPath is
+	// the whole GGUF, Rank the ring position. Ready means it listens on Port.
+	Prima bool
+	Rank  proto.PrimaRank
 }
 
 // ModelName is the model identifier clients use: the file name without .gguf.
@@ -53,7 +57,7 @@ type Runtime struct {
 	restarts atomic.Int64
 	http     *http.Client
 	pid      atomic.Int32 // 0 when no llama-server process is running
-	// rpcUp: this run of ggml-rpc-server accepted a probe. It serves one
+	// rpcUp: this run of ggml-rpc-server (or prima worker) accepted a probe. It serves one
 	// client at a time, so once the head is connected further probes sit
 	// unaccepted in its backlog; after the first success, a live process is
 	// enough.
@@ -98,6 +102,9 @@ func (r *Runtime) Run(ctx context.Context) {
 func (r *Runtime) runOnce(ctx context.Context) error {
 	if r.cfg.RPC {
 		return r.runRPC(ctx)
+	}
+	if r.cfg.Prima {
+		return r.runPrima(ctx)
 	}
 	slots := max(r.cfg.Slots, 1)
 	// llama-server's -c/--ctx-size is the TOTAL context across all -np
@@ -166,6 +173,30 @@ func (r *Runtime) runRPC(ctx context.Context) error {
 	return cmd.Wait()
 }
 
+// runPrima runs a prima.cpp worker once (ADR-037).
+func (r *Runtime) runPrima(ctx context.Context) error {
+	logf, err := os.OpenFile("runtime.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	cmd := exec.CommandContext(ctx, r.cfg.ServerBin, primaWorkerArgs(r.cfg.ModelPath, r.cfg.Port, r.cfg.Threads, r.cfg.Rank)...)
+	cmd.Stdout, cmd.Stderr = logf, logf
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start %s: %w", r.cfg.ServerBin, err)
+	}
+	r.rpcUp.Store(false)
+	r.pid.Store(int32(cmd.Process.Pid))
+	defer r.pid.Store(0)
+	_ = os.WriteFile(runtimePidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	defer os.Remove(runtimePidFile)
+	r.log.Info("prima worker started", "pid", cmd.Process.Pid, "model", ModelName(r.cfg.ModelPath), "port", r.cfg.Port,
+		"rank", r.cfg.Rank.Rank, "world", r.cfg.Rank.World, "epoch", r.cfg.Rank.Epoch)
+	return cmd.Wait()
+}
+
 // killStale stops a llama-server left behind by a SIGKILLed agent, which
 // would otherwise hold the port. The cmdline check guards against PID reuse.
 func killStale(log *slog.Logger) {
@@ -177,7 +208,7 @@ func killStale(log *slog.Logger) {
 	if err != nil {
 		return
 	}
-	if cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); strings.Contains(string(cmdline), "llama-server") || strings.Contains(string(cmdline), "rpc-server") {
+	if cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); strings.Contains(string(cmdline), "llama-server") || strings.Contains(string(cmdline), "rpc-server") || strings.Contains(string(cmdline), "prima-cli") {
 		log.Warn("killing stale inference server", "pid", pid)
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		time.Sleep(500 * time.Millisecond)
@@ -213,9 +244,9 @@ func (r *Runtime) Status(ctx context.Context) *proto.RuntimeStatus {
 }
 
 // healthy probes llama-server's /health (200 only once the model is loaded),
-// or, in RPC mode, whether ggml-rpc-server accepts connections.
+// or, in RPC and prima mode, whether the worker accepts connections.
 func (r *Runtime) healthy(ctx context.Context) bool {
-	if r.cfg.RPC {
+	if r.cfg.RPC || r.cfg.Prima {
 		if r.pid.Load() == 0 {
 			return false
 		}

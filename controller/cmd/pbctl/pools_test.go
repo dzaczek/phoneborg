@@ -90,6 +90,16 @@ func TestApplyPoolSetSpec(t *testing.T) {
 	}
 }
 
+func TestApplyPoolSetBackend(t *testing.T) {
+	p := controller.Pool{Name: "brain", Routing: controller.RoutingBigBrain}
+	if err := applyPoolSet(&p, []string{"backend=prima"}); err != nil || p.Backend != controller.BackendPrima {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if err := applyPoolSet(&p, []string{"backend=rpc"}); err != nil || p.Backend != controller.BackendRPC {
+		t.Fatalf("%+v %v", p, err)
+	}
+}
+
 func TestPoolEnabledAndStatus(t *testing.T) {
 	ts := newController(t)
 	env := map[string]string{"PHONEBORG_URL": ts.URL, "PHONEBORG_ADMIN_TOKEN": token}

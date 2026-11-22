@@ -2184,3 +2184,101 @@ three phones with a qwen3-0.6b draft: code and JSON 1.2–1.7x faster at
 everywhere; `ngram-mod` ran at the baseline. Hence: off by default, the
 default window is 4, and a pool turns it on only for code or structured
 output. The draft costs the head about 1.1 GB of host RAM.
+
+## ADR-037: prima.cpp backend for Big Brain
+
+**Status:** accepted · **Date:** 2026-11-22
+
+**Problem.** Big Brain (ADR-034) splits a model with llama.cpp RPC: the head
+drives every phone tensor by tensor, so each token pays several round trips
+over each USB link and the phones' own compute is idle in turn. prima.cpp
+(OpenCPIL/prima.cpp, pinned at 288df6a) is a different design: a pipeline
+ring in which each device runs a window of consecutive layers on its own
+mmap'd copy of the model and hands only the activations to the next device,
+one hop per phone and token.
+
+**Decision.** A second backend next to RPC, chosen per pool.
+- Pool setting `backend` (`rpc`, the default and `""`, or `prima`),
+  `routing=bigbrain` only, part of the head's restart key. Switching it
+  restarts the pool: members change mode. Validated when the pool is set
+  (400): the controller needs `-bigbrain-prima-head`; the model's
+  `general.architecture` must be `llama` or `qwen2` (prima.cpp at this
+  commit has no `qwen3`, `qwen3moe` or `gemma3`); `spec`, `draft` and
+  `spec_max` must be unset (speculative decoding stays RPC-only).
+- Processes. Rank 0, the head, is prima.cpp's `llama-server` on the
+  controller host (`make prima-head`, needs libzmq). Ranks 1..N are
+  `llama-cli` workers on the phones (`make prima-all`, pushed by pcprov as
+  `bin/prima-cli`, found in `-prima-dir/<same variant as llama-server>`; a
+  phone without it cannot join a prima pool). The ring is ZeroMQ push/pull:
+  rank r binds `tcp://*:(data_port + r)` and connects to `next:(data_port +
+  r + 1)`, and middle ranks also to `master:(data_port + 0)`.
+- No new adb mappings: the port-offset and tunnel trick. `data_port` is a
+  per-process flag, so each worker gets its own: `data_port = ServePort -
+  rank`. Its bind port is then the serving port, which the existing adb
+  forward `host:AdvertisePort -> phone:ServePort` already exposes, and its
+  sends go to `127.0.0.1:ServePort+1` (next) and `127.0.0.1:ServePort-rank`
+  (master; the last rank's next is rank 0, the same port). The signal socket
+  (`ServePort+2-rank`, used only at shutdown) stays local. `--master` and
+  `--next` are both `127.0.0.1`. The node-agent listens on those send ports
+  and tunnels each accepted connection to the controller over the existing
+  controller URL (the `adb reverse`): `GET /v0/nodes/{id}/prima-dial?to=next|
+  master` with `Upgrade: phoneborg-tunnel`; the controller hijacks it, dials
+  the target and splices bytes both ways. `next` of rank r < N is rank r+1's
+  `AdvertiseHost:AdvertisePort`, `next` of the last rank and every `master`
+  is the head's data port on 127.0.0.1. The head sends to rank 1 at
+  `127.0.0.1:data+1`, where the controller runs a TCP relay to rank 1's
+  advertised address. The endpoint, like the heartbeat, has no token; it
+  serves only nodes that are members of a running prima head. Why not real
+  adb forwards or reverses: that is a mapping per rank pair per phone, which
+  pcprov would have to create and keep alive (they vanish when a device
+  reconnects), while the tunnel reuses the two links that already exist.
+- Layer windows `-lw`. The block count comes from the catalog's GGUF
+  metadata. Rank 0 gets one layer, the host computes as little as possible
+  like the RPC head, and the rest is split over the members in proportion to
+  their usable RAM (free minus 900 MiB, as `-ts` in ADR-034), each at least
+  one, summing to the block count (prima.cpp cycles through the windows, so
+  the sum is one whole pass). Explicit windows with every value above zero
+  skip prima.cpp's profiling and its device dropping. Fit check: each
+  member's share of the file times the 1.05 KV margin must fit its usable
+  RAM; the agent's download makes room on flash for the whole file.
+- Epoch. A ring must start together: a restarted member leaves the others
+  waiting on a dead socket, and a dead worker hangs the ring rather than
+  failing it. The controller keeps an epoch per pool (seeded from the clock,
+  so a restarted controller never repeats one), sends it in the members'
+  `DesiredRuntime.Prima{World, Rank, Epoch, CtxSize}` (`Mode: "prima"` plus
+  the normal model download fields) and bumps it whenever it stops a running
+  head (a member left prima state, the configuration changed, the pool was
+  disabled) or the head exits. A worker (re)starts when its rank, world or
+  epoch changes, and reports `State: "prima"` with `PrimaEpoch` once its
+  process listens on ServePort. The head starts only when every member
+  reports state prima with the current epoch; a worker that restarted by
+  itself never does (its `Restarts` is above zero), so the ring restarts
+  whole. Download progress shows as `downloading`, so `pbctl pools` says
+  "waiting: pixel is downloading". Leaving prima mode restores the previous
+  runtime like leaving RPC mode.
+- Head flags (read from prima.cpp's `common/arg.cpp`): `-m -a --world N+1
+  --rank 0 --master 127.0.0.1 --next 127.0.0.1 --data-port P --signal-port Q
+  -lw ... -c N -np 1 --host 127.0.0.1 --port H`. Not the RPC head's `-fa on
+  -ctk q8_0 -ctv q8_0`: prima.cpp's `-fa` takes no value and its KV types
+  differ, so the cache stays f16. A head takes four consecutive ports from
+  `-bigbrain-port` upward (API H, data P=H+1, relay P+1, signal Q=H+3).
+- Workers: `llama-cli -m <file> --world --rank --master 127.0.0.1 --next
+  127.0.0.1 --data-port --signal-port -c N -t T --prefetch`.
+
+**Consequences.**
+- Every phone needs the whole GGUF on flash (mmap pages in only its layers
+  from there), unlike RPC, where the head pushes just each phone's tensors.
+  The file is downloaded from the controller once per phone.
+- Only `llama` and `qwen2` models (Qwen2.5, Llama 2/3) run on it; the
+  current Big Brain favourites (Qwen3 MoE, gpt-oss) stay on RPC.
+- A dead worker, or a phone that reboots, hangs the ring: the controller
+  notices the member leaving prima state and restarts all ranks, so a flaky
+  phone costs a full reload.
+- The tunnel adds one controller hop per ring edge, in the same process as
+  the head: ring traffic and the gateway share the host's links.
+- The token-free dial endpoint trusts the network path the way the heartbeat
+  does (the phones reach the controller over their own adb reverse).
+- prima.cpp builds with a patch for Android (`deploy/prima`) and is pinned;
+  moving the commit means rebuilding head and workers together.
+
+**Results.** Measured in docs/BENCHMARKS.md#prima.
