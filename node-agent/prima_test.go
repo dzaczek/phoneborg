@@ -200,7 +200,7 @@ func TestManagerPrimaMode(t *testing.T) {
 	sha, size := hex.EncodeToString(sum[:]), int64(len(primaTestModel))
 	ctrl, reqs := fakeController(t)
 	modelsDir := t.TempDir()
-	servePort := freePort(t) + 5
+	servePort := freePortRange(t, -1, 2) // the worker and the tunnel bind servePort-1..servePort+2
 	m := NewManager(ManagerConfig{Port: servePort, AdvertisePort: 40123, PrimaWorkerBin: os.Args[0], Threads: 3, ModelsDir: modelsDir,
 		ControllerURL: ctrl.URL, NodeID: "pixel"}, discardLog())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -309,4 +309,30 @@ func TestManagerPrimaDownloadShowsProgress(t *testing.T) {
 	if st := m.Status(context.Background()); st.State != "downloading" || st.ModelID != "big" || st.Progress != 0.4 {
 		t.Fatalf("status: %+v", st)
 	}
+}
+
+// freePortRange returns a port p such that p+lo..p+hi are all free.
+func freePortRange(t *testing.T, lo, hi int) int {
+	t.Helper()
+	for range 50 {
+		p := freePort(t)
+		var lns []net.Listener
+		ok := true
+		for q := p + lo; q <= p+hi; q++ {
+			ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(q))
+			if err != nil {
+				ok = false
+				break
+			}
+			lns = append(lns, ln)
+		}
+		for _, ln := range lns {
+			ln.Close()
+		}
+		if ok {
+			return p
+		}
+	}
+	t.Fatal("no free port range")
+	return 0
 }
