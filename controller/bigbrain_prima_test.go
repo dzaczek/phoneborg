@@ -112,7 +112,8 @@ func TestFreePortSpan(t *testing.T) {
 	if got := b.freePortLocked("x", primaPortSpan); got != 100 { // its own ports are free for it
 		t.Errorf("own: %d", got)
 	}
-	b.portFree = func(p int) bool { return p != 101 } // e.g. in TIME_WAIT after a killed head
+	// 101 cannot be bound, e.g. in TIME_WAIT after a killed head.
+	b.portFree = func(p int) bool { return p != 101 }
 	if got := b.freePortLocked("x", primaPortSpan); got != 106 { // 102..105 meets y
 		t.Errorf("port not bindable: %d", got)
 	}
