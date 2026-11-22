@@ -183,8 +183,26 @@ pbctl pools                          # brain: preparing → loading → ready (m
 pbctl pools set brain enabled=off    # stop: the phones return to their own models
 ```
 
+Optional speculative decoding (ADR-036) runs a small draft model on the
+controller host, so the phones verify several tokens per round. Bigbrain
+pools only; `spec_max` is the tokens drafted per round (1..64, default 4),
+`draft=-` clears the draft model. The draft model must be in the catalog,
+smaller than the pool's model, and share its tokenizer. `spec=ngram` needs
+no model. It pays off only for code and JSON output: there qwen3-30b-a3b
+ran 1.2–1.7x faster, but prose and translation ran 2.5–5x slower and n-gram
+drafting changed nothing ([measurements](BENCHMARKS.md#speculative-decoding)).
+Turn it on for a pool that serves code or structured output, not by default.
+
+```sh
+pbctl pools set brain spec=draft draft=qwen3-0.6b-q4_k_m spec_max=4
+pbctl pools set brain spec=off
+```
+
 Use the fewest, largest phones the model fits on: each extra phone makes
-every token slower. One request at a time; a second one at the same moment
+every token slower. But a model that only just fits makes a phone swap its
+share of the weights, and then a token takes ten times longer: when a
+member's swap grows (`/proc/<pid>/status` VmSwap of ggml-rpc-server), add a
+phone. One request at a time; a second one at the same moment
 gets 503 `busy`.
 
 ### Let other machines use the gateway
@@ -300,7 +318,7 @@ pbctl placement set gemma-3n-e2b-it-q4_k_m pin=mi8
 | Command | What |
 |---|---|
 | `pbctl pools` | pools (`pool/<name>`) with member eligibility |
-| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="…"] [model=<id>] [ctx=N]` | create a pool or change the given fields (`-` clears a list) |
+| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="…"] [model=<id>] [ctx=N] [spec=off\|draft\|ngram] [draft=<id>\|-] [spec_max=N]` | create a pool or change the given fields (`-` clears a list) |
 | `pbctl pools rm <name>` | remove a pool |
 
 ```sh

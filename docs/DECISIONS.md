@@ -2131,3 +2131,56 @@ multi-model benchmark refused the box outright: the RAM class `xs` starts at
   serials.
 - The agent's fixed 600 MiB reserve is most of a 3 GB box's headroom; a
   reserve scaled to the device's RAM is an open follow-up.
+
+## ADR-036: Speculative decoding for Big Brain
+
+**Status:** accepted · **Date:** 2026-11-22
+
+**Problem.** A Big Brain head (ADR-034) pays a full round over every phone
+for each generated token: about 2.5 tok/s for qwen3-30b-a3b on two phones,
+dominated by the USB round trips rather than compute. Speculative decoding
+lets a small draft model propose several tokens that the big model verifies
+in one round.
+
+**Decision.** Optional, per pool, head only.
+- Pool settings `spec` (`off` default, `draft`, `ngram`), `draft` (a ready
+  catalog model, smaller than the pool's model, not the model itself) and
+  `spec_max` (1..64, default 4). They apply to `routing=bigbrain` only and
+  are part of the head's restart key, so changing them restarts the head.
+- The draft model runs on the controller host's CPU, never on a phone. On a
+  Pixel 8 Pro a qwen3-0.6b draft for qwen3-4b ran 2.2x slower than no
+  draft, although 50-78% of the drafted tokens were accepted, and it cost
+  about 1 GB of RAM the phone does not have to spare. The host's x86 cores
+  draft faster than a phone can verify.
+- Flags at the pinned llama.cpp b11136: `--spec-type draft-simple -md <file>
+  --spec-draft-n-max N -devd none -ngld 0 -td 2` (`--spec-type` defaults to
+  `none`, so `-md` alone does nothing; `--draft-max` and `--draft-min` are
+  removed). `-devd none` keeps the draft off the head's RPC devices, else it
+  would be offloaded to the phones. `ngram` runs `--spec-type ngram-mod
+  --spec-ngram-mod-n-max N` and needs no model. With `spec=off` the head's
+  arguments are unchanged.
+- Compatibility, checked when the pool is set with gguf-parser-go on both
+  headers: the same `tokenizer.ggml.model`, the same BOS and EOS ids and
+  vocabularies within 128 tokens (llama.cpp's
+  `SPEC_VOCAB_MAX_SIZE_DIFFERENCE`). A bad pair fails with a 400 instead of
+  a head crash.
+- A draft model that is not ready when the head starts (deleted, still
+  downloading) leaves the head running without it; `pbctl pools` shows why
+  (`spec_note`), and the head restarts with the draft once it is ready.
+- `pbctl pools` shows the mode in use, e.g. `spec draft:qwen3-0.6b-q4_k_m`.
+
+**Consequences.**
+- The head's self-test speed (used by routing) is measured at temperature 0,
+  where drafts are accepted most often, so it is an optimistic number for
+  sampled requests.
+- The draft model takes host RAM (about its file size) and 2 CPU threads
+  while the head runs.
+- Gain depends on acceptance, which depends on the prompt and the pair of
+  models; `spec=off` is one command away.
+
+**Results** (docs/BENCHMARKS.md#speculative-decoding). qwen3-30b-a3b on
+three phones with a qwen3-0.6b draft: code and JSON 1.2–1.7x faster at
+`spec_max` 4, prose and translation 2.5–5x slower, larger windows worse
+everywhere; `ngram-mod` ran at the baseline. Hence: off by default, the
+default window is 4, and a pool turns it on only for code or structured
+output. The draft costs the head about 1.1 GB of host RAM.

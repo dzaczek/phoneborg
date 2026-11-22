@@ -71,6 +71,25 @@ func TestApplyPoolSet(t *testing.T) {
 	}
 }
 
+func TestApplyPoolSetSpec(t *testing.T) {
+	p := controller.Pool{Name: "brain", Spec: "draft", Draft: "d", SpecMax: 4}
+	if err := applyPoolSet(&p, []string{"spec=ngram", "draft=-", "spec_max=16"}); err != nil {
+		t.Fatal(err)
+	}
+	if p.Spec != "ngram" || p.Draft != "" || p.SpecMax != 16 {
+		t.Fatalf("%+v", p)
+	}
+	if err := applyPoolSet(&p, []string{"spec=draft", "draft=qwen3-0.6b-q4_k_m"}); err != nil || p.Spec != "draft" || p.Draft != "qwen3-0.6b-q4_k_m" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if err := applyPoolSet(&p, []string{"draft=none", "spec=off"}); err != nil || p.Draft != "" || p.Spec != "off" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if err := applyPoolSet(&p, []string{"spec_max=x"}); err == nil {
+		t.Error("spec_max=x accepted")
+	}
+}
+
 func TestPoolEnabledAndStatus(t *testing.T) {
 	ts := newController(t)
 	env := map[string]string{"PHONEBORG_URL": ts.URL, "PHONEBORG_ADMIN_TOKEN": token}

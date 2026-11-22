@@ -1,8 +1,10 @@
 package models
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dzaczek/phoneborg/controller/models/modeltest"
@@ -96,5 +98,60 @@ func TestClassesAndFit(t *testing.T) {
 	}
 	if got := FitsClasses(5 * GiB); len(got) != 2 || got[0] != "l" {
 		t.Fatalf("fits 5 GiB = %v", got)
+	}
+}
+
+func tok(model string, vocab int, bos, eos int64) Tokenizer {
+	return Tokenizer{Model: model, Vocab: vocab, BOS: bos, EOS: eos}
+}
+
+func TestDraftCompatible(t *testing.T) {
+	main := tok("gpt2", 151936, 11, 12)
+	for _, tc := range []struct {
+		name  string
+		draft Tokenizer
+		err   string
+	}{
+		{"same", tok("gpt2", 151936, 11, 12), ""},
+		{"vocab 64 apart", tok("gpt2", 151936-64, 11, 12), ""},
+		{"vocab 128 apart", tok("gpt2", 151936+128, 11, 12), ""},
+		{"vocab 129 smaller", tok("gpt2", 151936-129, 11, 12), "differ by more than 128"},
+		{"vocab 129 larger", tok("gpt2", 151936+129, 11, 12), "differ by more than 128"},
+		{"other tokenizer", tok("llama", 151936, 11, 12), "tokenizer"},
+		{"BOS differs", tok("gpt2", 151936, 1, 12), "BOS/EOS"},
+		{"EOS differs", tok("gpt2", 151936, 11, 2), "BOS/EOS"},
+	} {
+		err := DraftCompatible(main, tc.draft)
+		switch {
+		case tc.err == "" && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+			t.Errorf("%s: error %v, want %q", tc.name, err, tc.err)
+		}
+	}
+}
+
+// TokenizerOf reads the vocabulary size from a header parsed with
+// SkipLargeMetadata, so it needs no second pass over the file.
+func TestTokenizerOf(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "m.gguf")
+	tokens := make([]string, 300)
+	for i := range tokens {
+		tokens[i] = fmt.Sprintf("t%d", i)
+	}
+	kvs := append(modeltest.LlamaLike("qwen2", 28, 12, 2, 1536, 32768),
+		modeltest.KV{Key: "tokenizer.ggml.model", Value: "gpt2"}, modeltest.KV{Key: "tokenizer.ggml.tokens", Value: tokens},
+		modeltest.KV{Key: "tokenizer.ggml.bos_token_id", Value: uint32(5)}, modeltest.KV{Key: "tokenizer.ggml.eos_token_id", Value: uint32(6)})
+	os.WriteFile(p, modeltest.GGUF(kvs, 0), 0o600)
+	got, err := TokenizerOf(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := tok("gpt2", 300, 5, 6); got != want {
+		t.Fatalf("tokenizer = %+v, want %+v", got, want)
+	}
+	os.WriteFile(p, []byte("garbage"), 0o600)
+	if _, err := TokenizerOf(p); err == nil {
+		t.Error("garbage accepted")
 	}
 }

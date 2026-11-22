@@ -17,6 +17,7 @@ import (
 
 	"github.com/dzaczek/phoneborg/controller/gateway"
 	"github.com/dzaczek/phoneborg/controller/models"
+	"github.com/dzaczek/phoneborg/controller/models/modeltest"
 	"github.com/dzaczek/phoneborg/proto"
 )
 
@@ -70,7 +71,7 @@ func TestNormPoolBigBrain(t *testing.T) {
 }
 
 func TestHeadArgs(t *testing.T) {
-	got := strings.Join(headArgs("big", "/m/big.gguf", 4096, 18200, []string{"127.0.0.1:1", "127.0.0.1:2"}, []int{7000, 3000}), " ")
+	got := strings.Join(headArgs("big", "/m/big.gguf", 4096, 18200, []string{"127.0.0.1:1", "127.0.0.1:2"}, []int{7000, 3000}, headSpec{}), " ")
 	for _, want := range []string{"-m /m/big.gguf -a big", "--rpc 127.0.0.1:1,127.0.0.1:2", "-ngl 99", "-ts 7000,3000", "-c 4096 -np 1",
 		"-ctk q8_0 -ctv q8_0", "--host 127.0.0.1 --port 18200"} {
 		if !strings.Contains(got, want) {
@@ -286,5 +287,136 @@ func TestBigBrainKeepsStaleMembers(t *testing.T) {
 	e.srv.bigBrainTick(context.Background())
 	if p := e.bigBrain("brain"); p.BigBrain.State != BigBrainPreparing || !strings.Contains(p.BigBrain.Reason, "free the previous load") {
 		t.Fatalf("settling: %+v", p.BigBrain)
+	}
+}
+
+func TestHeadArgsSpec(t *testing.T) {
+	base := headArgs("big", "/m/big.gguf", 4096, 18200, []string{"127.0.0.1:1"}, []int{7000}, headSpec{})
+	for _, tc := range []struct {
+		name string
+		spec headSpec
+		want string // appended to the off args
+	}{
+		{"off", headSpec{}, ""},
+		{"off ignores max", headSpec{max: 8}, ""},
+		{"draft", headSpec{mode: SpecDraft, draft: "d", path: "/m/d.gguf", max: 12},
+			"-md /m/d.gguf --spec-type draft-simple --spec-draft-n-max 12 -devd none -ngld 0 -td 2"},
+		{"ngram", headSpec{mode: SpecNgram, max: 8}, "--spec-type ngram-mod --spec-ngram-mod-n-max 8"},
+	} {
+		got := strings.Join(headArgs("big", "/m/big.gguf", 4096, 18200, []string{"127.0.0.1:1"}, []int{7000}, tc.spec), " ")
+		want := strings.TrimSpace(strings.Join(base, " ") + " " + tc.want)
+		if got != want {
+			t.Errorf("%s: args\n %s\nwant\n %s", tc.name, got, want)
+		}
+	}
+}
+
+func TestNormPoolSpec(t *testing.T) {
+	bb := func(spec, draft string, max int) Pool {
+		return Pool{Name: "bb", Routing: RoutingBigBrain, Model: "big", Nodes: []string{"a", "b"}, Spec: spec, Draft: draft, SpecMax: max}
+	}
+	for _, tc := range []struct {
+		p   Pool
+		err string
+	}{
+		{bb("", "", 0), ""},
+		{bb("off", "", 0), ""},
+		{bb("ngram", "", 16), ""},
+		{bb("draft", "small", 64), ""},
+		{bb("draft", "small", 1), ""},
+		{bb("draft", "", 0), "needs a draft model"},
+		{bb("draft", "big", 0), "own model"},
+		{bb("ngram", "", 65), "spec_max"},
+		{bb("ngram", "", -1), "spec_max"},
+		{bb("medusa", "", 0), "spec must be"},
+		{Pool{Name: "p", Spec: "ngram"}, "Big Brain pools only"},
+		{Pool{Name: "p", Routing: RoutingAffinity, Draft: "small"}, "Big Brain pools only"},
+		{Pool{Name: "p", Routing: RoutingSuperborg, SpecMax: 8}, "Big Brain pools only"},
+	} {
+		p, err := normPool(tc.p)
+		switch {
+		case tc.err == "" && err != nil:
+			t.Errorf("%+v: %v", tc.p, err)
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+			t.Errorf("%+v: error %v, want %q", tc.p, err, tc.err)
+		case tc.err == "" && tc.p.Spec == "off" && p.Spec != SpecOff:
+			t.Errorf("spec %q not normalised", p.Spec)
+		}
+	}
+}
+
+// addModel adds a catalog model from a GGUF with the given extra metadata.
+func (e *env) addModel(id string, pad int, extra ...modeltest.KV) {
+	e.t.Helper()
+	src := filepath.Join(e.t.TempDir(), id+"-Q4_K_M.gguf")
+	kvs := append(modeltest.LlamaLike("qwen2", 24, 14, 2, 896, 32768), extra...)
+	os.WriteFile(src, modeltest.GGUF(kvs, pad), 0o600)
+	e.admin(http.MethodPost, "/admin/models", `{"source":"file://`+src+`","id":"`+id+`"}`, 202, nil)
+	if m := e.waitReady(id); m.Status != models.StatusReady {
+		e.t.Fatalf("model %s: %+v", id, m)
+	}
+}
+
+func TestBigBrainSpeculative(t *testing.T) {
+	e, argsFile := newBigBrainEnv(t)
+	e.addModel("small", 1<<10)
+	e.addModel("odd", 1<<10, modeltest.KV{Key: "tokenizer.ggml.model", Value: "bpe"}) // "big" has none
+	e.addModel("twin", 1<<20)                                                         // as large as "big"
+	put := func(body string, code int) {
+		e.admin(http.MethodPut, "/admin/pools/brain", `{"routing":"bigbrain","model":"big","nodes":["a","b"],`+body+`}`, code, nil)
+	}
+	put(`"spec":"draft","draft":"nope"`, 400)
+	put(`"spec":"draft","draft":"twin"`, 400)
+	put(`"spec":"draft","draft":"odd"`, 400)
+	put(`"spec":"draft","draft":"small","spec_max":99`, 400)
+	if w := e.do(http.MethodPut, "/admin/pools/other", `{"routing":"spread","spec":"ngram"}`, testToken); w.Code != 400 {
+		t.Fatalf("spec on a spread pool: %d %s", w.Code, w.Body)
+	}
+
+	// Off: the args are the plain ones.
+	put(`"spec":"off"`, 200)
+	e.rpcHeartbeat("a", 50052, 6<<30)
+	e.rpcHeartbeat("b", 50053, 3<<30)
+	p := e.tickUntil("brain", BigBrainReady)
+	args, _ := os.ReadFile(argsFile)
+	if p.BigBrain.Spec != "" || strings.Contains(string(args), "--spec-type") {
+		t.Fatalf("off: %+v args %q", p.BigBrain, args)
+	}
+
+	// Each change restarts the head with the new flags.
+	for _, tc := range []struct{ body, spec, want string }{
+		{`"spec":"ngram"`, "ngram", "--spec-type ngram-mod --spec-ngram-mod-n-max 4"},
+		{`"spec":"ngram","spec_max":16`, "ngram", "--spec-ngram-mod-n-max 16"},
+		{`"spec":"draft","draft":"small","spec_max":4`, "draft:small", "--spec-type draft-simple --spec-draft-n-max 4 -devd none -ngld 0 -td 2"},
+	} {
+		put(tc.body, 200)
+		e.srv.bigBrainTick(context.Background())
+		if p := e.bigBrain("brain"); p.BigBrain.State != BigBrainPreparing {
+			t.Fatalf("%s: head not restarted: %+v", tc.body, p.BigBrain)
+		}
+		e.srv.bb.mu.Lock()
+		e.srv.bb.heads["brain"].stopped = time.Time{} // the phones have freed the old load
+		e.srv.bb.mu.Unlock()
+		p := e.tickUntil("brain", BigBrainReady)
+		args, _ := os.ReadFile(argsFile)
+		if p.BigBrain.Spec != tc.spec || !strings.Contains(string(args), tc.want) {
+			t.Fatalf("%s: spec %q, args %q lack %q", tc.body, p.BigBrain.Spec, args, tc.want)
+		}
+	}
+}
+
+// A draft model that is not ready leaves the head running without it.
+func TestBigBrainDraftNotReady(t *testing.T) {
+	e, argsFile := newBigBrainEnv(t)
+	e.srv.pools.mu.Lock()
+	e.srv.pools.byName["brain"] = Pool{Name: "brain", Routing: RoutingBigBrain, Model: "big", Nodes: []string{"a", "b"}, Spec: SpecDraft, Draft: "ghost"}
+	e.srv.pools.mu.Unlock()
+	e.rpcHeartbeat("a", 50052, 6<<30)
+	e.rpcHeartbeat("b", 50053, 3<<30)
+	p := e.tickUntil("brain", BigBrainReady)
+	args, _ := os.ReadFile(argsFile)
+	if strings.Contains(string(args), "-md") || strings.Contains(string(args), "--spec-type") || p.BigBrain.Spec != "" ||
+		!strings.Contains(p.BigBrain.SpecNote, "ghost") {
+		t.Fatalf("head args %q, status %+v", args, p.BigBrain)
 	}
 }

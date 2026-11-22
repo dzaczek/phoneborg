@@ -532,6 +532,120 @@ a reload from the RPC cache 2 min 25 s; the head used 31 MB of RAM.
   MIUI 12.5 pcprov recorded setsid's pid instead of the agent's and kept
   starting new agents.
 
+## Speculative decoding
+
+Speculative decoding lets a cheap drafter propose several tokens that the
+big model checks in one forward pass; the output is the same as without it
+(greedy) or has the same distribution (sampling) [1][2]. The drafter is a
+small model with the same tokenizer [1][2], or n-grams taken from the
+context, as in prompt lookup decoding [3]. llama.cpp implements both in
+`llama-server` (`--spec-type`) [4]. ADR-036 has the design.
+
+Setup: llama.cpp b11136, temperature 0 unless noted, 256 tokens, prompt
+cache off, Qwen3 thinking off. Prompts: write a Python function (code), a
+JSON object (structured), a paragraph of prose, an English to Polish
+translation (translation), and a Go function with one change asked for
+(edit). Speed is the median generation tok/s. Raw data:
+`~/spec/*.jsonl` on the stage host.
+
+### On one phone: a draft model costs more than it saves
+
+Pixel 8 Pro, qwen3-4b-instruct-2507 Q4_K_M, 9 threads, 2026-11-21.
+
+| Drafter | Code tok/s | Accepted | vs no draft | RAM (RssAnon) |
+|---|---|---|---|---|
+| none | 4.92 | – | 1.00x | 1.2 GB |
+| qwen3-0.6b, up to 4 tokens | 2.20 | 61% | 0.45x | 2.2 GB |
+| qwen3-0.6b, up to 8 tokens, 3 threads | 2.14 | 49% | 0.43x | 2.2 GB |
+| qwen3-0.6b, up to 4 tokens, p-min 0.6 | 2.07 | 78% | 0.42x | 2.2 GB |
+
+Without a draft the other prompts ran at 5.03 (structured), 4.22 (prose)
+and 3.21 tok/s (translation). Most drafted tokens are accepted, yet speed
+halves: on a phone the drafter and the big model share the same few fast
+cores and the memory bandwidth, so drafting is not cheap relative to
+verifying. The draft also costs about 1 GB of RAM.
+
+### On one phone: n-gram drafting does not help cold requests
+
+Same phone and model, 2026-11-22. The first number is the median of three
+identical requests; in brackets the first, cold one.
+
+| Mode | Edit | Code | Structured | Translation |
+|---|---|---|---|---|
+| none | 3.24 | 3.16 | 2.68 | 3.05 |
+| `ngram-mod` | 7.34 [3.44], 91% | 8.03 [3.10], 99% | 3.20, 40% | 3.41, 50% |
+| `ngram-mod`, n-min 8, n-max 16, n-match 12 | 4.60 [3.51], 78% | 5.11 [2.57], 68% | 3.55 [2.57], 49% | – |
+| `ngram-simple` | 3.17, 41% | 2.74, 38% | 2.43, 5% | 2.64, no drafts |
+| `ngram-map-k` | 3.09, 50% | 2.91, 38% | 2.38, 4% | 2.71, no drafts |
+
+`ngram-mod` keeps its hash pool between requests [4], so the second and
+third identical request replay the first one's output: those 2.3–2.5x are
+an artefact of repeating the prompt. The cold requests run at the
+baseline speed. `ngram-simple` and `ngram-map-k` are 5–13% slower
+everywhere. The phone stayed at 39–41 °C, but even so the baseline
+drifted from 3.9 to 2.4 tok/s over the run, so compare within a row.
+
+Conclusion for phones: no speculative decoding on a single phone. ADR-036
+therefore runs the drafter on the Big Brain head, on the host's CPU, where
+it does not compete with the phones.
+
+### Big Brain: draft on the host
+
+qwen3-30b-a3b-2507 UD-Q3_K_XL on Pixel 8 Pro, OnePlus 10 Pro and POCO F3,
+head on the stage VM (4 x86 cores), draft qwen3-0.6b Q4_K_M on 2 host
+threads, 2026-11-22. One run per cell, each with its own prompt variant (an
+n-gram pool cannot replay an earlier answer); every run logs each phone's
+swap-ins. Speed in tok/s, acceptance in brackets, speed-up below.
+
+| Mode | Code t0 | Code t0.7 | JSON t0 | JSON t0.7 | Prose t0 | Prose t0.7 | Translation t0 | Translation t0.7 |
+|---|---|---|---|---|---|---|---|---|
+| off | 2.16 | 2.15 | 2.17 | 2.15 | 2.10 | 2.12 | 2.13 | 2.12 |
+| draft, `spec_max` 4 | 3.02 (64%) **1.40x** | 2.55 (50%) **1.19x** | 3.28 (70%) **1.51x** | 3.69 (82%) **1.72x** | 1.50 (19%) 0.71x | 0.82 (19%) 0.39x | 0.42 (24%) 0.20x | 0.44 (25%) 0.21x |
+| draft, `spec_max` 8 | 2.63 (47%) 1.22x | 1.92 (31%) 0.89x | 2.98 (55%) 1.37x | 3.58 (67%) 1.67x | 1.02 (10%) 0.49x | 0.95 (9%) 0.45x | 0.41 (14%) 0.19x | 0.35 (11%) 0.17x |
+| draft, `spec_max` 16 | 1.96 (31%) 0.91x | 0.79 (16%) 0.37x | 1.22 (45%) 0.56x | 1.46 (51%) 0.68x | 0.28 (5%) 0.13x | 0.26 (4%) 0.12x | 0.31 (7%) 0.15x | 0.28 (5%) 0.13x |
+| `ngram-mod`, 8 | 2.13 | 2.13 | 2.12 | 2.13 | 2.10 | 2.08 | 2.08 | 2.10 |
+
+| Mode | Head RSS on the host |
+|---|---|
+| off | ~40 MB |
+| ngram | ~54 MB |
+| draft | ~1.15 GB |
+
+- Code and JSON gain 1.2–1.7x at `spec_max` 4, which became the default.
+  Larger windows lose: more drafted tokens are rejected.
+- Prose and translation lose 2.5–5x. A rejected draft is much more
+  expensive here than a dense model would suggest. Our reading, not
+  tested: a verify batch of several tokens routes to many more experts of
+  this MoE model than one token does, so the phones read far more weights
+  per round.
+- `ngram-mod` drafted almost nothing on these fresh prompts and ran at the
+  baseline.
+- qwen3-32b Q4_K_M did not fit the three phones (20.8 GB needed, 19.3 GB
+  free), so there is no dense-model row.
+
+Speculation therefore stays off by default (ADR-036); turn it on for a
+pool that serves code or structured output.
+
+**At the memory limit.** The same model on only the Pixel and the OnePlus
+first fits (14.5 GB needed, 15.1 GB free), but the OnePlus then swaps 1–2.5
+GB of its ggml-rpc-server's weights. A request starts at 2.4 tok/s and
+drops to 0.26 tok/s, ten times slower, as soon as pages are swapped back in
+(up to 245 swap-ins per second). Every draft/ngram number from that setup
+was noise, so the series above uses three phones; the two-phone runs are
+kept in `~/spec/bigbrain-spec-2026-11-22.2phone-atlimit.jsonl`.
+
+Sources:
+1. Y. Leviathan, M. Kalman, Y. Matias, *Fast Inference from Transformers
+   via Speculative Decoding*, ICML 2023,
+   [arXiv:2211.17192](https://arxiv.org/abs/2211.17192).
+2. C. Chen et al., *Accelerating Large Language Model Decoding with
+   Speculative Sampling*, 2023,
+   [arXiv:2302.01318](https://arxiv.org/abs/2302.01318).
+3. A. Saxena, *Prompt Lookup Decoding*, 2023,
+   [github.com/apoorvumang/prompt-lookup-decoding](https://github.com/apoorvumang/prompt-lookup-decoding).
+4. llama.cpp, *Speculative decoding* (b11136),
+   [docs/speculative.md](https://github.com/ggml-org/llama.cpp/blob/b11136/docs/speculative.md).
+
 ## Memory: what Android leaves free
 
 | Phone | Used by Android and apps | Source |
