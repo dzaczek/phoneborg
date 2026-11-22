@@ -245,6 +245,9 @@ func normPool(p Pool) (Pool, error) {
 	if p.MinGenTPS < 0 {
 		return p, errors.New("min_gen_tps must not be negative")
 	}
+	if p.Spec == "off" {
+		p.Spec = SpecOff
+	}
 	if p.Routing != RoutingBigBrain && (p.Spec != "" || p.Draft != "" || p.SpecMax != 0) {
 		return p, errors.New("spec, draft and spec_max apply to Big Brain pools only")
 	}
@@ -268,9 +271,7 @@ func normPool(p Pool) (Pool, error) {
 		}
 		p.Draft = strings.TrimSpace(p.Draft)
 		switch p.Spec {
-		case SpecOff, "off":
-			p.Spec = SpecOff
-		case SpecNgram:
+		case SpecOff, SpecNgram:
 		case SpecDraft:
 			if p.Draft == "" {
 				return p, errors.New("spec=draft needs a draft model (a catalog id)")
