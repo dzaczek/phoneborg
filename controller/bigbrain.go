@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/dzaczek/phoneborg/controller/gateway"
+	"github.com/dzaczek/phoneborg/controller/models"
 	"github.com/dzaczek/phoneborg/proto"
 )
 
@@ -40,6 +41,15 @@ const (
 	BigBrainError     = "error"
 	BigBrainStopped   = "stopped" // the pool is disabled; its phones serve their own models
 )
+
+// Speculative decoding modes of a Big Brain head (ADR-036).
+const (
+	SpecOff   = ""
+	SpecDraft = "draft" // a smaller catalog model drafts on the host CPU
+	SpecNgram = "ngram" // drafts from the context, no model
+)
+
+const bigBrainDefaultSpecMax = 8
 
 // ReasonNotRPC: a Big Brain member that does not run ggml-rpc-server (yet).
 const ReasonNotRPC = "not in rpc mode"
@@ -91,6 +101,27 @@ type BigBrainStatus struct {
 	GenTPS        float64   `json:"gen_tps,omitempty"`
 	PromptTPS     float64   `json:"prompt_tps,omitempty"`
 	Restarts      int       `json:"restarts,omitempty"`
+	// Spec is the speculative decoding the running head uses ("draft:<id>",
+	// "ngram"); SpecNote says why the pool's setting is not in effect.
+	Spec     string `json:"spec,omitempty"`
+	SpecNote string `json:"spec_note,omitempty"`
+}
+
+// headSpec is the speculative decoding a head runs with: the pool's setting
+// as far as it can be honoured now.
+type headSpec struct {
+	mode  string // SpecOff, SpecDraft or SpecNgram
+	draft string // catalog id, SpecDraft
+	path  string // the draft model's file, SpecDraft
+	max   int
+	note  string // why the pool's setting is not in effect
+}
+
+func (s headSpec) label() string {
+	if s.mode == SpecDraft {
+		return SpecDraft + ":" + s.draft
+	}
+	return s.mode
 }
 
 // bigBrainMember is a resolved member of a Big Brain pool.
@@ -292,7 +323,8 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 		}
 		addrs = append(addrs, mb.rpcAddr)
 	}
-	key := fmt.Sprintf("%s|%s|%d|%s", p.Model, path, ctxSize, strings.Join(addrs, ","))
+	spec := s.headSpec(p)
+	key := fmt.Sprintf("%s|%s|%d|%s|%s|%s|%d", p.Model, path, ctxSize, strings.Join(addrs, ","), spec.mode, spec.path, spec.max)
 
 	b.mu.Lock()
 	h.status.NeedBytes = need
@@ -351,24 +383,79 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 			float64(need)/1e9, float64(have)/1e9))
 		return
 	}
-	b.start(ctx, p, path, ctxSize, addrs, split, key)
+	b.start(ctx, p, path, ctxSize, addrs, split, spec, key)
+}
+
+// headSpec resolves p's speculative decoding. A draft model that is not
+// ready (yet) leaves the head running without it rather than failing the pool.
+func (s *Server) headSpec(p Pool) headSpec {
+	spec := headSpec{mode: p.Spec, max: p.SpecMax}
+	if spec.max == 0 {
+		spec.max = bigBrainDefaultSpecMax
+	}
+	if p.Spec == SpecDraft {
+		path, _, ok := s.catalog.File(p.Draft)
+		if !ok {
+			return headSpec{note: "draft model " + p.Draft + " is not ready in the catalog: running without it"}
+		}
+		spec.draft, spec.path = p.Draft, path
+	}
+	return spec
+}
+
+// checkDraft verifies p's draft model: ready, smaller than the pool's model
+// and sharing its tokenizer.
+func (s *Server) checkDraft(p Pool) error {
+	dpath, dm, ok := s.catalog.File(p.Draft)
+	if !ok {
+		return fmt.Errorf("draft model %q is not ready in the catalog", p.Draft)
+	}
+	path, m, ok := s.catalog.File(p.Model)
+	if !ok {
+		return nil // the head waits for the model; compare when it is ready
+	}
+	if dm.SizeBytes >= m.SizeBytes {
+		return fmt.Errorf("draft model %q must be smaller than %q", p.Draft, p.Model)
+	}
+	mt, err := models.TokenizerOf(path)
+	if err != nil {
+		return err
+	}
+	dt, err := models.TokenizerOf(dpath)
+	if err != nil {
+		return err
+	}
+	if err := models.DraftCompatible(mt, dt); err != nil {
+		return fmt.Errorf("draft model %q cannot draft for %q: %w", p.Draft, p.Model, err)
+	}
+	return nil
 }
 
 // headArgs is the head's llama-server command line: every layer on the
 // members (-ngl 99) in proportion to their usable RAM (-ts), one slot, a
 // q8_0 KV cache with flash attention. The head computes nothing itself.
-func headArgs(model, path string, ctxSize, port int, addrs []string, split []int) []string {
+// Speculative decoding (ADR-036) adds the draft model on the host CPU (-devd
+// none, -ngld 0: the head's only devices are the members) or n-gram drafting.
+func headArgs(model, path string, ctxSize, port int, addrs []string, split []int, spec headSpec) []string {
 	ts := make([]string, len(split))
 	for i, v := range split {
 		ts[i] = strconv.Itoa(v)
 	}
-	return []string{"-m", path, "-a", model, "--rpc", strings.Join(addrs, ","), "-ngl", "99",
+	args := []string{"-m", path, "-a", model, "--rpc", strings.Join(addrs, ","), "-ngl", "99",
 		"-ts", strings.Join(ts, ","), "-c", strconv.Itoa(ctxSize), "-np", "1",
 		"-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "-t", "2",
 		"--host", "127.0.0.1", "--port", strconv.Itoa(port)}
+	switch spec.mode {
+	case SpecDraft:
+		args = append(args, "-md", spec.path, "--spec-type", "draft-simple", "--spec-draft-n-max", strconv.Itoa(spec.max),
+			"-devd", "none", "-ngld", "0", "-td", "2")
+	case SpecNgram:
+		args = append(args, "--spec-type", "ngram-mod", "--spec-ngram-mod-n-max", strconv.Itoa(spec.max))
+	}
+	return args
 }
 
-func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int, addrs []string, split []int, key string) {
+func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int, addrs []string, split []int, spec headSpec, key string) {
 	b.mu.Lock()
 	h := b.heads[p.Name]
 	if h.cancel != nil {
@@ -385,7 +472,7 @@ func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int,
 		}
 	}
 	hctx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(hctx, b.opts.HeadBin, headArgs(p.Model, path, ctxSize, port, addrs, split)...)
+	cmd := exec.CommandContext(hctx, b.opts.HeadBin, headArgs(p.Model, path, ctxSize, port, addrs, split, spec)...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
@@ -401,10 +488,10 @@ func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int,
 	h.key, h.cancel, h.done, h.exited, h.logTail = key, cancel, done, false, ""
 	h.status = BigBrainStatus{State: BigBrainLoading, Reason: fmt.Sprintf("loading %s onto %d phones", p.Model, len(addrs)),
 		NeedBytes: h.status.NeedBytes, HaveBytes: h.status.HaveBytes, TensorSplit: split, Port: port,
-		LoadStartedAt: time.Now(), Restarts: h.status.Restarts}
+		LoadStartedAt: time.Now(), Restarts: h.status.Restarts, Spec: spec.label(), SpecNote: spec.note}
 	b.mu.Unlock()
 	b.log.Info("Big Brain head started", "pool", p.Name, "model", p.Model, "pid", cmd.Process.Pid, "port", port,
-		"rpc", strings.Join(addrs, ","), "tensor_split", split, "log", logPath)
+		"rpc", strings.Join(addrs, ","), "tensor_split", split, "spec", spec.label(), "log", logPath)
 	go func() {
 		err := cmd.Wait()
 		logf.Close()

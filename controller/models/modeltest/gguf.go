@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 )
 
-// KV is one metadata entry. Value may be string, uint32 or uint64.
+// KV is one metadata entry. Value may be string, []string, uint32 or uint64.
 type KV struct {
 	Key   string
 	Value any
@@ -60,6 +60,13 @@ func GGUFTensors(kvs []KV, tensors []Tensor, pad int) []byte {
 		case string:
 			le(uint32(8))
 			str(v)
+		case []string:
+			le(uint32(9))
+			le(uint32(8)) // array of strings
+			le(uint64(len(v)))
+			for _, s := range v {
+				str(s)
+			}
 		case uint32:
 			le(uint32(4))
 			le(v)

@@ -72,6 +72,13 @@ type Pool struct {
 	// pool (ADR-034): the model split across Nodes; ignored otherwise.
 	Model   string `json:"model,omitempty"`
 	CtxSize int    `json:"ctx_size,omitempty"`
+	// Spec turns on speculative decoding in the head (ADR-036): SpecOff
+	// (default, ""), SpecDraft (Draft, a smaller catalog model run on the
+	// host CPU) or SpecNgram (no model). SpecMax is the most tokens drafted
+	// per round, 0 = 8. Big Brain pools only.
+	Spec    string `json:"spec,omitempty"`
+	Draft   string `json:"draft,omitempty"`
+	SpecMax int    `json:"spec_max,omitempty"`
 	// Disabled pools keep their settings but are not listed in /v1/models
 	// and refuse requests (ADR-027).
 	Disabled bool `json:"disabled,omitempty"`
@@ -238,6 +245,9 @@ func normPool(p Pool) (Pool, error) {
 	if p.MinGenTPS < 0 {
 		return p, errors.New("min_gen_tps must not be negative")
 	}
+	if p.Routing != RoutingBigBrain && (p.Spec != "" || p.Draft != "" || p.SpecMax != 0) {
+		return p, errors.New("spec, draft and spec_max apply to Big Brain pools only")
+	}
 	switch p.Routing {
 	case "":
 		p.Routing = RoutingSpread
@@ -253,6 +263,23 @@ func normPool(p Pool) (Pool, error) {
 			return p, errors.New("a Big Brain pool serves its model on its nodes: models, classes and min_gen_tps do not apply")
 		case p.CtxSize != 0 && (p.CtxSize < 512 || p.CtxSize > 131072):
 			return p, errors.New("ctx_size must be 0 (4096) or 512..131072")
+		case p.SpecMax < 0 || p.SpecMax > 64:
+			return p, errors.New("spec_max must be 0 (8) or 1..64")
+		}
+		p.Draft = strings.TrimSpace(p.Draft)
+		switch p.Spec {
+		case SpecOff, "off":
+			p.Spec = SpecOff
+		case SpecNgram:
+		case SpecDraft:
+			if p.Draft == "" {
+				return p, errors.New("spec=draft needs a draft model (a catalog id)")
+			}
+			if p.Draft == p.Model {
+				return p, errors.New("draft must not be the pool's own model")
+			}
+		default:
+			return p, fmt.Errorf("spec must be off, %s or %s", SpecDraft, SpecNgram)
 		}
 	default:
 		return p, fmt.Errorf("routing must be %q, %q, %q or %q", RoutingSpread, RoutingAffinity, RoutingSuperborg, RoutingBigBrain)
@@ -665,6 +692,8 @@ func (s *Server) adminSetPool(w http.ResponseWriter, r *http.Request) {
 	if err == nil && p.Routing == RoutingBigBrain {
 		if _, ok := s.catalog.Get(p.Model); !ok {
 			err = fmt.Errorf("model %q is not in the catalog", p.Model)
+		} else if p.Spec == SpecDraft {
+			err = s.checkDraft(p)
 		}
 	}
 	if err != nil {

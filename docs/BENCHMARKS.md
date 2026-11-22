@@ -532,6 +532,10 @@ a reload from the RPC cache 2 min 25 s; the head used 31 MB of RAM.
   MIUI 12.5 pcprov recorded setsid's pid instead of the agent's and kept
   starting new agents.
 
+## Speculative decoding
+
+TBD
+
 ## Memory: what Android leaves free
 
 | Phone | Used by Android and apps | Source |

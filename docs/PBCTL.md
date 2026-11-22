@@ -183,6 +183,18 @@ pbctl pools                          # brain: preparing → loading → ready (m
 pbctl pools set brain enabled=off    # stop: the phones return to their own models
 ```
 
+Optional speculative decoding (ADR-036) runs a small draft model on the
+controller host, so the phones verify several tokens per round. Bigbrain
+pools only; `spec_max` is the tokens drafted per round (1..64, default 8),
+`draft=-` clears the draft model. The draft model must be in the catalog,
+smaller than the pool's model, and share its tokenizer. `spec=ngram` needs
+no model.
+
+```sh
+pbctl pools set brain spec=draft draft=qwen3-0.6b-q4_k_m spec_max=8
+pbctl pools set brain spec=off
+```
+
 Use the fewest, largest phones the model fits on: each extra phone makes
 every token slower. One request at a time; a second one at the same moment
 gets 503 `busy`.
@@ -300,7 +312,7 @@ pbctl placement set gemma-3n-e2b-it-q4_k_m pin=mi8
 | Command | What |
 |---|---|
 | `pbctl pools` | pools (`pool/<name>`) with member eligibility |
-| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="…"] [model=<id>] [ctx=N]` | create a pool or change the given fields (`-` clears a list) |
+| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="…"] [model=<id>] [ctx=N] [spec=off\|draft\|ngram] [draft=<id>\|-] [spec_max=N]` | create a pool or change the given fields (`-` clears a list) |
 | `pbctl pools rm <name>` | remove a pool |
 
 ```sh

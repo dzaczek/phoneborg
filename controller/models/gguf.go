@@ -103,3 +103,44 @@ func ReadMeta(path string) (m Meta, err error) {
 	m.SparseBytes = sparseBytes(gf.TensorInfos)
 	return m, nil
 }
+
+// Tokenizer is the part of a GGUF's tokenizer that decides whether one model
+// can draft tokens for another.
+type Tokenizer struct {
+	Model    string // tokenizer.ggml.model
+	Vocab    int
+	BOS, EOS int64 // -1 = unset
+}
+
+// TokenizerOf reads a GGUF file's tokenizer metadata, like ReadMeta.
+func TokenizerOf(path string) (t Tokenizer, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			t, err = Tokenizer{}, fmt.Errorf("not a readable GGUF file: %v", r)
+		}
+	}()
+	gf, err := gguf.ParseGGUFFile(path, gguf.SkipLargeMetadata())
+	if err != nil {
+		return Tokenizer{}, fmt.Errorf("not a readable GGUF file: %w", err)
+	}
+	gt := gf.Tokenizer()
+	return Tokenizer{Model: gt.Model, Vocab: int(gt.TokensLength), BOS: gt.BOSTokenID, EOS: gt.EOSTokenID}, nil
+}
+
+// maxDraftVocabDiff is llama.cpp's SPEC_VOCAB_MAX_SIZE_DIFFERENCE.
+const maxDraftVocabDiff = 128
+
+// DraftCompatible reports why a model with tokenizer draft cannot draft for
+// one with tokenizer main; llama-server's own check, so a bad pair fails
+// when the pool is set rather than as a head crash.
+func DraftCompatible(main, draft Tokenizer) error {
+	switch {
+	case main.Model != draft.Model:
+		return fmt.Errorf("tokenizer %q differs from %q", draft.Model, main.Model)
+	case main.BOS != draft.BOS || main.EOS != draft.EOS:
+		return fmt.Errorf("BOS/EOS token ids differ (%d/%d vs %d/%d)", draft.BOS, draft.EOS, main.BOS, main.EOS)
+	case main.Vocab-draft.Vocab > maxDraftVocabDiff || draft.Vocab-main.Vocab > maxDraftVocabDiff:
+		return fmt.Errorf("vocabulary sizes %d and %d differ by more than %d", draft.Vocab, main.Vocab, maxDraftVocabDiff)
+	}
+	return nil
+}
