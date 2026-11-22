@@ -85,13 +85,15 @@ prima-all:
 
 # prima.cpp head: its llama-server built natively for the controller host
 # (needs a C++ compiler and libzmq, e.g. libzmq3-dev; prima.cpp links it from
-# /usr/local/lib, see its Makefile). The same commit as the phones' workers:
-# the ring protocol must match.
+# /usr/local/lib, see its Makefile). The same commit and patch as the
+# phones' workers: the ring protocol must match, and the patch binds the
+# ring's ports to 127.0.0.1 only (the ring runs over loopback and tunnels).
 PRIMA_COMMIT ?= 288df6a2cc2120387e12d6f40798f30cc525c9ea
 prima-head:
 	rm -rf bin/prima-head-src
 	git clone https://github.com/OpenCPIL/prima.cpp bin/prima-head-src
 	git -C bin/prima-head-src checkout $(PRIMA_COMMIT)
+	git -C bin/prima-head-src apply $(CURDIR)/deploy/prima/prima-android.diff
 	$(MAKE) -C bin/prima-head-src -j 4 llama-server
 	mkdir -p bin/prima-head && cp bin/prima-head-src/llama-server bin/prima-head/ && rm -rf bin/prima-head-src
 

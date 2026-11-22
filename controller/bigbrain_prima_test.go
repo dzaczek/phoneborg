@@ -98,6 +98,7 @@ func TestPrimaHeadArgs(t *testing.T) {
 
 func TestFreePortSpan(t *testing.T) {
 	b := newBigBrains(BigBrainOptions{BasePort: 100}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	b.portFree = func(int) bool { return true }
 	b.heads["x"] = &head{cancel: func() {}, ring: &primaRing{}, status: BigBrainStatus{Port: 100}}
 	b.heads["y"] = &head{cancel: func() {}, status: BigBrainStatus{Port: 105}}
 	b.mu.Lock()
@@ -110,6 +111,10 @@ func TestFreePortSpan(t *testing.T) {
 	}
 	if got := b.freePortLocked("x", primaPortSpan); got != 100 { // its own ports are free for it
 		t.Errorf("own: %d", got)
+	}
+	b.portFree = func(p int) bool { return p != 101 } // e.g. in TIME_WAIT after a killed head
+	if got := b.freePortLocked("x", primaPortSpan); got != 106 { // 102..105 meets y
+		t.Errorf("port not bindable: %d", got)
 	}
 }
 

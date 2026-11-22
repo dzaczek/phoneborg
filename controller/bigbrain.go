@@ -173,6 +173,9 @@ type bigBrains struct {
 	log  *slog.Logger
 	http *http.Client
 
+	// portFree reports whether a head could bind a port (bindable).
+	portFree func(port int) bool
+
 	mu    sync.Mutex
 	heads map[string]*head // by pool name
 }
@@ -182,7 +185,7 @@ func newBigBrains(opts BigBrainOptions, log *slog.Logger) *bigBrains {
 		opts.BasePort = 18200
 	}
 	return &bigBrains{opts: opts, log: log.With("component", "bigbrain"), http: &http.Client{Timeout: 2 * time.Second},
-		heads: map[string]*head{}}
+		heads: map[string]*head{}, portFree: bindable}
 }
 
 func bigBrainNodeID(pool string) string { return bigBrainNodePrefix + pool }
@@ -688,11 +691,23 @@ func (b *bigBrains) freePortLocked(pool string, span int) int {
 	}
 	port := b.opts.BasePort
 	for i := 0; i < span; i++ {
-		if used[port+i] {
+		if used[port+i] || !b.portFree(port+i) {
 			port, i = port+i+1, -1
 		}
 	}
 	return port
+}
+
+// bindable reports whether a server could bind 127.0.0.1:port without
+// SO_REUSEADDR, as llama-server does: a head that was killed leaves its port
+// in TIME_WAIT for a minute, and a new head on it would fail to start.
+func bindable(port int) bool {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return true // cannot tell; let the head try
+	}
+	defer syscall.Close(fd)
+	return syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}) == nil
 }
 
 func (b *bigBrains) setState(pool, state, reason string) {
