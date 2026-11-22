@@ -267,7 +267,7 @@ func normPool(p Pool) (Pool, error) {
 		case p.CtxSize != 0 && (p.CtxSize < 512 || p.CtxSize > 131072):
 			return p, errors.New("ctx_size must be 0 (4096) or 512..131072")
 		case p.SpecMax < 0 || p.SpecMax > 64:
-			return p, errors.New("spec_max must be 0 (8) or 1..64")
+			return p, errors.New("spec_max must be 0 (4) or 1..64")
 		}
 		p.Draft = strings.TrimSpace(p.Draft)
 		switch p.Spec {

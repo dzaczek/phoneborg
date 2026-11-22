@@ -591,7 +591,48 @@ it does not compete with the phones.
 
 ### Big Brain: draft on the host
 
-BIGBRAIN_SPEC_RESULTS
+qwen3-30b-a3b-2507 UD-Q3_K_XL on Pixel 8 Pro, OnePlus 10 Pro and POCO F3,
+head on the stage VM (4 x86 cores), draft qwen3-0.6b Q4_K_M on 2 host
+threads, 2026-11-22. One run per cell, each with its own prompt variant (an
+n-gram pool cannot replay an earlier answer); every run logs each phone's
+swap-ins. Speed in tok/s, acceptance in brackets, speed-up below.
+
+| Mode | Code t0 | Code t0.7 | JSON t0 | JSON t0.7 | Prose t0 | Prose t0.7 | Translation t0 | Translation t0.7 |
+|---|---|---|---|---|---|---|---|---|
+| off | 2.16 | 2.15 | 2.17 | 2.15 | 2.10 | 2.12 | 2.13 | 2.12 |
+| draft, `spec_max` 4 | 3.02 (64%) **1.40x** | 2.55 (50%) **1.19x** | 3.28 (70%) **1.51x** | 3.69 (82%) **1.72x** | 1.50 (19%) 0.71x | 0.82 (19%) 0.39x | 0.42 (24%) 0.20x | 0.44 (25%) 0.21x |
+| draft, `spec_max` 8 | 2.63 (47%) 1.22x | 1.92 (31%) 0.89x | 2.98 (55%) 1.37x | 3.58 (67%) 1.67x | 1.02 (10%) 0.49x | 0.95 (9%) 0.45x | 0.41 (14%) 0.19x | 0.35 (11%) 0.17x |
+| draft, `spec_max` 16 | 1.96 (31%) 0.91x | 0.79 (16%) 0.37x | 1.22 (45%) 0.56x | 1.46 (51%) 0.68x | 0.28 (5%) 0.13x | 0.26 (4%) 0.12x | 0.31 (7%) 0.15x | 0.28 (5%) 0.13x |
+| `ngram-mod`, 8 | 2.13 | 2.13 | 2.12 | 2.13 | 2.10 | 2.08 | 2.08 | 2.10 |
+
+| Mode | Head RSS on the host |
+|---|---|
+| off | ~40 MB |
+| ngram | ~54 MB |
+| draft | ~1.15 GB |
+
+- Code and JSON gain 1.2–1.7x at `spec_max` 4, which became the default.
+  Larger windows lose: more drafted tokens are rejected.
+- Prose and translation lose 2.5–5x. A rejected draft is much more
+  expensive here than a dense model would suggest. Our reading, not
+  tested: a verify batch of several tokens routes to many more experts of
+  this MoE model than one token does, so the phones read far more weights
+  per round.
+- `ngram-mod` drafted almost nothing on these fresh prompts and ran at the
+  baseline.
+- qwen3-32b Q4_K_M did not fit the three phones (20.8 GB needed, 19.3 GB
+  free), so there is no dense-model row.
+
+Speculation therefore stays off by default (ADR-036); turn it on for a
+pool that serves code or structured output.
+
+**At the memory limit.** The same model on only the Pixel and the OnePlus
+first fits (14.5 GB needed, 15.1 GB free), but the OnePlus then swaps 1–2.5
+GB of its ggml-rpc-server's weights. A request starts at 2.4 tok/s and
+drops to 0.26 tok/s, ten times slower, as soon as pages are swapped back in
+(up to 245 swap-ins per second). Every draft/ngram number from that setup
+was noise, so the series above uses three phones; the two-phone runs are
+kept in `~/spec/bigbrain-spec-2026-11-22.2phone-atlimit.jsonl`.
 
 Sources:
 1. Y. Leviathan, M. Kalman, Y. Matias, *Fast Inference from Transformers

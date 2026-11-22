@@ -150,7 +150,7 @@ func eligibleNodes(members []controller.PoolMember) int {
 }
 
 // applyPoolSet applies "models=a,b nodes=x,y classes=s,m min_tps=5
-// routing=spread orchestrator=n thinking=on desc=text model=m ctx=4096 spec=draft draft=d spec_max=8" to
+// routing=spread orchestrator=n thinking=on desc=text model=m ctx=4096 spec=draft draft=d spec_max=4" to
 // p; "-" clears a list.
 func applyPoolSet(p *controller.Pool, kvs []string) error {
 	for _, kv := range kvs {

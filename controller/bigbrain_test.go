@@ -385,7 +385,7 @@ func TestBigBrainSpeculative(t *testing.T) {
 
 	// Each change restarts the head with the new flags.
 	for _, tc := range []struct{ body, spec, want string }{
-		{`"spec":"ngram"`, "ngram", "--spec-type ngram-mod --spec-ngram-mod-n-max 8"},
+		{`"spec":"ngram"`, "ngram", "--spec-type ngram-mod --spec-ngram-mod-n-max 4"},
 		{`"spec":"ngram","spec_max":16`, "ngram", "--spec-ngram-mod-n-max 16"},
 		{`"spec":"draft","draft":"small","spec_max":4`, "draft:small", "--spec-type draft-simple --spec-draft-n-max 4 -devd none -ngld 0 -td 2"},
 	} {

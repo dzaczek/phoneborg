@@ -49,7 +49,7 @@ const (
 	SpecNgram = "ngram" // drafts from the context, no model
 )
 
-const bigBrainDefaultSpecMax = 8
+const bigBrainDefaultSpecMax = 4
 
 // ReasonNotRPC: a Big Brain member that does not run ggml-rpc-server (yet).
 const ReasonNotRPC = "not in rpc mode"

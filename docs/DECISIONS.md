@@ -2145,7 +2145,7 @@ in one round.
 **Decision.** Optional, per pool, head only.
 - Pool settings `spec` (`off` default, `draft`, `ngram`), `draft` (a ready
   catalog model, smaller than the pool's model, not the model itself) and
-  `spec_max` (1..64, default 8). They apply to `routing=bigbrain` only and
+  `spec_max` (1..64, default 4). They apply to `routing=bigbrain` only and
   are part of the head's restart key, so changing them restarts the head.
 - The draft model runs on the controller host's CPU, never on a phone. On a
   Pixel 8 Pro a qwen3-0.6b draft for qwen3-4b ran 2.2x slower than no
@@ -2178,4 +2178,9 @@ in one round.
 - Gain depends on acceptance, which depends on the prompt and the pair of
   models; `spec=off` is one command away.
 
-**Results.** Measured in docs/BENCHMARKS.md#speculative-decoding.
+**Results** (docs/BENCHMARKS.md#speculative-decoding). qwen3-30b-a3b on
+three phones with a qwen3-0.6b draft: code and JSON 1.2–1.7x faster at
+`spec_max` 4, prose and translation 2.5–5x slower, larger windows worse
+everywhere; `ngram-mod` ran at the baseline. Hence: off by default, the
+default window is 4, and a pool turns it on only for code or structured
+output. The draft costs the head about 1.1 GB of host RAM.
