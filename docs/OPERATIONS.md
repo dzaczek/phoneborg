@@ -116,6 +116,7 @@ bin/controller -admin-token-file admin-token -api-keys-file api-keys -state-dir 
 | `-ollama-listen` | none | optional second listen address serving only the [Ollama-compatible API](#ollama-compatible-api) (e.g. `:11434`); it is always served on `-listen` too |
 | `-grafana-url` | none | Grafana to serve under `/grafana/` for the panel's **Dashboards** view, e.g. `http://127.0.0.1:3000` ([Grafana in the panel](#grafana-in-the-panel)) |
 | `-firmware-check` | off | check online once a day whether newer firmware or a LineageOS build exists for each phone; sends device codenames to Google, LineageOS and GitHub ([Firmware check](#firmware-check)) |
+| `-bigbrain-prima-head` | none | prima.cpp `llama-server` for this host (`make prima-head`) for Big Brain pools with `backend=prima` (ADR-037) |
 | `-bigbrain-head` | none | llama-server built with RPC (`make llama-head`) for [Big Brain pools](#big-brain-pools) heads; none = Big Brain pools off |
 | `-bigbrain-port` | `18200` | first `127.0.0.1` port for Big Brain heads, one per pool |
 | `-debug` | off | log every heartbeat |

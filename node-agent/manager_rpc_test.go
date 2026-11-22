@@ -15,6 +15,9 @@ import (
 // TestMain doubles as a fake ggml-rpc-server: with PHONEBORG_FAKE_RPC set,
 // the test binary listens on its -p port until killed.
 func TestMain(m *testing.M) {
+	if os.Getenv("PHONEBORG_FAKE_PRIMA") != "" {
+		fakePrimaWorker()
+	}
 	if os.Getenv("PHONEBORG_FAKE_RPC") != "" {
 		port := ""
 		for i, a := range os.Args {

@@ -47,6 +47,7 @@ func main() {
 	model := fs.String("model", "", "GGUF model to serve on each phone (empty: no serving)")
 	llamaServer := fs.String("llama-server", "", "explicit arm64 llama-server binary; overrides auto-selection from -llama-dir when set")
 	llamaDir := fs.String("llama-dir", "bin/llama", "directory of llama.cpp ARM_ARCH variant builds (make llama-all); the best one for each phone's CPU is picked automatically")
+	primaDir := fs.String("prima-dir", "bin/prima", "directory of prima.cpp variant builds named like -llama-dir's (make prima-all); a phone gets the worker of its llama variant, and can then join prima.cpp Big Brain pools (ADR-037)")
 	servePort := fs.Int("serve-port", 18090, "on-device llama-server port")
 	all := fs.Bool("all", false, "provision all ready devices")
 	slimFlag := fs.Bool("slim", false, "run slim after a successful provision (provision, watch)")
@@ -68,7 +69,7 @@ func main() {
 	adb := provisioner.ADB{Bin: *adbBin, Timeout: 60 * time.Second}
 	p := &provisioner.Provisioner{ADB: adb, Log: log, Opts: provisioner.Options{
 		AgentBinary: *agent, ControllerPort: *port, AgentArgs: *agentArgs,
-		Model: *model, LlamaServer: *llamaServer, LlamaDir: *llamaDir, ServePort: *servePort}}
+		Model: *model, LlamaServer: *llamaServer, LlamaDir: *llamaDir, PrimaDir: *primaDir, ServePort: *servePort}}
 
 	for _, c := range connects {
 		if err := adb.Connect(ctx, c); err != nil {

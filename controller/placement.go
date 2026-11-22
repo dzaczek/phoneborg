@@ -319,7 +319,19 @@ func (p *placement) view() Placement {
 // current runtime (no policy for it, or the model is not ready).
 func (s *Server) desired(nodeID string) *proto.DesiredRuntime {
 	if model, ok := s.bigBrainModel(nodeID); ok {
-		return &proto.DesiredRuntime{Mode: proto.ModeRPC, ModelID: model}
+		p, i, _ := s.bigBrainPoolOf(nodeID)
+		if p.Backend != BackendPrima {
+			return &proto.DesiredRuntime{Mode: proto.ModeRPC, ModelID: model}
+		}
+		// Every rank needs the whole file: the normal download fields, plus
+		// the ring (ADR-037). Rank 0 is the head, so members start at 1.
+		_, m, _ := s.catalog.File(model)
+		ctxSize := p.CtxSize
+		if ctxSize == 0 {
+			ctxSize = bigBrainDefaultCtx
+		}
+		return &proto.DesiredRuntime{Mode: proto.ModePrima, ModelID: m.ID, URL: PathModelFiles + m.ID, SHA256: m.SHA256, SizeBytes: m.SizeBytes,
+			Prima: proto.PrimaRank{World: len(p.Nodes) + 1, Rank: i + 1, Epoch: s.bb.epochOf(p.Name), CtxSize: ctxSize}}
 	}
 	s.place.mu.Lock()
 	a := s.place.byNode[nodeID]

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,6 +54,11 @@ type ManagerConfig struct {
 	RPCServerBin string
 	RPCThreads   int
 	RPCCacheDir  string
+
+	// Big Brain on prima.cpp (ADR-037): the worker binary ("" = this node
+	// cannot join such a pool) and the node id the controller knows it by.
+	PrimaWorkerBin string
+	NodeID         string
 }
 
 // Manager owns the currently active Runtime and switches it to a new model
@@ -91,6 +97,10 @@ type Manager struct {
 	// preRPC is what ran before it (nil = nothing), restored on leaving.
 	rpc    bool
 	preRPC *preRPCState
+	// prima: the Big Brain runtime is a prima.cpp worker (rpc is set too),
+	// with its tunnel to the controller (ADR-037).
+	prima  bool
+	tunnel *primaTunnel
 
 	desiredCh chan *proto.DesiredRuntime // buffered 1; SetDesired keeps only the latest
 }
@@ -176,6 +186,10 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 	rt := m.runtime
 	switching, subState, target, progress := m.switching, m.subState, m.target, m.progress
 	errMsg, ramBytes, residentBytes, rpc := m.lastErr, m.ramBytes, m.residentBytes, m.rpc
+	prima, primaEpoch := m.prima, int64(0)
+	if m.lastApplied != nil {
+		primaEpoch = m.lastApplied.Prima.Epoch
+	}
 	m.mu.Unlock()
 
 	var st *proto.RuntimeStatus
@@ -199,7 +213,11 @@ func (m *Manager) Status(ctx context.Context) *proto.RuntimeStatus {
 		switch {
 		case errMsg != "":
 			st.State = "error"
-		case listening:
+		case listening && prima && st.Restarts == 0:
+			// A worker that restarted on its own is not in the ring anymore:
+			// only a new epoch, which restarts every rank, fixes that.
+			st.State, st.PrimaEpoch = proto.ModePrima, primaEpoch
+		case listening && !prima:
 			st.State = proto.ModeRPC
 		default:
 			st.State = "loading"
@@ -232,6 +250,9 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 	case d.Mode == proto.ModeRPC:
 		m.enterRPC(ctx, d)
 		return
+	case d.Mode == proto.ModePrima:
+		m.enterPrima(ctx, d)
+		return
 	case d == releaseRPC:
 		m.leaveRPC(ctx)
 		return
@@ -260,28 +281,10 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 
 	log := m.log.With("model_id", d.ModelID)
 	start := time.Now()
-	dest := filepath.Join(m.cfg.ModelsDir, d.ModelID+".gguf")
-
-	cached := d.SHA256 != ""
-	if cached {
-		sha, err := m.verified.verify(dest)
-		cached = err == nil && strings.EqualFold(sha, d.SHA256)
-	}
-	if cached {
-		log.Info("model already cached, skipping download")
-	} else {
-		m.setSubState("downloading")
-		if err := m.makeRoom(dest, d.SizeBytes); err != nil {
-			m.fail(d, err, log)
-			return
-		}
-		dlStart := time.Now()
-		url := m.cfg.ControllerURL + d.URL
-		if err := downloadModel(ctx, m.http, url, dest, d.SHA256, d.SizeBytes, m.setProgress, log); err != nil {
-			m.fail(d, err, log)
-			return
-		}
-		log.Info("model download complete", "bytes", d.SizeBytes, "duration_ms", time.Since(dlStart).Milliseconds())
+	dest, err := m.ensureModel(ctx, d, log)
+	if err != nil {
+		m.fail(d, err, log)
+		return
 	}
 
 	fi, err := os.Stat(dest)
@@ -332,6 +335,32 @@ func (m *Manager) reconcile(ctx context.Context, d *proto.DesiredRuntime) {
 	m.resetBackoffLocked()
 	m.mu.Unlock()
 	log.Info("model switch complete", "duration_ms", time.Since(start).Milliseconds())
+}
+
+// ensureModel downloads d's model unless the verified file is already
+// cached, and returns its path.
+func (m *Manager) ensureModel(ctx context.Context, d *proto.DesiredRuntime, log *slog.Logger) (string, error) {
+	dest := filepath.Join(m.cfg.ModelsDir, d.ModelID+".gguf")
+	cached := d.SHA256 != ""
+	if cached {
+		sha, err := m.verified.verify(dest)
+		cached = err == nil && strings.EqualFold(sha, d.SHA256)
+	}
+	if cached {
+		log.Info("model already cached, skipping download")
+		return dest, nil
+	}
+	m.setSubState("downloading")
+	if err := m.makeRoom(dest, d.SizeBytes); err != nil {
+		return "", err
+	}
+	dlStart := time.Now()
+	url := m.cfg.ControllerURL + d.URL
+	if err := downloadModel(ctx, m.http, url, dest, d.SHA256, d.SizeBytes, m.setProgress, log); err != nil {
+		return "", err
+	}
+	log.Info("model download complete", "bytes", d.SizeBytes, "duration_ms", time.Since(dlStart).Milliseconds())
+	return dest, nil
 }
 
 // resetBackoffLocked clears the retry backoff for a failed desired state
@@ -532,7 +561,8 @@ func (m *Manager) enterRPC(ctx context.Context, d *proto.DesiredRuntime) {
 		m.mu.Unlock()
 		return
 	}
-	prev, cancel, done := m.runtime, m.cancel, m.done
+	prev, cancel, done, tun := m.runtime, m.cancel, m.done, m.tunnel
+	m.tunnel = nil
 	if !m.rpc {
 		m.preRPC = nil
 		if prev != nil {
@@ -543,6 +573,9 @@ func (m *Manager) enterRPC(ctx context.Context, d *proto.DesiredRuntime) {
 	if cancel != nil {
 		cancel()
 		<-done
+	}
+	if tun != nil {
+		tun.Close()
 	}
 	cacheModel := filepath.Join(m.cfg.RPCCacheDir, ".model")
 	if b, _ := os.ReadFile(cacheModel); strings.TrimSpace(string(b)) != d.ModelID {
@@ -558,7 +591,7 @@ func (m *Manager) enterRPC(ctx context.Context, d *proto.DesiredRuntime) {
 	go func() { rt.Run(rtCtx); close(doneRT) }()
 	m.mu.Lock()
 	m.runtime, m.cancel, m.done, m.current, m.residentBytes, m.ramBytes = rt, cancelRT, doneRT, "", 0, 0
-	m.rpc, m.lastApplied, m.lastErr = true, d, ""
+	m.rpc, m.prima, m.lastApplied, m.lastErr = true, false, d, ""
 	m.resetBackoffLocked()
 	m.mu.Unlock()
 	m.log.Info("joined a Big Brain pool: serving RAM over ggml-rpc-server", "model_id", d.ModelID, "threads", m.cfg.RPCThreads)
@@ -572,13 +605,16 @@ func (m *Manager) leaveRPC(ctx context.Context) {
 		m.mu.Unlock()
 		return
 	}
-	cancel, done, prev := m.cancel, m.done, m.preRPC
-	m.rpc, m.preRPC, m.lastApplied, m.lastErr = false, nil, nil, ""
+	cancel, done, prev, tun := m.cancel, m.done, m.preRPC, m.tunnel
+	m.rpc, m.prima, m.tunnel, m.preRPC, m.lastApplied, m.lastErr = false, false, nil, nil, nil, ""
 	m.runtime, m.cancel, m.done, m.current, m.residentBytes = nil, nil, nil, "", 0
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
 		<-done
+	}
+	if tun != nil {
+		tun.Close()
 	}
 	m.log.Info("left the Big Brain pool")
 	if prev == nil {
@@ -591,4 +627,89 @@ func (m *Manager) leaveRPC(ctx context.Context) {
 	m.mu.Lock()
 	m.runtime, m.cancel, m.done, m.current, m.residentBytes, m.lastApplied = rt, cancelRT, doneRT, prev.current, prev.residentBytes, prev.lastApplied
 	m.mu.Unlock()
+}
+
+// enterPrima makes the node a worker of a prima.cpp ring (ADR-037): it
+// downloads the whole model like a normal switch (every rank needs the full
+// file, mmap pages in just its layers), then replaces the running runtime by
+// the worker and its tunnel to the controller. A new epoch or rank restarts
+// the worker: a ring whose member restarted hangs, so all ranks restart
+// together.
+func (m *Manager) enterPrima(ctx context.Context, d *proto.DesiredRuntime) {
+	m.mu.Lock()
+	if m.prima && m.lastApplied != nil && *m.lastApplied == *d {
+		m.mu.Unlock()
+		return
+	}
+	if m.cfg.PrimaWorkerBin == "" {
+		if m.lastErr == "" {
+			m.log.Error("asked to join a prima.cpp pool, but this agent has no prima worker")
+		}
+		m.lastErr = "prima: no prima worker on this node (re-provision with a bin/prima build)"
+		m.mu.Unlock()
+		return
+	}
+	sameFailure := m.lastFailed != nil && *m.lastFailed == *d
+	retryAt, lastFailedBudget := m.retryAt, m.lastFailedBudget
+	m.mu.Unlock()
+	if sameFailure && !shouldRetryNow(time.Now(), retryAt, lastFailedBudget, m.budgetBytes()) {
+		return
+	}
+	m.mu.Lock()
+	m.switching, m.target, m.lastErr, m.subState, m.progress = true, d.ModelID, "", "loading", 0
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.switching = false
+		m.mu.Unlock()
+	}()
+
+	log := m.log.With("model_id", d.ModelID)
+	dest, err := m.ensureModel(ctx, d, log)
+	if err != nil {
+		m.fail(d, err, log)
+		return
+	}
+	m.setSubState("loading")
+
+	m.mu.Lock()
+	prev, cancel, done, tun := m.runtime, m.cancel, m.done, m.tunnel
+	m.tunnel = nil
+	if !m.rpc {
+		m.preRPC = nil
+		if prev != nil {
+			m.preRPC = &preRPCState{cfg: prev.cfg, current: m.current, residentBytes: m.residentBytes, lastApplied: m.lastApplied}
+		}
+	}
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	if tun != nil {
+		tun.Close()
+	}
+	dial := func(ctx context.Context, to string) (net.Conn, error) {
+		return dialController(ctx, m.cfg.ControllerURL, m.cfg.NodeID, to)
+	}
+	tunnel, err := startPrimaTunnel(ctx, primaTunnelPorts(m.cfg.Port, d.Prima), dial)
+	if err != nil {
+		m.mu.Lock()
+		m.runtime, m.cancel, m.done, m.current, m.residentBytes = nil, nil, nil, "", 0
+		m.rpc, m.prima, m.lastApplied = true, true, nil // preRPC still restores what ran before
+		m.mu.Unlock()
+		m.fail(d, fmt.Errorf("prima tunnel: %w", err), log)
+		return
+	}
+	rt := NewRuntime(RuntimeConfig{ServerBin: m.cfg.PrimaWorkerBin, ModelPath: dest, Port: m.cfg.Port, AdvertisePort: m.cfg.AdvertisePort,
+		Threads: m.cfg.Threads, Variant: m.cfg.Variant, Prima: true, Rank: d.Prima}, m.log)
+	rtCtx, cancelRT := context.WithCancel(ctx)
+	doneRT := make(chan struct{})
+	go func() { rt.Run(rtCtx); close(doneRT) }()
+	m.mu.Lock()
+	m.runtime, m.cancel, m.done, m.current, m.residentBytes, m.ramBytes = rt, cancelRT, doneRT, "", 0, 0
+	m.rpc, m.prima, m.tunnel, m.lastApplied, m.lastErr = true, true, tunnel, d, ""
+	m.resetBackoffLocked()
+	m.mu.Unlock()
+	log.Info("joined a prima.cpp pool: worker started", "rank", d.Prima.Rank, "world", d.Prima.World, "epoch", d.Prima.Epoch)
 }

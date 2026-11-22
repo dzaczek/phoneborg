@@ -318,7 +318,7 @@ pbctl placement set gemma-3n-e2b-it-q4_k_m pin=mi8
 | Command | What |
 |---|---|
 | `pbctl pools` | pools (`pool/<name>`) with member eligibility |
-| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="…"] [model=<id>] [ctx=N] [spec=off\|draft\|ngram] [draft=<id>\|-] [spec_max=N]` | create a pool or change the given fields (`-` clears a list) |
+| `pbctl pools set <name> [models=a,b] [nodes=x,y] [classes=s,m] [min_tps=5] [routing=spread\|affinity\|superborg\|bigbrain] [orchestrator=<node>\|auto] [thinking=on\|off] [enabled=on\|off] [desc="…"] [model=<id>] [ctx=N] [backend=rpc\|prima] [spec=off\|draft\|ngram] [draft=<id>\|-] [spec_max=N]` | create a pool or change the given fields (`-` clears a list) |
 | `pbctl pools rm <name>` | remove a pool |
 
 ```sh
@@ -330,6 +330,19 @@ pbctl pools set brain enabled=off    # stop Big Brain, the phones return to thei
 
 A Super Borg pool is many phones answering as one. A Big Brain pool is many
 phones thinking one thought, slowly.
+
+`backend=prima` (ADR-037) runs a Big Brain pool on prima.cpp instead of
+llama.cpp RPC: a pipeline ring in which each phone runs a window of layers
+from its own full copy of the model. It needs the controller started with
+`-bigbrain-prima-head`, phones provisioned with a `bin/prima` build, and a
+`llama` or `qwen2` model (not Qwen3 or Gemma); speculative decoding is
+RPC-only. Changing the backend restarts the pool. `pbctl pools` shows it as
+`bigbrain/prima (model, state)`; a phone that is still downloading the whole
+file shows as `waiting: <node> is downloading`.
+
+```sh
+pbctl pools set brain backend=prima routing=bigbrain model=qwen2.5-14b-instruct-q4_k_m nodes=pixel,oneplus
+```
 
 ## Gateway and semantic router
 

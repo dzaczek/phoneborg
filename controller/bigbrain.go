@@ -54,6 +54,10 @@ const bigBrainDefaultSpecMax = 4
 // ReasonNotRPC: a Big Brain member that does not run ggml-rpc-server (yet).
 const ReasonNotRPC = "not in rpc mode"
 
+// ReasonNotPrima: a Big Brain member that does not run the prima.cpp worker
+// of the current ring (yet).
+const ReasonNotPrima = "not in prima mode"
+
 const (
 	bigBrainTick = 3 * time.Second
 	// bigBrainReserve is the RAM left free on every member after its share
@@ -76,9 +80,12 @@ const (
 type BigBrainOptions struct {
 	// HeadBin is llama-server built with -DGGML_RPC=ON for this host
 	// (make llama-head); "" = Big Brain pools cannot start.
-	HeadBin  string
-	BasePort int    // first head port on 127.0.0.1; 0 = 18200
-	LogDir   string // head logs, one file per pool; "" = discarded
+	HeadBin string
+	// PrimaHeadBin is llama-server built from prima.cpp for this host (make
+	// prima-head); "" = prima.cpp pools cannot start (ADR-037).
+	PrimaHeadBin string
+	BasePort     int    // first head port on 127.0.0.1; 0 = 18200
+	LogDir       string // head logs, one file per pool; "" = discarded
 	// Host reaches the members' advertised ports (the adb forwards); it is
 	// the gateway's BackendHost.
 	Host string
@@ -94,7 +101,11 @@ type BigBrainStatus struct {
 	HaveBytes int64 `json:"have_bytes"`
 	// TensorSplit is each member's share of the weights (MiB of usable RAM),
 	// in Nodes order, as passed to the running head (-ts).
-	TensorSplit   []int     `json:"tensor_split,omitempty"`
+	TensorSplit []int `json:"tensor_split,omitempty"`
+	// Backend is BackendRPC or BackendPrima; LayerWindows are the layers
+	// per rank of the running prima ring, rank 0 (the host) first.
+	Backend       string    `json:"backend,omitempty"`
+	LayerWindows  []int     `json:"layer_windows,omitempty"`
 	Port          int       `json:"port,omitempty"`
 	LoadStartedAt time.Time `json:"load_started_at,omitzero"`
 	LoadSeconds   float64   `json:"load_seconds,omitempty"`
@@ -150,12 +161,20 @@ type head struct {
 	retryAt time.Time // no restart before this after the head exited
 	backoff time.Duration
 	stopped time.Time // when a running head was last stopped
+	// prima.cpp (ADR-037): the ring of the running head, and the epoch the
+	// workers run with; it is bumped whenever the ring is (re)started or
+	// breaks, because the workers must restart together.
+	ring  *primaRing
+	epoch int64
 }
 
 type bigBrains struct {
 	opts BigBrainOptions
 	log  *slog.Logger
 	http *http.Client
+
+	// portFree reports whether a head could bind a port (bindable).
+	portFree func(port int) bool
 
 	mu    sync.Mutex
 	heads map[string]*head // by pool name
@@ -166,7 +185,7 @@ func newBigBrains(opts BigBrainOptions, log *slog.Logger) *bigBrains {
 		opts.BasePort = 18200
 	}
 	return &bigBrains{opts: opts, log: log.With("component", "bigbrain"), http: &http.Client{Timeout: 2 * time.Second},
-		heads: map[string]*head{}}
+		heads: map[string]*head{}, portFree: bindable}
 }
 
 func bigBrainNodeID(pool string) string { return bigBrainNodePrefix + pool }
@@ -201,18 +220,25 @@ func (s *Server) bigBrainPools() []Pool {
 // an enabled Big Brain pool whose model is ready in the catalog, and the
 // controller can run heads.
 func (s *Server) bigBrainModel(nodeID string) (string, bool) {
-	if s.bb.opts.HeadBin == "" {
+	p, _, ok := s.bigBrainPoolOf(nodeID)
+	if !ok || s.bb.headBin(p) == "" {
 		return "", false
 	}
+	_, _, ready := s.catalog.File(p.Model)
+	return p.Model, ready
+}
+
+// bigBrainPoolOf returns the enabled Big Brain pool nodeID is a member of,
+// and its index among the pool's nodes.
+func (s *Server) bigBrainPoolOf(nodeID string) (Pool, int, bool) {
 	for _, p := range s.bigBrainPools() {
-		for _, n := range p.Nodes {
+		for i, n := range p.Nodes {
 			if id, ok := s.reg.Lookup(n); (ok && id == nodeID) || n == nodeID {
-				_, _, ready := s.catalog.File(p.Model)
-				return p.Model, ready
+				return p, i, true
 			}
 		}
 	}
-	return "", false
+	return Pool{}, 0, false
 }
 
 // bigBrainMembers resolves p's nodes against the registry.
@@ -247,16 +273,29 @@ func (s *Server) bigBrainMembers(p Pool) []bigBrainMember {
 		switch {
 		case drained[id]:
 			m.excluded = ReasonDrained
-		case rt != nil && rt.State == proto.ModeRPC && rt.AdvertisePort != 0:
-			host := rt.AdvertiseHost
-			if host == "" {
-				host = s.bb.opts.Host
+		case p.Backend == BackendPrima:
+			switch {
+			case rt != nil && rt.State == proto.ModePrima && rt.PrimaEpoch != s.bb.epochOf(p.Name):
+				m.state = "restarting" // still on the previous ring
+			case rt != nil && rt.State == proto.ModePrima && rt.AdvertisePort != 0:
+				m.rpcAddr = s.ringAddr(rt)
 			}
-			m.rpcAddr = fmt.Sprintf("%s:%d", host, rt.AdvertisePort)
+		case rt != nil && rt.State == proto.ModeRPC && rt.AdvertisePort != 0:
+			m.rpcAddr = s.ringAddr(rt)
 		}
 		out = append(out, m)
 	}
 	return out
+}
+
+// ringAddr is host:port of a member's serving port, reached over its adb
+// forward.
+func (s *Server) ringAddr(rt *proto.RuntimeStatus) string {
+	host := rt.AdvertiseHost
+	if host == "" {
+		host = s.bb.opts.Host
+	}
+	return fmt.Sprintf("%s:%d", host, rt.AdvertisePort)
 }
 
 // bigBrainSplit returns the members' usable RAM (free minus the reserve) in
@@ -324,7 +363,7 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 		addrs = append(addrs, mb.rpcAddr)
 	}
 	spec := s.headSpec(p)
-	key := fmt.Sprintf("%s|%s|%d|%s|%s|%s|%d", p.Model, path, ctxSize, strings.Join(addrs, ","), spec.mode, spec.path, spec.max)
+	key := fmt.Sprintf("%s|%s|%d|%s|%s|%s|%d|%s", p.Model, path, ctxSize, strings.Join(addrs, ","), spec.mode, spec.path, spec.max, p.Backend)
 
 	b.mu.Lock()
 	h.status.NeedBytes = need
@@ -334,17 +373,25 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 	b.mu.Unlock()
 
 	switch {
-	case b.opts.HeadBin == "":
+	case b.opts.HeadBin == "" && p.Backend != BackendPrima:
 		b.stop(p.Name, false)
 		b.setState(p.Name, BigBrainError, "the controller runs without -bigbrain-head (build it with make llama-head)")
+		return
+	case b.opts.PrimaHeadBin == "" && p.Backend == BackendPrima:
+		b.stop(p.Name, false)
+		b.setState(p.Name, BigBrainError, "the controller runs without -bigbrain-prima-head (build it with make prima-head)")
 		return
 	case !ok:
 		b.stop(p.Name, false)
 		b.setState(p.Name, BigBrainError, "model "+p.Model+" is not ready in the catalog")
 		return
+	case p.Backend == BackendPrima && checkPrimaModel(m) != nil:
+		b.stop(p.Name, false)
+		b.setState(p.Name, BigBrainError, checkPrimaModel(m).Error())
+		return
 	case len(waiting) > 0:
 		if running {
-			b.log.Warn("Big Brain member left RPC mode, stopping the head", "pool", p.Name, "waiting", strings.Join(waiting, ", "))
+			b.log.Warn("Big Brain member left its mode, stopping the head", "pool", p.Name, "waiting", strings.Join(waiting, ", "))
 		}
 		b.stop(p.Name, false)
 		b.setState(p.Name, BigBrainPreparing, "waiting: "+strings.Join(waiting, ", "))
@@ -383,7 +430,25 @@ func (s *Server) reconcileBigBrain(ctx context.Context, p Pool) {
 			float64(need)/1e9, float64(have)/1e9))
 		return
 	}
-	b.start(ctx, p, path, ctxSize, addrs, split, spec, key)
+	var ring *primaRing
+	var windows []int
+	if p.Backend == BackendPrima {
+		weights := make([]int64, len(split))
+		ids := make([]string, len(members))
+		for i, v := range split {
+			weights[i], ids[i] = int64(v), members[i].id
+		}
+		var err error
+		if windows, err = primaWindows(m.Layers, weights); err == nil {
+			err = primaFit(members, windows, m.Layers, m.SizeBytes)
+		}
+		if err != nil {
+			b.setState(p.Name, BigBrainError, err.Error())
+			return
+		}
+		ring = &primaRing{ids: ids, addrs: addrs}
+	}
+	b.start(ctx, p, path, ctxSize, addrs, split, spec, key, ring, windows)
 }
 
 // headSpec resolves p's speculative decoding. A draft model that is not
@@ -455,13 +520,29 @@ func headArgs(model, path string, ctxSize, port int, addrs []string, split []int
 	return args
 }
 
-func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int, addrs []string, split []int, spec headSpec, key string) {
+func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int, addrs []string, split []int, spec headSpec, key string, ring *primaRing, windows []int) {
 	b.mu.Lock()
 	h := b.heads[p.Name]
 	if h.cancel != nil {
 		h.cancel() // the previous head exited; release its context
 	}
-	port := b.freePortLocked(p.Name)
+	bin, args, span := b.opts.HeadBin, []string(nil), 1
+	if ring != nil {
+		bin, span = b.opts.PrimaHeadBin, primaPortSpan
+	}
+	port := b.freePortLocked(p.Name, span)
+	if ring != nil {
+		*ring = *newPrimaRing(ring.ids, ring.addrs, port)
+		if err := ring.startRelay(); err != nil {
+			h.status.State, h.status.Reason = BigBrainError, "cannot start the ring relay: "+err.Error()
+			h.exited, h.logTail, h.retryAt = true, err.Error(), time.Now().Add(bigBrainMinBackoff)
+			b.mu.Unlock()
+			return
+		}
+		args = primaHeadArgs(p.Model, path, ctxSize, ring, windows)
+	} else {
+		args = headArgs(p.Model, path, ctxSize, port, addrs, split, spec)
+	}
 	var logf io.WriteCloser = nopCloser{io.Discard}
 	logPath := ""
 	if b.opts.LogDir != "" {
@@ -472,26 +553,34 @@ func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int,
 		}
 	}
 	hctx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(hctx, b.opts.HeadBin, headArgs(p.Model, path, ctxSize, port, addrs, split, spec)...)
+	cmd := exec.CommandContext(hctx, bin, args...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
 	if err := cmd.Start(); err != nil {
 		cancel()
 		logf.Close()
+		if ring != nil {
+			ring.Close()
+		}
 		h.status.State, h.status.Reason = BigBrainError, "cannot start the head: "+err.Error()
 		h.exited, h.logTail, h.retryAt = true, err.Error(), time.Now().Add(bigBrainMinBackoff)
 		b.mu.Unlock()
 		return
 	}
 	done := make(chan struct{})
-	h.key, h.cancel, h.done, h.exited, h.logTail = key, cancel, done, false, ""
+	h.key, h.cancel, h.done, h.exited, h.logTail, h.ring = key, cancel, done, false, "", ring
 	h.status = BigBrainStatus{State: BigBrainLoading, Reason: fmt.Sprintf("loading %s onto %d phones", p.Model, len(addrs)),
 		NeedBytes: h.status.NeedBytes, HaveBytes: h.status.HaveBytes, TensorSplit: split, Port: port,
-		LoadStartedAt: time.Now(), Restarts: h.status.Restarts, Spec: spec.label(), SpecNote: spec.note}
+		LayerWindows: windows, LoadStartedAt: time.Now(), Restarts: h.status.Restarts, Spec: spec.label(), SpecNote: spec.note}
+	if ring != nil {
+		h.status.TensorSplit = nil
+	}
+	epoch := h.epoch
 	b.mu.Unlock()
 	b.log.Info("Big Brain head started", "pool", p.Name, "model", p.Model, "pid", cmd.Process.Pid, "port", port,
-		"rpc", strings.Join(addrs, ","), "tensor_split", split, "spec", spec.label(), "log", logPath)
+		"backend", bigBrainBackend(p), "members", strings.Join(addrs, ","), "tensor_split", split, "layer_windows", windows,
+		"epoch", epoch, "spec", spec.label(), "log", logPath)
 	go func() {
 		err := cmd.Wait()
 		logf.Close()
@@ -506,6 +595,10 @@ func (b *bigBrains) start(ctx context.Context, p Pool, path string, ctxSize int,
 			return // stopped on purpose
 		}
 		h.exited, h.logTail = true, tail
+		if h.ring != nil {
+			h.ring.Close()
+			h.epoch = nextEpoch(h.epoch) // the workers hang on a dead ring: restart them all
+		}
 		h.backoff = min(max(h.backoff*2, bigBrainMinBackoff), bigBrainMaxBackoff)
 		h.retryAt = time.Now().Add(h.backoff)
 		h.status.Restarts++
@@ -581,19 +674,40 @@ func (b *bigBrains) selfTest(ctx context.Context, pool string, port int, model s
 	b.log.Info("Big Brain self-test", "pool", pool, "gen_tps", v.Timings.PredictedPerSecond, "prompt_tps", v.Timings.PromptPerSecond)
 }
 
-// freePortLocked returns the lowest head port no other running head uses.
-func (b *bigBrains) freePortLocked(pool string) int {
+// freePortLocked returns the lowest first port of span consecutive head
+// ports that no other running head uses.
+func (b *bigBrains) freePortLocked(pool string, span int) int {
 	used := map[int]bool{}
 	for name, h := range b.heads {
 		if name != pool && h.cancel != nil && !h.exited {
-			used[h.status.Port] = true
+			n := 1
+			if h.ring != nil {
+				n = primaPortSpan
+			}
+			for i := range n {
+				used[h.status.Port+i] = true
+			}
 		}
 	}
 	port := b.opts.BasePort
-	for used[port] {
-		port++
+	for i := 0; i < span; i++ {
+		if used[port+i] || !b.portFree(port+i) {
+			port, i = port+i+1, -1
+		}
 	}
 	return port
+}
+
+// bindable reports whether a server could bind 127.0.0.1:port without
+// SO_REUSEADDR, as llama-server does: a head that was killed leaves its port
+// in TIME_WAIT for a minute, and a new head on it would fail to start.
+func bindable(port int) bool {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return true // cannot tell; let the head try
+	}
+	defer syscall.Close(fd)
+	return syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}) == nil
 }
 
 func (b *bigBrains) setState(pool, state, reason string) {
@@ -612,17 +726,24 @@ func (b *bigBrains) stop(pool string, forget bool) {
 		b.mu.Unlock()
 		return
 	}
-	cancel, done := h.cancel, h.done
-	h.cancel, h.done, h.key = nil, nil, ""
+	cancel, done, ring := h.cancel, h.done, h.ring
+	if ring != nil && cancel != nil && !h.exited {
+		h.epoch = nextEpoch(h.epoch) // the workers must restart with the next ring
+	}
+	h.cancel, h.done, h.key, h.ring = nil, nil, "", nil
 	if cancel != nil {
 		h.exited, h.stopped = false, time.Now()
 	}
+	h.status.LayerWindows = nil
 	h.status.TensorSplit, h.status.Port, h.status.GenTPS, h.status.PromptTPS = nil, 0, 0, 0
 	h.status.LoadStartedAt, h.status.LoadSeconds = time.Time{}, 0
 	if forget {
 		delete(b.heads, pool)
 	}
 	b.mu.Unlock()
+	if ring != nil {
+		ring.Close()
+	}
 	if cancel != nil {
 		cancel()
 		<-done
@@ -692,6 +813,8 @@ func (s *Server) bigBrainPoolMembers(p Pool) []PoolMember {
 			m.NodeID, m.Reason = mb.name, mb.excluded
 		case mb.excluded != "":
 			m.Reason = mb.excluded
+		case mb.rpcAddr == "" && p.Backend == BackendPrima:
+			m.Reason = ReasonNotPrima + " (" + mb.state + ")"
 		case mb.rpcAddr == "":
 			m.Reason = ReasonNotRPC + " (" + mb.state + ")"
 		case mb.stale != "":

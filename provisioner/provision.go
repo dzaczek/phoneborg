@@ -22,6 +22,7 @@ type Options struct {
 	AgentArgs      string // extra flags passed to node-agent
 	LlamaServer    string // explicit llama-server binary override; skips auto-selection when set
 	LlamaDir       string // directory of ARM_ARCH variant subdirs (see ADR-007), used when LlamaServer is empty
+	PrimaDir       string // directory of prima.cpp variant subdirs with the same names (ADR-037); "" or a missing variant = no prima worker
 	Model          string // local .gguf to serve; empty = inventory/heartbeat only
 	ServePort      int    // on-device llama-server port
 }
@@ -179,6 +180,17 @@ func (p *Provisioner) pushRuntime(ctx context.Context, serial string) (string, e
 			return "", err
 		}
 		rpcArg = " --rpc-server bin/ggml-rpc-server"
+	}
+	// The prima.cpp worker of the same variant lets the node join a Big
+	// Brain pool on prima.cpp (ADR-037); a missing build simply cannot.
+	if prima := filepath.Join(p.Opts.PrimaDir, variant, "llama-cli"); p.Opts.PrimaDir != "" && variant != "" && fileExists(prima) {
+		if err := p.ADB.Push(ctx, serial, prima, RemoteDir+"/bin/prima-cli"); err != nil {
+			return "", err
+		}
+		if _, err := p.ADB.Shell(ctx, serial, "chmod 755 "+RemoteDir+"/bin/prima-cli"); err != nil {
+			return "", err
+		}
+		rpcArg += " --prima-worker bin/prima-cli"
 	}
 	hostPort, err := p.ADB.Forward(ctx, serial, p.Opts.ServePort)
 	if err != nil {

@@ -104,6 +104,25 @@ type DesiredRuntime struct {
 	// agent stops llama-server and runs ggml-rpc-server on its serving port;
 	// the other fields are unused. "" = serve ModelID.
 	Mode string `json:"mode,omitempty"`
+	// Prima is the node's place in a prima.cpp ring for Mode ModePrima
+	// (ADR-037); the model fields above are the file to download. A value,
+	// not a pointer, so DesiredRuntime stays comparable with ==.
+	Prima PrimaRank `json:"prima,omitzero"`
+}
+
+// ModePrima is DesiredRuntime.Mode for a Big Brain member of a prima.cpp
+// pool (ADR-037), and RuntimeStatus.State while its worker listens.
+const ModePrima = "prima"
+
+// PrimaRank is a prima.cpp worker's place in the ring. Rank 0 is the
+// controller's head, so workers are 1..World-1. Epoch identifies one start
+// of the whole ring: a worker restarts when it changes, because a ring
+// whose member restarted hangs.
+type PrimaRank struct {
+	World   int   `json:"world"`
+	Rank    int   `json:"rank"`
+	Epoch   int64 `json:"epoch"`
+	CtxSize int   `json:"ctx_size"`
 }
 
 // ModeRPC is DesiredRuntime.Mode for a Big Brain member (ADR-034), and
@@ -158,6 +177,9 @@ type RuntimeStatus struct {
 	// controller), in which case the controller's bandwidth estimate falls
 	// back to ModelBytes.
 	ResidentBytes int64 `json:"resident_bytes,omitempty"`
+	// PrimaEpoch is the DesiredRuntime.Prima.Epoch the worker runs with,
+	// reported with State ModePrima once it listens (ADR-037).
+	PrimaEpoch int64 `json:"prima_epoch,omitempty"`
 }
 
 type NodeState string

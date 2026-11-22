@@ -1,0 +1,44 @@
+diff --git a/Makefile b/Makefile
+index b1bbc0e..2345497 100644
+--- a/Makefile
++++ b/Makefile
+@@ -491,8 +491,9 @@ ifneq ($(filter aarch64%,$(UNAME_M)),)
+ 	# Apple M1, M2, etc.
+ 	# Raspberry Pi 3, 4, Zero 2 (64-bit)
+ 	# Nvidia Jetson
+-	MK_CFLAGS   += -mcpu=native
+-	MK_CXXFLAGS += -mcpu=native
++	ARM_MARCH ?= -mcpu=native
++	MK_CFLAGS   += $(ARM_MARCH)
++	MK_CXXFLAGS += $(ARM_MARCH)
+ 	JETSON_RELEASE_INFO = $(shell jetson_release)
+ 	ifdef JETSON_RELEASE_INFO
+ 		ifneq ($(filter TX2%,$(JETSON_RELEASE_INFO)),)
+diff --git a/src/llama.cpp b/src/llama.cpp
+index 9015c55..766ea6a 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -20506,10 +20506,10 @@ void llama_init_sockets(struct llama_context * ctx, uint32_t n_world, uint32_t m
+     }
+ 
+     const uint32_t next_rank = (my_rank + 1) % n_world;
+-    std::string recv_endp   = "tcp://*:"                         + std::to_string(map_rank_to_port(my_rank,   ctx->data_port));
++    std::string recv_endp   = "tcp://127.0.0.1:"                 + std::to_string(map_rank_to_port(my_rank,   ctx->data_port));
+     std::string send_endp   = "tcp://" + ctx->next_node_ip + ":" + std::to_string(map_rank_to_port(next_rank, ctx->data_port));
+     std::string master_endp = "tcp://" + ctx->master_ip    + ":" + std::to_string(map_rank_to_port(0,         ctx->data_port));
+-    std::string signal_endp = "tcp://*:"                         + std::to_string(map_rank_to_port(my_rank,   ctx->signal_port));
++    std::string signal_endp = "tcp://127.0.0.1:"                 + std::to_string(map_rank_to_port(my_rank,   ctx->signal_port));
+ 
+     try {
+         ctx->recv_socket->bind(recv_endp);
+diff --git a/src/network-utils.cpp b/src/network-utils.cpp
+index e7fa5ab..4e3774d 100644
+--- a/src/network-utils.cpp
++++ b/src/network-utils.cpp
+@@ -1,5 +1,6 @@
+ #include "network-utils.h"
+ 
++#include <sys/time.h>
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
