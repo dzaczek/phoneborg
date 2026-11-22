@@ -2281,4 +2281,10 @@ one hop per phone and token.
 - prima.cpp builds with a patch for Android (`deploy/prima`) and is pinned;
   moving the commit means rebuilding head and workers together.
 
-**Results.** Measured in docs/BENCHMARKS.md#prima.
+**Results.** With qwen2.5-14b Q4_K_M, prima generates 2.5–3x faster than RPC
+(1.0 vs 0.4 tok/s on 2 phones, 1.3 vs 0.45 tok/s on 3). It also holds the
+weights as reclaimable file pages, so a phone keeps about twice the
+`MemAvailable`. The cost is the full file on every phone and about 1 GB of
+head RAM. The ring ports bind 127.0.0.1 only (patch in `deploy/prima`), and
+the controller skips head ports still in TIME_WAIT. See
+docs/BENCHMARKS.md#primacpp-vs-rpc.

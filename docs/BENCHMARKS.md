@@ -35,6 +35,7 @@ token generation).
 - [Super Borg and jobs: observed timings](#super-borg-and-jobs-observed-timings)
 - [Semantic router classifier](#semantic-router-classifier)
 - [Big Brain: one model across phones](#big-brain-one-model-across-phones)
+- [prima.cpp vs RPC](#primacpp-vs-rpc)
 - [Memory: what Android leaves free](#memory-what-android-leaves-free)
 - [Other small measurements](#other-small-measurements)
 
@@ -645,6 +646,78 @@ Sources:
    [github.com/apoorvumang/prompt-lookup-decoding](https://github.com/apoorvumang/prompt-lookup-decoding).
 4. llama.cpp, *Speculative decoding* (b11136),
    [docs/speculative.md](https://github.com/ggml-org/llama.cpp/blob/b11136/docs/speculative.md).
+
+## prima.cpp vs RPC
+
+The same Big Brain pool on both backends (ADR-037). qwen2.5-14b-instruct
+Q4_K_M (dense, 48 layers, 9.0 GB), head on the stage VM. Phones: Pixel 8 Pro
+and OnePlus 10 Pro, then POCO F3 as a third. 2026-11-22. One streamed
+request per cell, 256 tokens at most, each prompt at temperature 0 and then
+0.7. The second request hits the prompt cache, so only the t0 runs show a
+cold prefill. Raw data is in `~/spec/prima-vs-rpc-2026-11-22.jsonl` on the
+stage VM.
+
+Generation speed, tok/s:
+
+| Backend, phones | Code t0 | Code t0.7 | JSON t0 | JSON t0.7 | Prose t0 | Prose t0.7 | Translation t0 | Translation t0.7 |
+|---|---|---|---|---|---|---|---|---|
+| RPC, 2 | 0.36 | 0.40 | 0.36 | 0.41 | 0.41 | 0.37 | 0.39 | 0.36 |
+| prima, 2 | 0.88 | 0.97 | 1.06 | 0.92 | 1.06 | 0.98 | 1.03 | 1.07 |
+| RPC, 3 | 1.47¹ | 0.62 | 0.43 | 0.42 | 0.43 | 0.45 | 0.45 | 0.44 |
+| prima, 3 | 0.90 | 1.13 | 1.22 | 1.27 | 1.24 | 1.29 | 1.21 | 1.34 |
+| prima, 3, loopback build | 1.37 | 1.29 | 1.37 | 1.32 | 1.31 | 1.36 | 1.21 | 1.22 |
+
+¹ An outlier we cannot explain; the other seven RPC runs on 3 phones
+stay between 0.42 and 0.62.
+
+Time to first token, cold (t0), s:
+
+| Backend, phones | Code | JSON | Prose | Translation |
+|---|---|---|---|---|
+| RPC, 2 | 56.9 | 22.2 | 15.0 | 17.9 |
+| prima, 2 | 9.0 | 11.4 | 7.4 | 12.4 |
+| RPC, 3 | 18.8 | 14.4 | 11.5 | 16.1 |
+| prima, 3 | 13.8 | 10.0 | 8.1 | 12.6 |
+
+With the prompt cached (t0.7), prima answers in 2.2–2.7 s and RPC in
+3.9–7.7 s.
+
+Memory at the end of each series (GB; `/proc` of the worker process and
+`MemAvailable` of the phone; nothing swapped in any run):
+
+| Backend, phones | Phone | RssAnon | RssFile | MemAvailable | Head RSS |
+|---|---|---|---|---|---|
+| RPC, 2 | Pixel / OnePlus | 4.40 / 4.39 | 0 / 0 | 3.93 / 3.50 | 0.48 |
+| prima, 2 | Pixel / OnePlus | 0.47 / 0.45 | 3.86 / 3.69 | 8.13 / 7.49 | 0.98 |
+| RPC, 3 | Pixel / OnePlus / POCO | 3.40 / 3.19 / 2.21 | 0 / 0 / 0 | 4.92 / 4.74 / 2.61 | 0.40 |
+| prima, 3 | Pixel / OnePlus / POCO | 0.39 / 0.37 / 0.23 | 3.07 / 2.84 / 1.65 | 8.23 / 7.47 / 4.68 | 0.94 |
+
+Time until the pool reported ready:
+
+| Change | s |
+|---|---|
+| prima, 3 phones, POCO downloading the whole GGUF first | 525 |
+| prima, 3 phones, file already on every phone | 15 |
+| RPC, 3 phones (head pushes each phone's tensors) | 1038 |
+| prima → RPC switch, same phones | 150 |
+
+- prima.cpp generated 2.5–3x faster than RPC on this dense model and
+  started cold prefills sooner. In RPC the head drives every phone call by
+  call, one after another. In the prima ring each phone runs its own layers
+  and passes only the activations on.
+- On a phone, prima keeps its weights as mmapped file pages, not anonymous
+  memory, so Android can drop and re-read them instead of swapping. It
+  reports about twice the `MemAvailable` of RPC. The cost is flash: every
+  phone stores the whole 9 GB file.
+- The prima head uses about 1 GB of host RAM against 0.4–0.5 GB for RPC.
+- A third phone helps prima (1.0 → 1.3 tok/s) and barely changes RPC.
+- With the 127.0.0.1-only build the ring is as fast as before, and
+  switching prima → RPC works without restarting the controller. The
+  first, unpatched attempt failed: llama-server could not bind a port the
+  killed prima head left in TIME_WAIT. The controller now skips such ports.
+- prima.cpp runs only `llama` and `qwen2` models, and its server returns no
+  `timings`. For Qwen3 MoE and gpt-oss, RPC stays the only backend. Use
+  `backend=prima` for dense Qwen2.5 and Llama models.
 
 ## Memory: what Android leaves free
 
